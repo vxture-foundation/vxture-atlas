@@ -1,0 +1,81 @@
+name: direct-push-audit
+
+# Detective control, not a gate. vxture-foundation is a Free-plan org and
+# this repo is private, so neither Rulesets nor legacy branch protection are
+# available here - confirmed via the API (both return 403 "Upgrade to GitHub
+# Pro or make this repository public"), not assumed. There is no technical
+# way to BLOCK a direct `git push origin main` on this fork. This workflow
+# cannot prevent one, but it makes one visible instead of silent: every
+# commit landing on main is checked for an associated pull request, and a
+# bare direct push (no PR at all) opens a loud, hard-to-miss issue rather
+# than passing unnoticed. See CLAUDE.md's Branch protection section.
+
+on:
+  push:
+    branches:
+      - main
+
+concurrency:
+  group: direct-push-audit
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: read
+
+jobs:
+  audit:
+    name: audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check every pushed commit for an associated pull request
+        id: check
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          COMMITS: ${{ toJson(github.event.commits) }}
+        run: |
+          set -euo pipefail
+          bare_shas=()
+          for sha in $(echo "$COMMITS" | jq -r '.[].id'); do
+            count="$(gh api "repos/${REPO}/commits/${sha}/pulls" -q 'length')"
+            if [ "$count" -eq 0 ]; then
+              bare_shas+=("$sha")
+            fi
+          done
+          if [ "${#bare_shas[@]}" -eq 0 ]; then
+            echo "every pushed commit is associated with a pull request"
+            exit 0
+          fi
+          echo "::warning::${#bare_shas[@]} commit(s) landed on main with no associated pull request: ${bare_shas[*]}"
+          {
+            echo "list<<EOF"
+            for sha in "${bare_shas[@]}"; do echo "- \`${sha:0:7}\` https://github.com/${REPO}/commit/${sha}"; done
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Open or update an issue for the bypass
+        if: steps.check.outputs.list != ''
+        uses: actions/github-script@v9
+        env:
+          BYPASS_LIST: ${{ steps.check.outputs.list }}
+        with:
+          script: |
+            const title = 'Direct push to main bypassed PR review';
+            const body = [
+              'These commits landed on `main` with no associated pull request - this repo has no branch protection to block that (GitHub Free plan + private repo; see CLAUDE.md\'s Branch protection section).',
+              '',
+              process.env.BYPASS_LIST,
+              '',
+              `Pushed by @${context.actor}, run: ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+            ].join('\n');
+            const { data: issues } = await github.rest.issues.listForRepo({ owner: context.repo.owner, repo: context.repo.repo, state: 'open', labels: 'direct-push' });
+            const existing = issues.find((i) => i.title === title);
+            if (existing) {
+              await github.rest.issues.createComment({ owner: context.repo.owner, repo: context.repo.repo, issue_number: existing.number, body });
+            } else {
+              await github.rest.issues.create({ owner: context.repo.owner, repo: context.repo.repo, title, body, labels: ['direct-push'] });
+            }

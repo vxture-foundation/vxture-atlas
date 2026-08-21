@@ -41,7 +41,7 @@ on:
   # carry). Every release therefore shipped a Dockerfile nobody had run.
   #
   # Now the image is on GHCR before the merge:
-  #   docker pull ghcr.io/vxture/atlas-app:sha-<short>
+  #   docker pull ghcr.io/vxture-foundation/atlas-app:sha-<short>
   #   IMAGE_TAG=sha-<short> docker compose --profile dev up -d
   # and what gets verified is the exact binary the release will deploy, not a
   # local rebuild of it.
@@ -77,7 +77,13 @@ jobs:
     outputs:
       image_tag: ${{ steps.meta.outputs.image_tag }}
     env:
-      GHCR_NAMESPACE: vxture
+      # Derived, not a literal: GITHUB_TOKEN can only push GHCR packages into
+      # the org that owns this repo. A literal 'vxture' here (carried over
+      # verbatim from the original repo during the vxture-foundation
+      # migration) pushed to ghcr.io/vxture/atlas-app and 403'd - this repo's
+      # token has no installation in that org at all. Deriving from
+      # repository_owner means a future fork can't reintroduce the same bug.
+      GHCR_NAMESPACE: ${{ github.repository_owner }}
       # A PR build publishes to GHCR only; ACR is the production registry and
       # a PR image in it would be cost and noise.
       GHCR_ONLY: ${{ github.event_name == 'pull_request' }}

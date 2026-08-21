@@ -1,40 +1,28 @@
 name: deploy
 
-# Tag-triggered production deploy. A v*.*.* tag builds the image and deploys the
-# production stack on worker-02 (100.76.219.48, owner-confirmed 2026-07-24 -
-# see docs/50-deployment/00-index.md and docs/70-workplan/00-index.md Phase 6),
-# stack root /srv/md0/atlas, published port 3100 (fixed - see the org port
-# registry). The production GitHub Environment carries a
-# required-reviewer gate, so the deploy job pauses until approved.
+# Manually-dispatched production deploy - no push:tags auto-trigger, so a raw
+# `git push --tags` can never deploy on its own. Every deploy is a deliberate
+# workflow_dispatch, either via release.yml's flow or run directly (both
+# require the same repo write access, so this is not a lesser path - see
+# release.yml's own header for why a retry-of-an-existing-tag path stays
+# separate from cutting a new release). Deploys the production stack on
+# worker-02 (100.76.219.48), stack root /srv/md0/atlas, port 3100 - shared
+# with the vxture org's own Atlas deployment on the same host (deliberate;
+# see the migration history).
 #
-# First real end-to-end run: v0.3.1, 2026-08-12 (TD-032) - docker-build,
-# deploy, and the reviewer gate all exercised for real, verified live
-# afterward via /healthz + /readyz on the production host. v0.3.0 (same day)
-# failed at the image push - see TD-032 for that fix.
+# Dispatch must target a TAG ref (`gh workflow run deploy.yml --ref
+# v0.12.0`): `detect` below routes on `github.ref_name` and hard-fails on
+# anything that is not vX.Y.Z, so a dispatch from `main` aborts immediately.
 #
 # BETA TIER PENDING (140-repo-governance-standard.md section 4): beta +
 # production is the standard two-tier model for every vxture product. Only the
 # beta half is dormant: during the development phase everything deploys
 # straight to production, and beta is a reserved release channel awaiting its
-# own separate server. Track as a TD in docs/60-operations/10-tech-debt.md once
-# this repo is live.
+# own separate server.
 #
 # Add the beta-* trigger and routing branch ONLY when that server exists - a tag
 # prefix with no environment behind it deploys nothing and fails confusingly.
 on:
-  push:
-    tags:
-      - 'v*.*.*'
-  # Dispatch must be aimed at a TAG ref (`gh workflow run deploy.yml --ref
-  # v0.12.0`), which is how release.yml starts a deploy: `detect` below routes
-  # on `github.ref_name` and hard-fails on anything that is not vX.Y.Z, so a
-  # dispatch from `main` aborts immediately.
-  #
-  # There was an `explicit_environment` input here, described as a debug
-  # override. It appeared exactly once in this file - its own declaration - and
-  # nothing ever read it, so selecting `production` in the UI did nothing
-  # whatsoever while looking like a deliberate choice. Routing has always come
-  # from the tag alone.
   workflow_dispatch:
 
 # Serialize per target environment (production), never per tag. An in-flight
@@ -214,6 +202,12 @@ jobs:
           ALIYUN_ACR_PASSWORD: ${{ secrets.ALIYUN_ACR_PASSWORD }}
           GHCR_USERNAME: ${{ github.actor }}
           GHCR_TOKEN: ${{ github.token }}
+          # Repo variable, not a literal: which registry worker-02 pulls from
+          # first. 'acr' or 'ghcr'. GHCR_NAMESPACE is derived, not hardcoded -
+          # see build.yml's GHCR_NAMESPACE comment for why a literal org name
+          # here breaks on any future fork.
+          IMAGE_PRIMARY_REGISTRY: ${{ vars.IMAGE_PRIMARY_REGISTRY }}
+          GHCR_NAMESPACE: ${{ github.repository_owner }}
         run: |
           set -euo pipefail
           port="${DEPLOY_PORT:-22}"
@@ -221,6 +215,26 @@ jobs:
           image_tag="$IMAGE_TAG"
           test -n "$image_tag"
           ssh_opts=(-i ~/.ssh/deploy_key -p "$port" -o ServerAliveInterval=30 -o ServerAliveCountMax=20 -o ConnectTimeout=30)
+
+          # Primary/fallback registry pair, driven by the IMAGE_PRIMARY_REGISTRY
+          # repo variable rather than hardcoded - computed here (not inside the
+          # quoted REMOTE_SCRIPT heredoc below, where $VARS are deliberately
+          # left unexpanded for the remote shell) and handed to the remote host
+          # via remote_env, same as every other value below.
+          case "$IMAGE_PRIMARY_REGISTRY" in
+            acr)
+              image_registry="$ALIYUN_ACR_REGISTRY"; image_namespace="$ALIYUN_ACR_NAMESPACE"
+              fallback_image_registry="ghcr.io"; fallback_image_namespace="$GHCR_NAMESPACE"
+              ;;
+            ghcr)
+              image_registry="ghcr.io"; image_namespace="$GHCR_NAMESPACE"
+              fallback_image_registry="$ALIYUN_ACR_REGISTRY"; fallback_image_namespace="$ALIYUN_ACR_NAMESPACE"
+              ;;
+            *)
+              echo "::error::IMAGE_PRIMARY_REGISTRY repo variable must be 'acr' or 'ghcr' (got '$IMAGE_PRIMARY_REGISTRY')" >&2
+              exit 1
+              ;;
+          esac
 
           # Push only the deploy subset (deploy/, configs/, docker-compose.yml)
           # via one staged --delete rsync; the operator .env lives at
@@ -244,19 +258,22 @@ jobs:
             "grep -qE 'container_name:.*-postgres-db-' '$deploy_dir/docker-compose.yml' && echo '[deliver] compose declares a postgres db service' || { echo '[deliver] ERROR: delivered compose has no postgres db service' >&2; exit 1; }"
           ssh "${ssh_opts[@]}" "$DEPLOY_USER@$DEPLOY_HOST" "printf '%s\n' '$PASSED_SHA' > '$deploy_dir/VERSION'"
 
-          # Remote deploy script: registry primary/fallback for worker-02.
-          # Owner decision 2026-07-26 - ACR primary / GHCR fallback. This is a
-          # deliberate deviation from governance section 5's default for
-          # non-VPC hosts (GHCR primary) - see docs/50-deployment/00-index.md
-          # for the recorded reasoning.
+          # Remote deploy script: registry primary/fallback for worker-02,
+          # chosen by the IMAGE_PRIMARY_REGISTRY repo variable above (owner
+          # decision 2026-07-26 set it to ACR primary / GHCR fallback for this
+          # host - a deliberate deviation from governance section 5's default
+          # for non-VPC hosts (GHCR primary), see docs/50-deployment/00-index.md).
+          # The four values below are computed above and injected via
+          # remote_env, not hardcoded here - this heredoc is quoted, so $VARS
+          # in it are resolved on the REMOTE host from that injected env.
           cat > /tmp/deploy.sh <<'REMOTE_SCRIPT'
           set -euo pipefail
           cd "$REPO_DIR"
-          export IMAGE_REGISTRY="$ALIYUN_ACR_REGISTRY"
-          export IMAGE_NAMESPACE="$ALIYUN_ACR_NAMESPACE"
+          export IMAGE_REGISTRY="$IMAGE_REGISTRY"
+          export IMAGE_NAMESPACE="$IMAGE_NAMESPACE"
           export IMAGE_TAG="$IMAGE_TAG"
-          export FALLBACK_IMAGE_REGISTRY="ghcr.io"
-          export FALLBACK_IMAGE_NAMESPACE="vxture"
+          export FALLBACK_IMAGE_REGISTRY="$FALLBACK_IMAGE_REGISTRY"
+          export FALLBACK_IMAGE_NAMESPACE="$FALLBACK_IMAGE_NAMESPACE"
           if [ -n "${ALIYUN_ACR_USERNAME:-}" ] && [ -n "${ALIYUN_ACR_PASSWORD:-}" ]; then
             for attempt in 1 2 3 4 5; do
               printf '%s' "$ALIYUN_ACR_PASSWORD" | timeout 45 docker login "$ALIYUN_ACR_REGISTRY" -u "$ALIYUN_ACR_USERNAME" --password-stdin && break || sleep $((attempt * 5))
@@ -287,6 +304,8 @@ jobs:
             "ALIYUN_ACR_REGISTRY=$ALIYUN_ACR_REGISTRY" "ALIYUN_ACR_NAMESPACE=$ALIYUN_ACR_NAMESPACE"
             "ALIYUN_ACR_USERNAME=$ALIYUN_ACR_USERNAME" "ALIYUN_ACR_PASSWORD=$ALIYUN_ACR_PASSWORD"
             "GHCR_USERNAME=$GHCR_USERNAME" "GHCR_TOKEN=$GHCR_TOKEN"
+            "IMAGE_REGISTRY=$image_registry" "IMAGE_NAMESPACE=$image_namespace"
+            "FALLBACK_IMAGE_REGISTRY=$fallback_image_registry" "FALLBACK_IMAGE_NAMESPACE=$fallback_image_namespace"
           )
           remote_cmd=""
           for item in "${remote_env[@]}"; do

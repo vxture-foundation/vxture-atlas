@@ -86,7 +86,12 @@ envfile_value() { grep -E "^${1}=" "$ENV_FILE" 2>/dev/null | head -1 | cut -d= -
 IMAGE_REGISTRY="${IMAGE_REGISTRY:-$(envfile_value IMAGE_REGISTRY)}"
 IMAGE_REGISTRY="${IMAGE_REGISTRY:-ghcr.io}"
 IMAGE_NAMESPACE="${IMAGE_NAMESPACE:-$(envfile_value IMAGE_NAMESPACE)}"
-IMAGE_NAMESPACE="${IMAGE_NAMESPACE:-vxture}"
+# vxture-foundation, not vxture: this is a plain bash script with no GHA
+# context to derive the org from (unlike the workflows, which read
+# github.repository_owner - see build.yml's GHCR_NAMESPACE comment). This
+# path only matters for a bare `deploy.sh start` on the host with neither an
+# explicit env nor an IMAGE_NAMESPACE line in etc/.env - CI always sets one.
+IMAGE_NAMESPACE="${IMAGE_NAMESPACE:-vxture-foundation}"
 if [ -z "${IMAGE_TAG:-}" ] && [ -s "$DEPLOY_DIR/VERSION" ]; then
   IMAGE_TAG="sha-$(head -1 "$DEPLOY_DIR/VERSION" | cut -c1-7)"
 fi

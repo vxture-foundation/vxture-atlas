@@ -39,6 +39,7 @@ concurrency:
 permissions:
   contents: write # create the tag and the release
   actions: write # start deploy.yml (see the last step for why that is manual)
+  checks: read # read this commit's check-runs to verify the required set passed
 
 jobs:
   release:

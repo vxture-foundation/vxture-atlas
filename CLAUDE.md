@@ -164,8 +164,8 @@ Always branch off `origin/main`, never off a stale local branch.
 
    ```
    PR=249                       # your PR number
-   docker pull ghcr.io/vxture/atlas-app:pr-$PR
-   PROJECT_NAME=atlas-val DEPLOY_ENV=val DATA_DIR=./data/val      APP_PUBLISH_PORT=3102 IMAGE=ghcr.io/vxture/atlas-app IMAGE_TAG=pr-$PR      DATABASE_URL=postgresql://atlas_svc:PW@db:5432/vx_atlas_db      docker compose --profile dev up -d
+   docker pull ghcr.io/vxture-foundation/atlas-app:pr-$PR
+   PROJECT_NAME=atlas-val DEPLOY_ENV=val DATA_DIR=./data/val      APP_PUBLISH_PORT=3102 IMAGE=ghcr.io/vxture-foundation/atlas-app IMAGE_TAG=pr-$PR      DATABASE_URL=postgresql://atlas_svc:PW@db:5432/vx_atlas_db      docker compose --profile dev up -d
    curl localhost:3102/healthz && curl localhost:3102/readyz
    ```
 
@@ -174,7 +174,7 @@ Always branch off `origin/main`, never off a stale local branch.
 
    ```
    gh workflow run build.yml --ref main -f pass_sha=$(git rev-parse HEAD)
-   docker pull ghcr.io/vxture/atlas-app:sha-$(git rev-parse --short HEAD)
+   docker pull ghcr.io/vxture-foundation/atlas-app:sha-$(git rev-parse --short HEAD)
    ```
 
    That build tags `APP_VERSION=dev` because its ref is a branch, and it
@@ -205,15 +205,21 @@ Always branch off `origin/main`, never off a stale local branch.
    If a step genuinely cannot run here - the image build needs a token this
    machine does not have - **say so plainly** and name what was verified
    instead. Never imply a local run that did not happen.
-4. Open a PR into `main`. Direct `git push origin main` is BLOCKED by the ruleset
-   (must go through a PR, and the required checks must pass).
+4. Open a PR into `main`. On `vxture-foundation`'s current plan (private repo,
+   Free), **nothing technically blocks a direct `git push origin main`** - see
+   the Branch protection section below. Going through a PR here is discipline,
+   not enforcement; a direct push still lands, silently, except for the
+   `direct-push-audit` workflow flagging it after the fact.
 5. CI runs on the PR. Squash-merge once green; the branch is auto-deleted on
    merge. This does not deploy anything.
 6. When ready to release, cut a tag from the commit you want deployed and push it.
    Deploying to ANY environment - dev included - follows step 3 first.
 
-Squash merge only (merge commits and rebase merges are disabled) to keep a linear
-history.
+Squash merge only (merge commits and rebase merges are disabled at the repo
+settings level - `allow_merge_commit`/`allow_rebase_merge` are `false`,
+`delete_branch_on_merge` is `true`). This one **is** actually enforced by
+GitHub regardless of plan - unlike the PR-required/status-checks gate below,
+merge-method restriction is a plain repo setting, not a Ruleset.
 
 ### Bootstrap order (empty repo)
 
@@ -224,8 +230,50 @@ import would block that import.
 
 ## Branch protection (GitHub Rulesets, not legacy protection)
 
-Enforced via repo Rulesets (`gh api repos/vxture/<repo>/rulesets`). The
-authoritative ruleset is `docs/50-deployment/rebuild/main-ruleset.json`.
+**Not currently applied on this fork - confirmed unavailable, not just
+unconfigured.** Both `gh api repos/vxture-foundation/vxture-atlas/rulesets`
+(Rulesets) and the legacy `branches/main/protection` API return the same 403:
+`Upgrade to GitHub Pro or make this repository public to enable this
+feature.` `vxture-foundation` is a Free-plan org and this repo is private;
+GitHub does not offer branch protection of either kind on that combination,
+full stop - there is no bypass_actor or misconfiguration to fix here, the
+feature itself is gated off. The org-secrets-for-private-repos gap and the
+production Environment's required-reviewer gap (see docs/50-deployment/
+00-index.md) are the same root cause. All three are solved at once by
+upgrading to GitHub Team; until/unless that happens, treat everything below
+as the design intent for when a ruleset CAN be applied, not as a description
+of current enforcement. The `direct-push-audit` workflow
+(`.github/workflows/direct-push-audit.yml`) is the compensating control in
+the meantime: it cannot block a direct push, but it flags one - loudly, via
+an auto-opened issue - the moment one lands.
+
+**Discipline substitute - non-negotiable until the tooling exists.** Since
+nothing technical enforces the rules below, every one of them is a hard rule
+for every contributor and every agent working in this repo, human oversight
+included:
+
+1. Every change to `main` goes through a branch + PR, always - not "it's a
+   small fix," not "I'm iterating fast," no exceptions carved out in the
+   moment. A direct push is a process failure to fix, not a shortcut to take.
+2. A PR does not get merged until its five required checks
+   (`quality-gate`/`build`/`test-coverage`/`audit`/`gitleaks`) show green on
+   that PR - checked by eye, since nothing blocks merging early.
+3. Squash-merge only, using the PR title as the commit message - never a
+   manual merge commit (the repo setting blocks this one technically, but
+   don't rely on the setting alone; know why it's there).
+4. Cross-cutting discussion, decisions, and any product-to-product
+   coordination happen in Issues, not in chat or ephemeral channels - the
+   same `liaison` convention `docs/80-liaison/` already uses for cross-repo
+   traffic applies to this repo's own internal coordination too. If it isn't
+   in an Issue, it didn't happen, for the purpose of anyone reconstructing
+   why a decision was made.
+5. Read `direct-push-audit`'s open issues (label `direct-push`) before
+   trusting `main`'s history is clean. A bypass that already landed cannot be
+   undone by this rule, but it should never be silently ignored either.
+
+Design (apply via `gh api repos/vxture-foundation/vxture-atlas/rulesets` once
+upgraded). The authoritative ruleset is
+`docs/50-deployment/rebuild/main-ruleset.json`.
 
 **Required checks (authoritative set of five):** `quality-gate` / `build` /
 `test-coverage` / `audit` / `gitleaks`. CI job names must produce exactly these

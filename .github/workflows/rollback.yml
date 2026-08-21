@@ -80,9 +80,12 @@ jobs:
         shell: bash
         env:
           IMAGE_TAG: ${{ steps.sha.outputs.image_tag }}
+          # Derived, not a literal 'vxture' - see build.yml's GHCR_NAMESPACE
+          # comment for why a hardcoded org name here breaks on any fork.
+          GHCR_NAMESPACE: ${{ github.repository_owner }}
         run: |
           set -euo pipefail
-          docker buildx imagetools inspect "ghcr.io/vxture/${PRODUCT_CODE}-app:${IMAGE_TAG}" >/dev/null
+          docker buildx imagetools inspect "ghcr.io/${GHCR_NAMESPACE}/${PRODUCT_CODE}-app:${IMAGE_TAG}" >/dev/null
 
       - name: Join tailnet and prepare SSH
         uses: ./.github/actions/tailnet-ssh-connect
@@ -110,6 +113,9 @@ jobs:
           ALIYUN_ACR_PASSWORD: ${{ secrets.ALIYUN_ACR_PASSWORD }}
           GHCR_USERNAME: ${{ github.actor }}
           GHCR_TOKEN: ${{ github.token }}
+          # Derived, not a literal 'vxture' - see build.yml's GHCR_NAMESPACE
+          # comment for why a hardcoded org name here breaks on any fork.
+          GHCR_NAMESPACE: ${{ github.repository_owner }}
         run: |
           set -euo pipefail
           port="${DEPLOY_PORT:-22}"
@@ -120,7 +126,7 @@ jobs:
           set -euo pipefail
           cd "$REPO_DIR"
           export IMAGE_REGISTRY="ghcr.io"
-          export IMAGE_NAMESPACE="vxture"
+          export IMAGE_NAMESPACE="$IMAGE_NAMESPACE"
           export IMAGE_TAG="$IMAGE_TAG"
           export FALLBACK_IMAGE_REGISTRY="$ALIYUN_ACR_REGISTRY"
           export FALLBACK_IMAGE_NAMESPACE="$ALIYUN_ACR_NAMESPACE"
@@ -143,6 +149,7 @@ jobs:
             "ALIYUN_ACR_REGISTRY=$ALIYUN_ACR_REGISTRY" "ALIYUN_ACR_NAMESPACE=$ALIYUN_ACR_NAMESPACE"
             "ALIYUN_ACR_USERNAME=$ALIYUN_ACR_USERNAME" "ALIYUN_ACR_PASSWORD=$ALIYUN_ACR_PASSWORD"
             "GHCR_USERNAME=$GHCR_USERNAME" "GHCR_TOKEN=$GHCR_TOKEN"
+            "IMAGE_NAMESPACE=$GHCR_NAMESPACE"
           )
           remote_cmd=""
           for item in "${remote_env[@]}"; do

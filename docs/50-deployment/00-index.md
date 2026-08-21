@@ -172,4 +172,5 @@ not per-repo) uses an Aliyun Docker Hub mirror. Atlas's stack pulls only
 ## Branch protection
 
 `rebuild/main-ruleset.json` is authoritative; apply via
-`gh api repos/vxture/vxture-atlas/rulesets`. `bypass_actors` must stay empty.
+`gh api repos/vxture-foundation/vxture-atlas/rulesets`. `bypass_actors` must
+stay empty.
