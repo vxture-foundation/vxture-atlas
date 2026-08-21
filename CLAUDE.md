@@ -215,8 +215,11 @@ Always branch off `origin/main`, never off a stale local branch.
 6. When ready to release, cut a tag from the commit you want deployed and push it.
    Deploying to ANY environment - dev included - follows step 3 first.
 
-Squash merge only (merge commits and rebase merges are disabled) to keep a linear
-history.
+Squash merge only (merge commits and rebase merges are disabled at the repo
+settings level - `allow_merge_commit`/`allow_rebase_merge` are `false`,
+`delete_branch_on_merge` is `true`). This one **is** actually enforced by
+GitHub regardless of plan - unlike the PR-required/status-checks gate below,
+merge-method restriction is a plain repo setting, not a Ruleset.
 
 ### Bootstrap order (empty repo)
 
@@ -243,6 +246,30 @@ of current enforcement. The `direct-push-audit` workflow
 (`.github/workflows/direct-push-audit.yml`) is the compensating control in
 the meantime: it cannot block a direct push, but it flags one - loudly, via
 an auto-opened issue - the moment one lands.
+
+**Discipline substitute - non-negotiable until the tooling exists.** Since
+nothing technical enforces the rules below, every one of them is a hard rule
+for every contributor and every agent working in this repo, human oversight
+included:
+
+1. Every change to `main` goes through a branch + PR, always - not "it's a
+   small fix," not "I'm iterating fast," no exceptions carved out in the
+   moment. A direct push is a process failure to fix, not a shortcut to take.
+2. A PR does not get merged until its five required checks
+   (`quality-gate`/`build`/`test-coverage`/`audit`/`gitleaks`) show green on
+   that PR - checked by eye, since nothing blocks merging early.
+3. Squash-merge only, using the PR title as the commit message - never a
+   manual merge commit (the repo setting blocks this one technically, but
+   don't rely on the setting alone; know why it's there).
+4. Cross-cutting discussion, decisions, and any product-to-product
+   coordination happen in Issues, not in chat or ephemeral channels - the
+   same `liaison` convention `docs/80-liaison/` already uses for cross-repo
+   traffic applies to this repo's own internal coordination too. If it isn't
+   in an Issue, it didn't happen, for the purpose of anyone reconstructing
+   why a decision was made.
+5. Read `direct-push-audit`'s open issues (label `direct-push`) before
+   trusting `main`'s history is clean. A bypass that already landed cannot be
+   undone by this rule, but it should never be silently ignored either.
 
 Design (apply via `gh api repos/vxture-foundation/vxture-atlas/rulesets` once
 upgraded). The authoritative ruleset is
