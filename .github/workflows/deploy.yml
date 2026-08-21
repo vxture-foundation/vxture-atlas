@@ -1,40 +1,28 @@
 name: deploy
 
-# Tag-triggered production deploy. A v*.*.* tag builds the image and deploys the
-# production stack on worker-02 (100.76.219.48, owner-confirmed 2026-07-24 -
-# see docs/50-deployment/00-index.md and docs/70-workplan/00-index.md Phase 6),
-# stack root /srv/md0/atlas, published port 3100 (fixed - see the org port
-# registry). The production GitHub Environment carries a
-# required-reviewer gate, so the deploy job pauses until approved.
+# Manually-dispatched production deploy - no push:tags auto-trigger, so a raw
+# `git push --tags` can never deploy on its own. Every deploy is a deliberate
+# workflow_dispatch, either via release.yml's flow or run directly (both
+# require the same repo write access, so this is not a lesser path - see
+# release.yml's own header for why a retry-of-an-existing-tag path stays
+# separate from cutting a new release). Deploys the production stack on
+# worker-02 (100.76.219.48), stack root /srv/md0/atlas, port 3100 - shared
+# with the vxture org's own Atlas deployment on the same host (deliberate;
+# see the migration history).
 #
-# First real end-to-end run: v0.3.1, 2026-08-12 (TD-032) - docker-build,
-# deploy, and the reviewer gate all exercised for real, verified live
-# afterward via /healthz + /readyz on the production host. v0.3.0 (same day)
-# failed at the image push - see TD-032 for that fix.
+# Dispatch must target a TAG ref (`gh workflow run deploy.yml --ref
+# v0.12.0`): `detect` below routes on `github.ref_name` and hard-fails on
+# anything that is not vX.Y.Z, so a dispatch from `main` aborts immediately.
 #
 # BETA TIER PENDING (140-repo-governance-standard.md section 4): beta +
 # production is the standard two-tier model for every vxture product. Only the
 # beta half is dormant: during the development phase everything deploys
 # straight to production, and beta is a reserved release channel awaiting its
-# own separate server. Track as a TD in docs/60-operations/10-tech-debt.md once
-# this repo is live.
+# own separate server.
 #
 # Add the beta-* trigger and routing branch ONLY when that server exists - a tag
 # prefix with no environment behind it deploys nothing and fails confusingly.
 on:
-  push:
-    tags:
-      - 'v*.*.*'
-  # Dispatch must be aimed at a TAG ref (`gh workflow run deploy.yml --ref
-  # v0.12.0`), which is how release.yml starts a deploy: `detect` below routes
-  # on `github.ref_name` and hard-fails on anything that is not vX.Y.Z, so a
-  # dispatch from `main` aborts immediately.
-  #
-  # There was an `explicit_environment` input here, described as a debug
-  # override. It appeared exactly once in this file - its own declaration - and
-  # nothing ever read it, so selecting `production` in the UI did nothing
-  # whatsoever while looking like a deliberate choice. Routing has always come
-  # from the tag alone.
   workflow_dispatch:
 
 # Serialize per target environment (production), never per tag. An in-flight
