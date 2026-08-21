@@ -1,0 +1,21 @@
+{
+  "name": "vxture-atlas",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Atlas - Vxture's L1 model platform: unified model access, routing, quota and metering.",
+  "packageManager": "pnpm@11.21.0",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "build": "pnpm --filter @atlas/service build",
+    "type-check:all": "pnpm --filter @atlas/service type-check",
+    "lint": "pnpm --recursive --if-present lint",
+    "lint:docs-numbering": "node scripts/guardrails/check-docs-numbering.mjs --strict",
+    "lint:data-design": "node scripts/guardrails/check-data-architecture.mjs --strict",
+    "lint:workflows": "node scripts/guardrails/check-workflows.mjs --strict",
+    "lint:error-codes": "node scripts/guardrails/check-error-codes.mjs --strict",
+    "lint:query-filters": "node scripts/guardrails/check-query-filters.mjs --strict",
+    "lint:liaison-archive": "node scripts/guardrails/check-liaison-archive.mjs --strict"
+  }
+}

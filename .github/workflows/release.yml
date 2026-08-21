@@ -1,0 +1,197 @@
+name: release
+
+# Cut a production release: verify main, create the tag SERVER-SIDE, publish
+# release notes, then start the deploy.
+#
+#   gh workflow run release.yml -f version=v0.12.0
+#
+# Why this exists rather than `git push origin vX.Y.Z` from a laptop. The tag
+# IS the release - it selects the environment (docs/50-deployment/00-index.md)
+# and its name becomes APP_VERSION in the running container. A locally pushed
+# tag therefore ships whatever that machine happened to have checked out, with
+# no record of what was verified, and the only thing standing between a typo
+# and production is the person typing. Everything this workflow asserts was
+# previously assumed:
+#
+#   - the tag points at origin/main, not at a stale local main
+#   - every required check PASSED on that exact commit (not "CI was green
+#     yesterday" - the checks are re-read from the commit being released)
+#   - the version is not already taken, so a re-run cannot silently re-release
+#   - the release notes exist and say which commits shipped
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version, vX.Y.Z (semver, v-prefixed)"
+        required: true
+        type: string
+      notes:
+        description: "One-line summary; commit list is generated below it"
+        required: false
+        type: string
+
+# Shares the deploy lane on purpose: this workflow ENDS by starting a deploy,
+# so letting two releases interleave here would interleave the deploys too.
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+permissions:
+  contents: write # create the tag and the release
+  actions: write # start deploy.yml (see the last step for why that is manual)
+
+jobs:
+  release:
+    name: release
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Validate the version
+        shell: bash
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          # deploy.yml's `detect` job routes on this shape and hard-fails on
+          # anything else, so a malformed tag would produce a deploy that dies
+          # after the tag already exists - the worst order to fail in.
+          if ! printf '%s' "$VERSION" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "::error::version must be vX.Y.Z (got '$VERSION')" >&2
+            exit 1
+          fi
+
+      - name: Checkout main
+        uses: actions/checkout@v7
+        with:
+          ref: main
+          # Full history: the notes below diff against the previous tag.
+          fetch-depth: 0
+
+      - name: Refuse a version that already exists
+        shell: bash
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          if git rev-parse -q --verify "refs/tags/${VERSION}" >/dev/null; then
+            echo "::error::tag ${VERSION} already exists - releasing it again would move nothing and confuse every consumer of the VERSION file" >&2
+            exit 1
+          fi
+
+      - name: Require every branch-protection check to have passed on this commit
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          sha="$(git rev-parse HEAD)"
+          echo "releasing $sha"
+
+          # The required set is READ from the ruleset rather than written here.
+          # CLAUDE.md names main-ruleset.json as the authority for it; a second
+          # hand-maintained copy in this file would drift, and it would drift
+          # in the direction of checking less.
+          mapfile -t required < <(
+            jq -r '.rules[] | select(.type=="required_status_checks")
+                   | .parameters.required_status_checks[].context' \
+              docs/50-deployment/rebuild/main-ruleset.json
+          )
+          if [ "${#required[@]}" -eq 0 ]; then
+            echo "::error::no required checks found in main-ruleset.json - refusing to release against an unknown gate" >&2
+            exit 1
+          fi
+          echo "required checks: ${required[*]}"
+
+          runs="$(gh api "repos/${REPO}/commits/${sha}/check-runs?per_page=100" \
+                    --jq '.check_runs[] | "\(.name)=\(.conclusion // "pending")"')"
+          echo "$runs"
+
+          missing=0
+          for check in "${required[@]}"; do
+            # A check that never REPORTED is as blocking as one that failed:
+            # "absent" is how a release slips past a gate that silently stopped
+            # running, which is the failure this whole step exists to prevent.
+            conclusion="$(printf '%s\n' "$runs" | grep -m1 "^${check}=" | cut -d= -f2 || true)"
+            if [ -z "$conclusion" ]; then
+              echo "::error::required check '${check}' never reported on ${sha}"
+              missing=1
+            elif [ "$conclusion" != "success" ]; then
+              echo "::error::required check '${check}' is '${conclusion}' on ${sha}"
+              missing=1
+            fi
+          done
+          [ "$missing" -eq 0 ] || exit 1
+          echo "all required checks passed on ${sha}"
+          echo "RELEASE_SHA=$sha" >> "$GITHUB_ENV"
+
+      - name: Compose release notes
+        shell: bash
+        env:
+          VERSION: ${{ inputs.version }}
+          SUMMARY: ${{ inputs.notes }}
+        run: |
+          set -euo pipefail
+          previous="$(git describe --tags --abbrev=0 --match 'v*.*.*' 2>/dev/null || true)"
+          {
+            if [ -n "${SUMMARY}" ]; then printf '%s\n\n' "${SUMMARY}"; fi
+            if [ -n "$previous" ]; then
+              printf 'Commits since %s:\n\n' "$previous"
+              git log --no-merges --pretty='- %s' "${previous}..HEAD"
+            else
+              printf 'First tagged release. Commits:\n\n'
+              git log --no-merges --pretty='- %s' -n 50
+            fi
+            printf '\nCommit: %s\n' "${RELEASE_SHA}"
+          } > release-notes.md
+          cat release-notes.md
+
+      - name: Create the tag and publish the release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          # --target pins the tag to the SHA that was just verified, so the tag
+          # cannot land on a commit that arrived on main mid-run.
+          gh release create "$VERSION" \
+            --target "${RELEASE_SHA}" \
+            --title "$VERSION" \
+            --notes-file release-notes.md
+          echo "released ${VERSION} at ${RELEASE_SHA}"
+
+      - name: Start the deploy
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          # deploy.yml triggers on `push: tags: v*.*.*`, but a tag created with
+          # GITHUB_TOKEN does NOT raise that event - GitHub suppresses workflow
+          # triggers from token-authored refs to prevent recursion. So the
+          # release would publish and quietly deploy nothing.
+          #
+          # Dispatching against the TAG ref rather than a branch is what makes
+          # this work: deploy.yml's `detect` job routes on `github.ref_name`
+          # and hard-fails on anything that is not vX.Y.Z, so dispatching from
+          # `main` would abort. Pointing it at the tag gives detect exactly the
+          # ref name a tag push would have given it, and the production
+          # approval gate applies identically.
+          gh workflow run deploy.yml --ref "$VERSION"
+          echo "deploy dispatched for ${VERSION} - it waits on the production Environment approval"
+
+      - name: Summary
+        shell: bash
+        env:
+          VERSION: ${{ inputs.version }}
+          REPO: ${{ github.repository }}
+        run: |
+          {
+            echo "### Released ${VERSION}"
+            echo ""
+            echo "- commit: \`${RELEASE_SHA}\`"
+            echo "- release: https://github.com/${REPO}/releases/tag/${VERSION}"
+            echo "- deploy dispatched; it pauses for the \`production\` approval"
+          } >> "$GITHUB_STEP_SUMMARY"

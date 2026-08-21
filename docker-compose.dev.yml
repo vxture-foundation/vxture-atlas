@@ -1,0 +1,234 @@
+# docker-compose.dev.yml - the devbox: a self-contained Atlas with its own OIDC
+# issuer, for verifying guarded routes end to end on a laptop.
+#
+# ============================================================================
+# SELF-TEST ONLY. NOT FOR INTEGRATION WITH OTHER PRODUCTS. (owner, 2026-08-14)
+# ============================================================================
+#
+# Integration - a real karda/arda/opera calling Atlas - runs on the NORMAL
+# stack (`docker-compose.yml`, port 3100), against the real platform IdP. That
+# is the whole point of integration: the token comes from the issuer that will
+# mint it in production, so the exchange itself is under test.
+#
+# Use this stack only to verify Atlas against itself, where the question is
+# "does this route behave" and a token is just the cost of asking. The moment
+# a second product is involved, a token minted here would make the test prove
+# less than it appears to: it would exercise Atlas's verification against a
+# shape THIS repo chose, which is exactly the assumption an integration test
+# exists to stop trusting.
+#
+# The two file names are one character apart, which is the whole risk. Before
+# reaching for `-f docker-compose.dev.yml`, check which question you are
+# asking.
+#
+# WHY IT EXISTS. `docker-compose.yml` points at the platform IdP, and the local
+# smoke script has failed there on `invalid_client` for as long as it has
+# existed. So every local check of a guarded route could only reach "401 - the
+# route is registered"; nothing behind the guard - grant resolution, quota,
+# routing, failover, reqlog, audit - was reachable without deploying. This
+# stack mints its own tokens, so all of that becomes testable.
+#
+# ────────────────────────────────────────────────────────────────────────────
+# ISOLATION FROM PRODUCTION - by construction, not convention
+# ────────────────────────────────────────────────────────────────────────────
+#
+# 1. CRYPTOGRAPHIC, both directions and independently:
+#      - dev-issuer generates its keypair at startup, in memory, never on disk.
+#        Production's JWKS cannot contain it, so a devbox token fails signature
+#        verification there.
+#      - `iss` is http://dev-issuer:3181. Production checks `iss` against its
+#        own issuer, so a devbox token is rejected on the claim before the
+#        signature is even considered - and a production token fails here for
+#        the mirror reason.
+#    Neither direction depends on the other, so neither is a single point of
+#    failure.
+#
+# 2. NOTHING IS PARAMETERISED THAT COULD POINT AT PRODUCTION. DATABASE_URL and
+#    OIDC_ISSUER are literals below, not `${VAR}`. The usual isolation failure
+#    is a stray environment variable, and a value that cannot be supplied
+#    cannot be supplied wrongly. If you need this stack to talk to something
+#    else, you are no longer using this stack.
+#
+# 3. NO ENV FILE IS MOUNTED. `docker-compose.yml` reads ./.env, which holds
+#    real provider API keys and real database credentials. This file reads
+#    none, so no real upstream credential is reachable from here - the worst a
+#    misconfigured devbox can do is fail to call an upstream.
+#
+# 4. THE ISSUER PUBLISHES NO PORT AT ALL. Minting is reachable only from
+#    inside the stack's own network - see the comment on that service.
+#
+# 5. ITS OWN EVERYTHING. Project name, container names, network, volume and
+#    ports are all distinct, so it runs ALONGSIDE the normal dev stack rather
+#    than replacing it, and `docker compose down` here can never take that one
+#    with it.
+#
+# ────────────────────────────────────────────────────────────────────────────
+#   docker compose -f docker-compose.dev.yml up -d --build
+#   TOKEN=$(scripts/dev/devbox-token.sh operator)
+#   curl -s http://localhost:3101/capability/providers -H "authorization: Bearer $TOKEN"
+#   docker compose -f docker-compose.dev.yml down -v      # -v: the data is disposable
+# ────────────────────────────────────────────────────────────────────────────
+name: atlas-devbox
+
+services:
+  # The issuer. Zero dependencies - Node's crypto does RS256 and JWK export
+  # natively - so this is a plain node image with one file mounted. No build,
+  # no install, nothing to drift from the source in scripts/dev/dev-issuer/.
+  dev-issuer:
+    container_name: vx-atlas-dev-issuer-devbox
+    image: node:24-alpine
+    command: node /srv/server.mjs
+    working_dir: /srv
+    volumes:
+      - ./scripts/dev/dev-issuer:/srv:ro
+    environment:
+      PORT: "3181"
+      # Must match the app's OIDC_ISSUER below EXACTLY - it is the `iss` claim,
+      # and the guard compares strings.
+      DEV_ISSUER_URL: "http://dev-issuer:3181"
+    # NO PUBLISHED PORT, deliberately. The issuer is the one component here
+    # whose exposure grants a CAPABILITY - minting credentials - rather than
+    # access to disposable data, so it is reachable only from
+    # `atlas-devbox-net`: not from the host, not from the LAN, not from another
+    # compose project. Binding it to 127.0.0.1 would already be narrow, but
+    # narrow is not the same as absent.
+    #
+    # To mint, go through the container: scripts/dev/devbox-token.sh operator
+    # That is `docker exec`, so the ability to mint sits behind Docker daemon
+    # access rather than behind a listening socket.
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3181/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    # A stub OIDC issuer for self-test only - it never serves anything but a
+    # handful of JWKS and token responses, so it gets the smallest ceiling in
+    # the file. Measured at ~32MiB.
+    deploy:
+      resources:
+        limits:
+          cpus: "0.25"
+          memory: 128M
+          pids: 64
+        reservations:
+          memory: 32M
+    networks: [devbox]
+    restart: unless-stopped
+
+  app:
+    container_name: vx-atlas-app-devbox
+    build:
+      context: .
+      dockerfile: service/Dockerfile
+      args:
+        APP_VERSION: devbox
+        DEPLOY_STAGE: dev
+      # See the note in docker-compose.yml: the deps stage installs a private
+      # package and needs a token. Without this the devbox cannot be rebuilt
+      # once the lockfile changes, which is the moment you most need to.
+      secrets:
+        - node_auth_token
+    environment:
+      NODE_ENV: production
+      PORT: "3100"
+      # Literals, deliberately - see isolation note 2. `db` is this stack's own
+      # postgres service, unreachable from any other compose project.
+      DATABASE_URL: "postgresql://atlas_svc:devbox@db:5432/vx_atlas_db"
+      OIDC_ISSUER: "http://dev-issuer:3181"
+      S2S_AUDIENCE: "atlas"
+      # The devbox is the one place this is unambiguously correct: the whole
+      # stack is loopback-published and holds no real credential.
+      ALLOW_INTERNAL_DIAGNOSTICS: "1"
+      # Deterministic so a re-created container can still read what the seed
+      # wrote. Not a secret - it protects fixture ciphertext only, and the
+      # devbox holds no real provider credential.
+      #
+      # The names are exact: PROVIDER_KEY_ENCRYPTION_KEYS (plural) is a JSON
+      # map of {keyId: base64Key} and ACTIVE_KEY_ID names which entry encrypts
+      # new writes. The first version of this file invented a singular
+      # PROVIDER_KEY_ENCRYPTION_KEY, which the app never reads - so the vault
+      # was unconfigured and every provider-key create/rotate answered 500.
+      # Nothing warned at startup; it surfaced only when a rotation was
+      # actually attempted here.
+      PROVIDER_KEY_ENCRYPTION_KEYS: '{"devbox":"ZGV2Ym94LWZpeHR1cmUta2V5LTMyLWJ5dGVzLW9rISE="}'
+      PROVIDER_KEY_ENCRYPTION_ACTIVE_KEY_ID: "devbox"
+      PROVISION_WEBHOOK_SECRET: "devbox-webhook-secret"
+    ports:
+      - "127.0.0.1:3101:3100"
+    depends_on:
+      db:
+        condition: service_healthy
+      dev-issuer:
+        condition: service_healthy
+    healthcheck:
+      # PATH-resolved node works in both distroless (shipped symlink) and
+      # pre-distroless images - see docker-compose.yml.
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3100/healthz').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    # Tighter than the dev stack's app on purpose: devbox is the SELF-TEST
+    # stack (real integration runs against the dev stack and a real IdP), so
+    # it must never be the reason the dev stack is starved. Measured at
+    # ~153MiB, which is why 384M rather than the dev app's 512M.
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 384M
+          pids: 256
+        reservations:
+          cpus: "0.1"
+          memory: 128M
+    networks: [devbox]
+    restart: unless-stopped
+
+  db:
+    container_name: vx-atlas-postgres-db-devbox
+    image: postgres:18-alpine
+    environment:
+      POSTGRES_DB: vx_atlas_db
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: devbox
+    volumes:
+      # Postgres 18 layout: mount the PARENT, not .../data.
+      - devbox-pgdata:/var/lib/postgresql
+    ports:
+      # A port block of its own (3181/3101/5442), not the conventional ones.
+      # 5432 is the normal dev forwarder and 5433 is already the PLATFORM's dev
+      # database - the first attempt at this file collided with it, which is
+      # the isolation working, but a collision is a worse way to learn it than
+      # a comment. A host tool cannot reach the wrong database by habit here.
+      - "127.0.0.1:5442:5432"
+    healthcheck:
+      # Against the real database, not pg_isready: during first-time init the
+      # entrypoint runs a TEMP server before POSTGRES_DB exists, and
+      # pg_isready reports success in that phase.
+      test: ["CMD-SHELL", "psql -U postgres -d vx_atlas_db -c 'SELECT 1' >/dev/null 2>&1"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    # Self-test database: no real data, no partition runway to speak of, so it
+    # gets a fraction of the dev db's ceiling. Measured at ~77MiB.
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 256M
+          pids: 128
+        reservations:
+          memory: 64M
+    networks: [devbox]
+    restart: unless-stopped
+
+networks:
+  devbox:
+    name: atlas-devbox-net
+
+volumes:
+  devbox-pgdata:
+    name: atlas-devbox-pgdata
+
+secrets:
+  node_auth_token:
+    environment: NODE_AUTH_TOKEN

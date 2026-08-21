@@ -1,0 +1,74 @@
+name: sonar
+
+# Non-blocking SonarCloud analysis. NOT one of the five required checks (see
+# docs/50-deployment/rebuild/main-ruleset.json).
+#
+# This job reports its real exit status. It carried `continue-on-error: true`
+# from the repo split until 2026-08-06, and the flag hid the fact that every
+# run had failed with `403 Forbidden` from SonarCloud while reporting success -
+# Atlas has never actually been analysed.
+#
+# The 403 names SONAR_TOKEN, which sent the original diagnosis the wrong way.
+# The real cause is the organization's private-LOC quota: the Free plan allows
+# 50k private lines and 49.851k are consumed, because the Sonar projects are
+# classified Private while their GitHub repos are public (public lines are
+# unlimited). vxture-platform fails identically - one org, one quota. Fixing it
+# is an owner action on sonarcloud.io; see TD-027 and vxture/vxture-platform#189.
+#
+# A red job here blocks nothing. It is red so that "Atlas has never been
+# scanned" is visible instead of disguised, which is what the flag produced.
+
+on:
+  pull_request:
+    branches:
+      - main
+  push:
+    branches:
+      - main
+
+concurrency:
+  group: sonar-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || format('push-{0}', github.ref_name) }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  sonar:
+    name: SonarQube
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Set up Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+
+      - name: Enable corepack (pnpm from packageManager)
+        run: corepack enable
+
+      - name: Install (frozen lockfile)
+        # pnpm 11 ignores env-expanded credentials in the committed project
+        # .npmrc (secret-leak hardening), so auth goes to the runner's user
+        # npmrc; the project .npmrc keeps only the scope->registry mapping.
+        run: |
+          echo "//npm.pkg.github.com/:_authToken=${NODE_AUTH_TOKEN}" >> ~/.npmrc
+          pnpm install --frozen-lockfile
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NODE_AUTH_TOKEN }}
+
+      - name: Generate Prisma client
+        run: pnpm --filter @atlas/service db:generate
+
+      - name: Run tests (coverage)
+        run: pnpm --filter @atlas/service test:coverage
+
+      - name: SonarQube Scan
+        uses: SonarSource/sonarqube-scan-action@22918119ff8e1ca75a623e15c8296b6ea4fbe28f # v8.2.1
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}

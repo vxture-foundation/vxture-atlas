@@ -1,0 +1,81 @@
+name: tailnet-ssh-connect
+description: >
+  Join the tailnet and prepare an SSH key + known_hosts for the deploy host.
+  Shared by every workflow that SSHes to the deploy host (deploy.yml,
+  rollback.yml, db-init.yml) so the connection logic has one place to change.
+  Stores no credentials itself - every value is an input threaded through from
+  the caller's own secrets/vars context.
+
+inputs:
+  tailscale-oauth-client-id:
+    required: true
+  tailscale-oauth-secret:
+    required: true
+  tailscale-tag:
+    required: true
+  deploy-host:
+    required: true
+  deploy-port:
+    required: false
+    default: ''
+  deploy-ssh-key:
+    required: true
+  deploy-ssh-passphrase:
+    description: Passphrase for an encrypted deploy key (empty if the key is unencrypted)
+    required: false
+    default: ''
+  deploy-known-hosts:
+    required: false
+    default: ''
+
+runs:
+  using: composite
+  steps:
+    # ephemeral=true (the action default) auto-removes the tailnet node after
+    # the job. `ping` waits (up to ~3min) for a direct/relayed path to the
+    # deploy host BEFORE the caller's SSH steps run - fast failure instead of a
+    # silent SSH timeout.
+    - name: Connect to Tailscale
+      # Pinned to a full commit SHA (supply-chain): this action receives the
+      # tailnet OAuth client-id/secret, so a moved tag must not be able to run
+      # new code. Dependabot bumps the SHA + version comment.
+      uses: tailscale/github-action@306e68a486fd2350f2bfc3b19fcd143891a4a2d8 # v4
+      with:
+        oauth-client-id: ${{ inputs.tailscale-oauth-client-id }}
+        oauth-secret: ${{ inputs.tailscale-oauth-secret }}
+        tags: ${{ inputs.tailscale-tag }}
+        ping: ${{ inputs.deploy-host }}
+
+    - name: Prepare SSH
+      shell: bash
+      env:
+        DEPLOY_HOST: ${{ inputs.deploy-host }}
+        DEPLOY_PORT: ${{ inputs.deploy-port }}
+        DEPLOY_SSH_KEY: ${{ inputs.deploy-ssh-key }}
+        DEPLOY_SSH_PASSPHRASE: ${{ inputs.deploy-ssh-passphrase }}
+        DEPLOY_KNOWN_HOSTS: ${{ inputs.deploy-known-hosts }}
+      run: |
+        set -euo pipefail
+        mkdir -p ~/.ssh
+        chmod 700 ~/.ssh
+        printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/deploy_key
+        chmod 600 ~/.ssh/deploy_key
+
+        # If the key is passphrase-encrypted, strip the passphrase in place so
+        # `ssh -i deploy_key` works non-interactively (CI has no tty). The
+        # decrypted key exists only on the ephemeral runner (~/.ssh, wiped with
+        # the job); it never leaves the runner.
+        if [ -n "${DEPLOY_SSH_PASSPHRASE:-}" ]; then
+          ssh-keygen -p -P "$DEPLOY_SSH_PASSPHRASE" -N "" -f ~/.ssh/deploy_key >/dev/null
+        fi
+
+        if [ -n "${DEPLOY_KNOWN_HOSTS:-}" ]; then
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > ~/.ssh/known_hosts
+        else
+          # Fail closed: an empty DEPLOY_KNOWN_HOSTS must NOT fall back to
+          # ssh-keyscan (trust-on-first-use / MITM). Require the pinned host key.
+          echo "::error::DEPLOY_KNOWN_HOSTS is empty - refusing trust-on-first-use via ssh-keyscan." >&2
+          echo "Populate DEPLOY_KNOWN_HOSTS from a trusted network: ssh-keyscan -p <port> <host>" >&2
+          exit 1
+        fi
+        chmod 600 ~/.ssh/known_hosts

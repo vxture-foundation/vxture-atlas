@@ -1,0 +1,23 @@
+# osv-scanner suppression config (CI `audit` job, .github/workflows/ci.yml).
+#
+# EMPTY IGNORE BASELINE. The scaffold ships with zero accepted residuals - do
+# not copy another repo's named ignores. Every advisory osv-scanner reports on
+# pnpm-lock.yaml must be remediated (direct-dep floor bump / pnpm.overrides /
+# exact pin for peer-only deps), not suppressed here.
+#
+# When a residual genuinely cannot be fixed (dev-only/build-time-only transitive
+# that never reaches the deployed image, or an upstream pin that breaks on
+# force-upgrade), add ONE [[PackageOverrides]] entry naming that exact
+# package@version with a documented reason. Scope is intentionally
+# per-package-version (PackageOverrides), NOT a global IgnoredVulns by GHSA id -
+# so a future regression that reintroduces the same CVE on a *different* package
+# version is still surfaced. Never widen the gate (no continue-on-error, never
+# removed from the required set).
+#
+# Example (commented out - this repo has no accepted residuals):
+# [[PackageOverrides]]
+# name = "some-pkg"
+# version = "1.2.3"
+# ecosystem = "npm"
+# ignore = true
+# reason = "dev-server-only transitive; not shipped to production; upstream pins it"

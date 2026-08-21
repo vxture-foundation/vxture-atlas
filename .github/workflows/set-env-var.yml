@@ -1,0 +1,127 @@
+name: set-env-var
+
+# Updates or adds a single KEY=VALUE line in the already-bootstrapped operator
+# .env on the production host, then RECREATES the stack so it picks up the
+# change. deploy.yml's "Bootstrap .env" step is write-once (skips if the file
+# already exists) - there was previously no way to change an env var after
+# that first write. This fills that gap. Same governance as deploy.yml/
+# db-init.yml/logs.yml: tailnet-ssh-connect + DEPLOY_WORKER02_* + production
+# Environment gate.
+on:
+  workflow_dispatch:
+    inputs:
+      key:
+        description: "Env var name (e.g. INTERNAL_DIAGNOSTICS_ALLOW_IPS)"
+        required: true
+        type: string
+      value:
+        description: "Env var value"
+        required: true
+        type: string
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  PRODUCT_CODE: ${{ vars.PRODUCT_CODE || 'atlas' }}
+
+jobs:
+  set-env-var:
+    name: set-env-var
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment:
+      name: production
+    steps:
+      - name: Validate inputs and secrets
+        shell: bash
+        env:
+          KEY: ${{ inputs.key }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_WORKER02_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_WORKER02_USER }}
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_WORKER02_SSH_KEY }}
+          TAILSCALE_OAUTH_CLIENT_ID: ${{ secrets.TAILSCALE_OAUTH_CLIENT_ID }}
+          TAILSCALE_OAUTH_CLIENT_SECRET: ${{ secrets.TAILSCALE_OAUTH_CLIENT_SECRET }}
+        run: |
+          set -euo pipefail
+          test -n "$DEPLOY_HOST"
+          test -n "$DEPLOY_USER"
+          test -n "$DEPLOY_SSH_KEY"
+          test -n "$TAILSCALE_OAUTH_CLIENT_ID"
+          test -n "$TAILSCALE_OAUTH_CLIENT_SECRET"
+          case "$KEY" in
+            [A-Z_][A-Z0-9_]*) ;;
+            *) echo "::error::key must be SCREAMING_SNAKE_CASE (env var name)" >&2; exit 1 ;;
+          esac
+
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Join tailnet and prepare SSH
+        uses: ./.github/actions/tailnet-ssh-connect
+        with:
+          tailscale-oauth-client-id: ${{ secrets.TAILSCALE_OAUTH_CLIENT_ID }}
+          tailscale-oauth-secret: ${{ secrets.TAILSCALE_OAUTH_CLIENT_SECRET }}
+          tailscale-tag: ${{ vars.TAILSCALE_OAUTH_CLIENT_TAG }}
+          deploy-host: ${{ secrets.DEPLOY_WORKER02_HOST }}
+          deploy-port: ${{ secrets.DEPLOY_WORKER02_PORT }}
+          deploy-ssh-key: ${{ secrets.DEPLOY_WORKER02_SSH_KEY }}
+          deploy-ssh-passphrase: ${{ secrets.DEPLOY_WORKER02_SSH_KEY_PASSPHRASE }}
+          deploy-known-hosts: ${{ secrets.DEPLOY_WORKER02_KNOWN_HOSTS }}
+
+      - name: Update .env and recreate the stack
+        shell: bash
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_WORKER02_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_WORKER02_USER }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_WORKER02_PORT }}
+          KEY: ${{ inputs.key }}
+          VALUE: ${{ inputs.value }}
+        run: |
+          set -euo pipefail
+          port="${DEPLOY_PORT:-22}"
+          ssh_opts=(-i ~/.ssh/deploy_key -p "$port" -o ServerAliveInterval=30 -o ServerAliveCountMax=20 -o ConnectTimeout=30)
+          stack_root="/srv/md0/${PRODUCT_CODE}"
+          env_file="$stack_root/etc/.env"
+
+          # Pipe key/value over stdin (never argv) so the value never appears
+          # in the host's ps/proc; the remote script reads them from env vars
+          # set by the ssh invocation below instead of interpolating into the
+          # command string. Rewrite via grep -v + printf (not sed substitution) -
+          # sed replacement-text escaping for arbitrary values (/, &, \) is a
+          # well-known footgun; filtering the old line out and appending the
+          # new one sidesteps it entirely. Line order in a .env file doesn't
+          # matter for docker-compose/dotenv parsing.
+          remote_cmd='
+            set -euo pipefail
+            test -f "$ENV_FILE" || { echo "missing $ENV_FILE" >&2; exit 1; }
+            if grep -qE "^${KEY}=" "$ENV_FILE"; then
+              grep -vE "^${KEY}=" "$ENV_FILE" > "${ENV_FILE}.tmp"
+              printf "%s=%s\n" "$KEY" "$VALUE" >> "${ENV_FILE}.tmp"
+              mv "${ENV_FILE}.tmp" "$ENV_FILE"
+              chmod 600 "$ENV_FILE"
+              echo "[set-env-var] updated ${KEY} in $ENV_FILE"
+            else
+              printf "%s=%s\n" "$KEY" "$VALUE" >> "$ENV_FILE"
+              echo "[set-env-var] appended ${KEY} to $ENV_FILE"
+            fi
+            # RECREATE, not restart. env_file values are injected when a
+            # container is CREATED; `docker restart` stops and starts the same
+            # container with the environment it was born with, so the new value
+            # would not take effect. deploy.sh start is the sanctioned path
+            # (same one rollback.yml uses) and carries the full compose
+            # environment - container names included, which a hand-written
+            # `docker restart "${PRODUCT_CODE}-app"` got wrong: the container
+            # is vx-<code>-app-<env>, so that call could only ever answer
+            # "No such container" and the restart half of this workflow never
+            # ran at all.
+            cd "$STACK_ROOT/deploy"
+            bash deploy.sh start
+            bash deploy.sh verify
+          '
+          printf '%s\n' "ENV_FILE=$(printf %q "$env_file") KEY=$(printf %q "$KEY") VALUE=$(printf %q "$VALUE") PRODUCT_CODE=$(printf %q "$PRODUCT_CODE") STACK_ROOT=$(printf %q "$stack_root") bash -c $(printf %q "$remote_cmd")" \
+            | ssh "${ssh_opts[@]}" "$DEPLOY_USER@$DEPLOY_HOST" bash -s

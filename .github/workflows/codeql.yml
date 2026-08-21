@@ -1,0 +1,48 @@
+name: codeql
+
+# Static application security testing (SAST) for the service's TypeScript
+# source. Separate from secret-scan (gitleaks, which looks for committed
+# credentials) and trivy (build.yml, which scans the built container image's
+# OS/dependency layers) - this looks for actual code-level vulnerability
+# patterns (injection, unsafe deserialization, etc.) in the service's own
+# source. Free for public repos, no GHAS license needed.
+
+on:
+  pull_request:
+    branches:
+      - main
+  push:
+    branches:
+      - main
+  schedule:
+    # Weekly sweep catches new CodeQL query-pack findings against unchanged
+    # code (the PR/push triggers only cover code that actually changed).
+    - cron: '0 3 * * 1'
+
+permissions:
+  contents: read
+  security-events: write
+
+concurrency:
+  group: codeql-${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  analyze:
+    name: analyze
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v4
+        with:
+          languages: javascript-typescript
+
+      - name: Perform CodeQL analysis
+        uses: github/codeql-action/analyze@v4
+        with:
+          category: /language:javascript-typescript

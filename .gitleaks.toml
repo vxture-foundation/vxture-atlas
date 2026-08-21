@@ -1,0 +1,30 @@
+# gitleaks config for the secret-scan CI gate and the local pre-commit hook.
+# Extends the built-in ruleset and allowlists only this repo's known-safe,
+# non-secret patterns: env-var references and obvious template placeholders.
+# Real secrets never live in tracked files (see .gitignore: .env*, private/,
+# *.pem, *.key). New finding -> add a rule or a narrow allowlist entry, never
+# widen the gate. Keep the allowlist minimal; do not copy another repo's
+# repo-specific fixtures.
+title = "vxture-atlas secret-scan"
+
+[extend]
+# Inherit all built-in rules (AWS/GCP/Anthropic/OpenAI/private-key/
+# generic-api-key, etc.).
+useDefault = true
+
+[allowlist]
+description = "Known-safe placeholders and env-var references in tracked files"
+regexTarget = "match"
+# Placeholders substituted at install/render/instantiate time, not literal
+# secrets. Note: .env.example is NOT wholesale-exempted from scanning - only
+# these explicit placeholder shapes are.
+regexes = [
+  '''\$\{[A-Z0-9_]+\}''',
+  '''\{\{\s*[A-Z0-9_]+\s*\}\}''',
+  '''__[A-Z0-9_]+__''',
+  '''(?i)(your[-_][a-z0-9-]+|<[a-z0-9._-]+>|change[-_]?me[-a-z-]*|placeholder|dummy|example[-_.]|sk-\.\.\.|xxxx+)''',
+]
+paths = [
+  '''pnpm-lock\.yaml''',
+  '''.*\.(png|jpg|jpeg|gif|webp|ico|woff2?|ttf|eot|pdf)$''',
+]

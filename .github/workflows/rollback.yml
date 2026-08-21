@@ -1,0 +1,154 @@
+name: rollback
+
+# Manual emergency rollback: re-point the production stack at a PREVIOUSLY BUILT
+# image (no rebuild; only swaps the ${PRODUCT_CODE}-app image tag and recreates
+# that container). Find a known-good commit_sha from the host VERSION file
+# (cat /srv/md0/${PRODUCT_CODE}/deploy/VERSION) or `gh run list --workflow deploy.yml`.
+#
+#   gh workflow run rollback.yml -f commit_sha=<sha>
+#
+# Caveat: rolling back to an image built before a breaking DB change can serve
+# traffic against a schema its code does not expect - verify compatibility first.
+on:
+  workflow_dispatch:
+    inputs:
+      commit_sha:
+        description: "Commit SHA of a PREVIOUSLY DEPLOYED build to roll back to"
+        required: true
+        type: string
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  packages: read
+
+env:
+  # Product code: the `atlas` literal. Leave the PRODUCT_CODE repo variable
+  # UNSET here - it is the template's demo escape hatch, and setting it would
+  # repoint the stack root, containers, and DB.
+  PRODUCT_CODE: ${{ vars.PRODUCT_CODE || 'atlas' }}
+
+jobs:
+  rollback:
+    name: rollback
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment:
+      name: production
+    steps:
+      - name: Checkout target revision
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.commit_sha }}
+          fetch-depth: 1
+
+      - name: Resolve image tag
+        id: sha
+        shell: bash
+        run: |
+          set -euo pipefail
+          full_sha="$(git rev-parse HEAD)"
+          echo "image_tag=sha-${full_sha::7}" >> "$GITHUB_OUTPUT"
+
+      - name: Validate secrets
+        shell: bash
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_WORKER02_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_WORKER02_USER }}
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_WORKER02_SSH_KEY }}
+          TAILSCALE_OAUTH_CLIENT_ID: ${{ secrets.TAILSCALE_OAUTH_CLIENT_ID }}
+          TAILSCALE_OAUTH_CLIENT_SECRET: ${{ secrets.TAILSCALE_OAUTH_CLIENT_SECRET }}
+        run: |
+          set -euo pipefail
+          test -n "$DEPLOY_HOST"
+          test -n "$DEPLOY_USER"
+          test -n "$DEPLOY_SSH_KEY"
+          test -n "$TAILSCALE_OAUTH_CLIENT_ID"
+          test -n "$TAILSCALE_OAUTH_CLIENT_SECRET"
+
+      - name: Login to GHCR
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Confirm the image exists before touching the stack
+        shell: bash
+        env:
+          IMAGE_TAG: ${{ steps.sha.outputs.image_tag }}
+        run: |
+          set -euo pipefail
+          docker buildx imagetools inspect "ghcr.io/vxture/${PRODUCT_CODE}-app:${IMAGE_TAG}" >/dev/null
+
+      - name: Join tailnet and prepare SSH
+        uses: ./.github/actions/tailnet-ssh-connect
+        with:
+          tailscale-oauth-client-id: ${{ secrets.TAILSCALE_OAUTH_CLIENT_ID }}
+          tailscale-oauth-secret: ${{ secrets.TAILSCALE_OAUTH_CLIENT_SECRET }}
+          tailscale-tag: ${{ vars.TAILSCALE_OAUTH_CLIENT_TAG }}
+          deploy-host: ${{ secrets.DEPLOY_WORKER02_HOST }}
+          deploy-port: ${{ secrets.DEPLOY_WORKER02_PORT }}
+          deploy-ssh-key: ${{ secrets.DEPLOY_WORKER02_SSH_KEY }}
+          deploy-ssh-passphrase: ${{ secrets.DEPLOY_WORKER02_SSH_KEY_PASSPHRASE }}
+          deploy-known-hosts: ${{ secrets.DEPLOY_WORKER02_KNOWN_HOSTS }}
+
+      - name: Roll back over SSH
+        shell: bash
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_WORKER02_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_WORKER02_USER }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_WORKER02_PORT }}
+          DEPLOY_DIR: ${{ secrets.DEPLOY_DIR }}
+          IMAGE_TAG: ${{ steps.sha.outputs.image_tag }}
+          ALIYUN_ACR_REGISTRY: ${{ vars.ALIYUN_ACR_REGISTRY }}
+          ALIYUN_ACR_NAMESPACE: ${{ vars.ALIYUN_ACR_NAMESPACE }}
+          ALIYUN_ACR_USERNAME: ${{ secrets.ALIYUN_ACR_USERNAME }}
+          ALIYUN_ACR_PASSWORD: ${{ secrets.ALIYUN_ACR_PASSWORD }}
+          GHCR_USERNAME: ${{ github.actor }}
+          GHCR_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          port="${DEPLOY_PORT:-22}"
+          deploy_dir="${DEPLOY_DIR:-/srv/md0/${PRODUCT_CODE}/deploy}"
+          ssh_opts=(-i ~/.ssh/deploy_key -p "$port" -o ServerAliveInterval=30 -o ServerAliveCountMax=20 -o ConnectTimeout=30)
+
+          cat > /tmp/rollback.sh <<'REMOTE_SCRIPT'
+          set -euo pipefail
+          cd "$REPO_DIR"
+          export IMAGE_REGISTRY="ghcr.io"
+          export IMAGE_NAMESPACE="vxture"
+          export IMAGE_TAG="$IMAGE_TAG"
+          export FALLBACK_IMAGE_REGISTRY="$ALIYUN_ACR_REGISTRY"
+          export FALLBACK_IMAGE_NAMESPACE="$ALIYUN_ACR_NAMESPACE"
+          printf '%s' "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USERNAME" --password-stdin
+          if [ -n "${ALIYUN_ACR_USERNAME:-}" ] && [ -n "${ALIYUN_ACR_PASSWORD:-}" ]; then
+            printf '%s' "$ALIYUN_ACR_PASSWORD" | timeout 45 docker login "$ALIYUN_ACR_REGISTRY" -u "$ALIYUN_ACR_USERNAME" --password-stdin || true
+          fi
+          echo "[rollback] recreating ${PRODUCT_CODE}-app at $IMAGE_TAG"
+          bash deploy.sh start
+          bash deploy.sh verify
+          REMOTE_SCRIPT
+          # Unique per-product-per-run remote path - same shared-host
+          # collision as deploy.yml (see the comment there).
+          remote_script="/tmp/${PRODUCT_CODE}-rollback-${GITHUB_RUN_ID}.sh"
+          echo 'rm -f -- "$0"' >> /tmp/rollback.sh
+          scp -i ~/.ssh/deploy_key -P "$port" -o ConnectTimeout=30 /tmp/rollback.sh "$DEPLOY_USER@$DEPLOY_HOST:$remote_script"
+
+          remote_env=(
+            "PRODUCT_CODE=$PRODUCT_CODE" "REPO_DIR=$deploy_dir" "IMAGE_TAG=$IMAGE_TAG"
+            "ALIYUN_ACR_REGISTRY=$ALIYUN_ACR_REGISTRY" "ALIYUN_ACR_NAMESPACE=$ALIYUN_ACR_NAMESPACE"
+            "ALIYUN_ACR_USERNAME=$ALIYUN_ACR_USERNAME" "ALIYUN_ACR_PASSWORD=$ALIYUN_ACR_PASSWORD"
+            "GHCR_USERNAME=$GHCR_USERNAME" "GHCR_TOKEN=$GHCR_TOKEN"
+          )
+          remote_cmd=""
+          for item in "${remote_env[@]}"; do
+            key="${item%%=*}"; value="${item#*=}"
+            printf -v escaped '%q=%q ' "$key" "$value"
+            remote_cmd+="$escaped"
+          done
+          remote_cmd+="bash $remote_script"
+          printf '%s\n' "$remote_cmd" | ssh "${ssh_opts[@]}" "$DEPLOY_USER@$DEPLOY_HOST" bash -s

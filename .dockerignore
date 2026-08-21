@@ -1,0 +1,23 @@
+# Keep the build context small and keep host-local secrets out of it entirely.
+.git
+node_modules
+**/node_modules
+dist
+**/dist
+coverage
+**/coverage
+.env
+.env.*
+!.env.example
+data
+docs
+temp
+*.log
+
+# `prisma generate` output - the build stage produces its own, so the host copy
+# is never an input. It is also machine-specific: this repo is developed on a
+# Windows workstation, whose copy holds a 20.2MB query_engine-windows.dll.node
+# plus a same-size .tmp file left by an interrupted generate, both dated weeks
+# before any given build. `COPY service ./service` carried all of it into the
+# linux image, so the published artifact depended on which machine built it.
+service/src/generated

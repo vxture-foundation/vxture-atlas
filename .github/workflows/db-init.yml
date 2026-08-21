@@ -1,0 +1,391 @@
+name: db-init
+
+# The ONLY pipeline allowed to touch DB structure (governance section 6). Manual,
+# gated: confirm=yes + expected_sha pin (defeats a floating ref applying stale
+# DDL) + the production Environment's required-reviewer approval. The container
+# entrypoint never migrates and the regular deploy chain never touches schema;
+# every structure change comes through here.
+#
+#   gh workflow run db-init.yml -f action=apply -f confirm=yes -f expected_sha=<sha>
+#
+# `apply` runs the DDL (00_baseline + 40_model + 97_service_role + 98_column_locks
+# + incr/ increments, idempotent create-once + ADD COLUMN IF NOT EXISTS) against
+# the production db container as the DB superuser (docker exec, in-container
+# trust), then sets the atlas_svc role's password from the operator .env's
+# DATABASE_URL so the app can authenticate. `verify` reports schema tables +
+# whether the role has a password, non-destructively.
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: "DDL action"
+        required: true
+        type: choice
+        default: apply
+        options:
+          - apply
+          - verify
+          - recreate
+      confirm:
+        description: "apply/verify: type 'yes'. recreate: type the DATABASE NAME"
+        required: true
+        type: string
+      expected_sha:
+        description: "Commit SHA this run must match (version pin)"
+        required: true
+        type: string
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  # Product code: the `atlas` literal. Leave the PRODUCT_CODE repo variable
+  # UNSET here - it is the template's demo escape hatch, and setting it would
+  # repoint the stack root, containers, and DB.
+  PRODUCT_CODE: ${{ vars.PRODUCT_CODE || 'atlas' }}
+  # This workflow is pinned to the production Environment (see the job below),
+  # so the db container it targets is the prod one.
+  DEPLOY_ENV: prod
+
+jobs:
+  db-init:
+    name: db-init
+    runs-on: ubuntu-latest
+    # Measured job execution, four most recent successful runs: 25s-45s. Kept
+    # deliberately loose at 10m rather than sized to the observation, because
+    # this job applies DDL and a future increment can legitimately be slow -
+    # unlike build/deploy, whose work does not grow with the schema. The
+    # approval wait is not counted (vxture-platform#191).
+    timeout-minutes: 10
+    environment:
+      name: production
+    steps:
+      - name: Gate on confirm + expected_sha
+        shell: bash
+        env:
+          ACTION: ${{ inputs.action }}
+          CONFIRM: ${{ inputs.confirm }}
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+          ACTUAL_SHA: ${{ github.sha }}
+          PRODUCT_CODE: ${{ vars.PRODUCT_CODE || 'atlas' }}
+        run: |
+          set -euo pipefail
+          # `recreate` DESTROYS the database. Its confirmation is the database
+          # name, not `yes`: `yes` is what every other destructive prompt in
+          # this repo takes, so it is muscle memory, and muscle memory is
+          # exactly what must not be able to drop a production database.
+          if [ "$ACTION" = "recreate" ]; then
+            if [ "$CONFIRM" != "vx_${PRODUCT_CODE}_db" ]; then
+              echo "recreate requires confirm = vx_${PRODUCT_CODE}_db (got '$CONFIRM')" >&2
+              exit 1
+            fi
+          elif [ "$CONFIRM" != "yes" ]; then
+            echo "confirm must be 'yes'" >&2; exit 1
+          fi
+          if [ "$EXPECTED_SHA" != "$ACTUAL_SHA" ]; then
+            echo "expected_sha ($EXPECTED_SHA) != run sha ($ACTUAL_SHA) - refusing" >&2
+            exit 1
+          fi
+
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+
+      - name: Validate secrets
+        shell: bash
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_WORKER02_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_WORKER02_USER }}
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_WORKER02_SSH_KEY }}
+          TAILSCALE_OAUTH_CLIENT_ID: ${{ secrets.TAILSCALE_OAUTH_CLIENT_ID }}
+          TAILSCALE_OAUTH_CLIENT_SECRET: ${{ secrets.TAILSCALE_OAUTH_CLIENT_SECRET }}
+        run: |
+          set -euo pipefail
+          test -n "$DEPLOY_HOST"
+          test -n "$DEPLOY_USER"
+          test -n "$DEPLOY_SSH_KEY"
+          test -n "$TAILSCALE_OAUTH_CLIENT_ID"
+          test -n "$TAILSCALE_OAUTH_CLIENT_SECRET"
+
+      - name: Join tailnet and prepare SSH
+        uses: ./.github/actions/tailnet-ssh-connect
+        with:
+          tailscale-oauth-client-id: ${{ secrets.TAILSCALE_OAUTH_CLIENT_ID }}
+          tailscale-oauth-secret: ${{ secrets.TAILSCALE_OAUTH_CLIENT_SECRET }}
+          tailscale-tag: ${{ vars.TAILSCALE_OAUTH_CLIENT_TAG }}
+          deploy-host: ${{ secrets.DEPLOY_WORKER02_HOST }}
+          deploy-port: ${{ secrets.DEPLOY_WORKER02_PORT }}
+          deploy-ssh-key: ${{ secrets.DEPLOY_WORKER02_SSH_KEY }}
+          deploy-ssh-passphrase: ${{ secrets.DEPLOY_WORKER02_SSH_KEY_PASSPHRASE }}
+          deploy-known-hosts: ${{ secrets.DEPLOY_WORKER02_KNOWN_HOSTS }}
+
+      - name: Apply DDL over SSH
+        shell: bash
+        env:
+          ACTION: ${{ inputs.action }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_WORKER02_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_WORKER02_USER }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_WORKER02_PORT }}
+          DEPLOY_DIR: ${{ secrets.DEPLOY_DIR }}
+          PINNED_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          port="${DEPLOY_PORT:-22}"
+          deploy_dir="${DEPLOY_DIR:-/srv/md0/${PRODUCT_CODE}/deploy}"
+          ssh_opts=(-i ~/.ssh/deploy_key -p "$port" -o ServerAliveInterval=30 -o ServerAliveCountMax=20 -o ConnectTimeout=30)
+
+          # Deliver the DDL from THIS run's checkout, which is pinned to
+          # expected_sha, staged under /tmp so the deployed copy (owned by the
+          # deploy rsync) is left untouched.
+          ddl_stage="/tmp/${PRODUCT_CODE}-ddl-${PINNED_SHA:0:7}"
+          ssh "${ssh_opts[@]}" "$DEPLOY_USER@$DEPLOY_HOST" "rm -rf '$ddl_stage' && mkdir -p '$ddl_stage'"
+          tar -cf - -C deploy database/ddl | ssh "${ssh_opts[@]}" "$DEPLOY_USER@$DEPLOY_HOST" "tar -xf - -C '$ddl_stage'"
+
+          cat > /tmp/db-init.sh <<'REMOTE_SCRIPT'
+          set -euo pipefail
+          # Hoisted to the head, not set beside the loop that consumes it: an
+          # unmatched database/ddl/incr/*.sql stays literal without it, and the
+          # FIRST consumer is declared_grants() far above the apply loop - so an
+          # empty incr/ would abort under set -e before any DDL ran, with no
+          # error text beyond "DDL source:". (vxture-runos#106 hit exactly this
+          # after clearing its incr/.)
+          shopt -s nullglob
+          cd "$DDL_STAGE"
+          echo "[db-init] DDL source: $DDL_STAGE (pinned $PINNED_SHA)"
+          # Atlas owns a fully separate physical database, not a schema in the
+          # shared platform DB - see docs/30-design/00-index.md. Both names
+          # derive from PRODUCT_CODE, matching docker-compose.yml exactly; if
+          # these two derivations ever disagree, db-init silently targets a
+          # database nobody is running against.
+          DB="vx_${PRODUCT_CODE}_db"
+          CONT="vx-${PRODUCT_CODE}-postgres-db-${DEPLOY_ENV}"
+          ENV_FILE="$(cd "$REPO_DIR/.." && pwd)/etc/.env"
+          run() { docker exec -i "$CONT" psql -U postgres -d "$DB" -v ON_ERROR_STOP=1 "$@"; }
+
+          # Service-role password. The role is created LOGIN-only (no password) by
+          # 97_service_role.sql; the app connects as atlas_svc over TCP (scram),
+          # so the role needs a password matching the operator .env's DATABASE_URL
+          # (postgresql://atlas_svc:PASSWORD@host...). Parse it here - it lives only
+          # on the host and never transits CI. Empty if the URL carries no password.
+          svc_pw=""
+          if [ -f "$ENV_FILE" ]; then
+            db_url="$(grep -E '^DATABASE_URL=' "$ENV_FILE" | head -1 | sed 's/^DATABASE_URL=//')"
+            db_url="${db_url%\"}"; db_url="${db_url#\"}"
+            creds="${db_url#*://}"; creds="${creds%%@*}"
+            case "$creds" in *:*) svc_pw="${creds#*:}" ;; esac
+          fi
+
+          SCHEMAS="'model','key','reqlog','routing','provisioning'"
+
+          # Column-level UPDATE whitelist, as the pinned DDL declares it.
+          # Flattens the SQL (the GRANT column lists wrap over several lines),
+          # splits on ';', and emits one schema.table.column per line.
+          # incr/ is parsed too - a grant may live there when the column it
+          # covers is added by an increment (incr/01, see 98_column_locks.sql).
+          declared_grants() {
+            cat database/ddl/98_column_locks.sql database/ddl/incr/*.sql 2>/dev/null \
+              | sed 's/--.*//' \
+              | tr '\n' ' ' \
+              | tr ';' '\n' \
+              | grep -oiE "GRANT[[:space:]]+UPDATE[[:space:]]*\([^)]*\)[[:space:]]*ON[[:space:]]+[a-z_]+\.[a-z_]+[[:space:]]+TO[[:space:]]+atlas_svc" \
+              | while read -r stmt; do
+                  tbl="$(printf '%s' "$stmt" | sed -E 's/.*[Oo][Nn][[:space:]]+([a-z_]+\.[a-z_]+)[[:space:]]+[Tt][Oo].*/\1/')"
+                  # A pipeline, not `while read`: the column list has no
+                  # trailing newline, so a read loop silently drops the last
+                  # column of every GRANT.
+                  printf '%s\n' "$stmt" \
+                    | sed -E 's/^[^(]*\(([^)]*)\).*/\1/' \
+                    | tr -d ' ' | tr ',' '\n' \
+                    | sed "/^\$/d; s|^|$tbl.|"
+                done \
+              | sort -u
+          }
+
+          # What the database actually grants. REVOKE strips the table-level
+          # UPDATE first, so anything here is a column grant.
+          actual_grants() {
+            run -tAc "SELECT table_schema||'.'||table_name||'.'||column_name
+                        FROM information_schema.column_privileges
+                       WHERE grantee = 'atlas_svc'
+                         AND privilege_type = 'UPDATE'
+                         AND table_schema IN ($SCHEMAS)
+                       ORDER BY 1;" | sed '/^$/d' | sort -u
+          }
+
+          # The column locks ARE the write-governance mechanism (governance
+          # section 7), and until now nothing checked that the database agreed
+          # with the DDL after an apply - TD-025 was exactly a column the
+          # whitelist never granted, and it stayed invisible for months.
+          #
+          # Compared both ways on purpose. Missing means the DDL did not take
+          # effect; extra means someone widened the service role's write
+          # surface outside this file, which no other check would ever notice.
+          check_column_locks() {
+            declared_grants > /tmp/db-init-declared.txt
+            actual_grants   > /tmp/db-init-actual.txt
+            d_n="$(wc -l < /tmp/db-init-declared.txt | tr -d ' ')"
+            a_n="$(wc -l < /tmp/db-init-actual.txt | tr -d ' ')"
+            echo "[db-init] column locks: DDL declares $d_n column grants, database has $a_n"
+
+            missing="$(comm -23 /tmp/db-init-declared.txt /tmp/db-init-actual.txt)"
+            extra="$(comm -13 /tmp/db-init-declared.txt /tmp/db-init-actual.txt)"
+            rm -f /tmp/db-init-declared.txt /tmp/db-init-actual.txt
+
+            if [ -z "$missing" ] && [ -z "$extra" ]; then
+              echo "[db-init] column locks match the pinned DDL"
+              return 0
+            fi
+            if [ -n "$missing" ]; then
+              echo "[db-init] ERROR: declared but NOT granted (DDL did not take effect):" >&2
+              echo "$missing" | sed 's/^/  /' >&2
+            fi
+            if [ -n "$extra" ]; then
+              echo "[db-init] ERROR: granted but NOT declared (write surface widened outside the DDL):" >&2
+              echo "$extra" | sed 's/^/  /' >&2
+            fi
+            return 1
+          }
+
+          if [ "$ACTION" = "verify" ]; then
+            echo "[db-init] atlas schema tables:"
+            run -c "SELECT table_schema||'.'||table_name FROM information_schema.tables WHERE table_schema IN ($SCHEMAS) ORDER BY 1;"
+            echo "[db-init] service role state:"
+            run -c "SELECT rolname, rolcanlogin, (rolpassword IS NOT NULL) AS has_password FROM pg_roles WHERE rolname = 'atlas_svc';"
+            if [ -n "$svc_pw" ]; then echo "[db-init] .env DATABASE_URL carries a svc password: yes"; else echo "[db-init] .env DATABASE_URL carries a svc password: no"; fi
+
+            # Key readiness. The vault is the only source of an upstream key
+            # since ADR-003, so a model with no alias - or with an alias no
+            # active key answers to - refuses its own calls. That used to be
+            # invisible from outside: /readyz's providerKeys check only ever
+            # looked at the retired env-var path, so `checkedKeys: 0` meant "no
+            # model uses an env var" and said nothing about the vault.
+            #
+            # Reported HERE because this is the one place that can read the
+            # database before a release rather than after it.
+            echo "[db-init] model key sources:"
+            run -c "SELECT m.model_code,
+                           coalesce(m.config->>'managedKeyAlias','(none)') AS alias,
+                           CASE
+                             WHEN m.config->>'managedKeyAlias' IS NULL THEN 'KEYLESS - refuses every call'
+                             WHEN EXISTS (SELECT 1 FROM key.provider_api_keys k
+                                          WHERE k.key_alias = m.config->>'managedKeyAlias'
+                                            AND k.is_active AND k.deleted_at IS NULL) THEN 'ok'
+                             ELSE 'DANGLING - no active vault key'
+                           END AS state
+                    FROM model.models m
+                    WHERE m.is_active AND m.deleted_at IS NULL
+                    ORDER BY m.model_code;"
+            echo "[db-init] vault contents:"
+            run -c "SELECT provider_code, key_alias, is_active FROM key.provider_api_keys WHERE deleted_at IS NULL ORDER BY 1,2;"
+
+            check_column_locks
+            exit 0
+          fi
+
+          if [ "$ACTION" = "recreate" ]; then
+            # ADR-006. The consolidated baseline is create-once, so it CANNOT
+            # add a column to an existing table - applying it to a live
+            # database fails loudly rather than diverging silently, and a
+            # rebuild is the delivery path for a structure change.
+            #
+            # Order matters: dump, PROVE the dump restores, and only then drop.
+            # A dump nobody has restored is a claim, not a backup.
+            stamp="$(date -u +%Y%m%dT%H%M%SZ)"
+            dump_in_cont="/tmp/${DB}-${stamp}.dump"
+            echo "[db-init] dumping $DB -> $dump_in_cont"
+            docker exec "$CONT" pg_dump -U postgres -d "$DB" -Fc -f "$dump_in_cont"
+
+            size="$(docker exec "$CONT" sh -c "wc -c < $dump_in_cont" | tr -d " ")"
+            echo "[db-init] dump size: ${size} bytes"
+            if [ "${size:-0}" -lt 1024 ]; then
+              echo "[db-init] dump is implausibly small - refusing to drop" >&2
+              exit 1
+            fi
+
+            # Restore into a scratch database on the SAME container and count
+            # the rows back. If this fails, nothing has been dropped yet.
+            scratch="${DB}_restorecheck_${stamp}"
+            docker exec "$CONT" psql -U postgres -v ON_ERROR_STOP=1               -c "CREATE DATABASE \"$scratch\";"
+            if ! docker exec "$CONT" pg_restore -U postgres -d "$scratch" --no-owner "$dump_in_cont"; then
+              echo "[db-init] dump does not restore - refusing to drop" >&2
+              docker exec "$CONT" psql -U postgres -c "DROP DATABASE IF EXISTS \"$scratch\" WITH (FORCE);" || true
+              exit 1
+            fi
+            before="$(docker exec "$CONT" psql -U postgres -d "$scratch" -tAc               "SELECT count(*) FROM information_schema.tables WHERE table_schema IN ($SCHEMAS);")"
+            echo "[db-init] dump restores with ${before} tables"
+            docker exec "$CONT" psql -U postgres -c "DROP DATABASE IF EXISTS \"$scratch\" WITH (FORCE);"
+
+            echo "[db-init] dropping and recreating $DB"
+            docker exec "$CONT" psql -U postgres -v ON_ERROR_STOP=1               -c "DROP DATABASE IF EXISTS \"$DB\" WITH (FORCE);"
+            docker exec "$CONT" psql -U postgres -v ON_ERROR_STOP=1               -c "CREATE DATABASE \"$DB\";"
+            echo "[db-init] recreated; the dump is kept at $dump_in_cont inside $CONT"
+            echo "[db-init] restore data with: docker exec $CONT pg_restore -U postgres -d $DB --data-only --disable-triggers $dump_in_cont"
+          fi
+
+          for f in database/ddl/00_baseline.sql database/ddl/97_service_role.sql database/ddl/98_column_locks.sql; do
+            echo "[db-init] applying $f"
+            run < "$f"
+          done
+          # incr/ is empty since ADR-006 folded 01..15 into the baseline. The
+          # glob must not expand to a literal that psql then fails on.
+          for f in database/ddl/incr/*.sql; do
+            [ -e "$f" ] || continue
+            echo "[db-init] applying incr $(basename "$f")"
+            run < "$f"
+          done
+
+          # Give the service role its password so the app can authenticate. Source
+          # of truth is the operator .env's DATABASE_URL. If it has none yet,
+          # generate one, patch DATABASE_URL in place (600 file, host-only), and
+          # bounce the app so it reconnects with the new URL.
+          if [ -z "$svc_pw" ]; then
+            svc_pw="$(openssl rand -hex 24 2>/dev/null || head -c 18 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+            if [ ! -f "$ENV_FILE" ]; then
+              echo "[db-init] ERROR: $ENV_FILE not found; cannot persist svc password" >&2
+              exit 1
+            fi
+            sed -i -E "s#(^DATABASE_URL=\"?postgresql://atlas_svc:)[^@]*@#\1${svc_pw}@#" "$ENV_FILE"
+            echo "[db-init] no svc password in .env; generated one and patched DATABASE_URL"
+            docker restart "vx-${PRODUCT_CODE}-app-${DEPLOY_ENV}" >/dev/null 2>&1 || true
+          fi
+          # Pipe the ALTER over stdin (never argv) so the password stays out of ps.
+          esc="$(printf '%s' "$svc_pw" | sed "s/'/''/g")"
+          printf "ALTER ROLE atlas_svc PASSWORD '%s';\n" "$esc" | run
+          echo "[db-init] service-role password set"
+
+          # Post-apply assertion. Every statement in the DDL is IF NOT EXISTS, so
+          # applying the WRONG file succeeds silently and reports done - compare
+          # what the pinned DDL declares against what the database now has, and
+          # fail loudly on a shortfall (see docs/60-operations/10-tech-debt.md for
+          # the incident that motivated this in the reference implementation).
+          declared_list="$(grep -oiE 'CREATE TABLE( IF NOT EXISTS)?[[:space:]]+[a-z_]+\.[a-z_]+' database/ddl/00_baseline.sql | awk '{print tolower($NF)}' | sort -u)"
+          declared_n="$(echo "$declared_list" | grep -c .)"
+          in_list="$(echo "$declared_list" | sed "s/.*/'&'/" | paste -sd, -)"
+          present_n="$(run -tAc "SELECT count(*) FROM information_schema.tables WHERE table_schema||'.'||table_name IN ($in_list);")"
+          echo "[db-init] pinned baseline declares $declared_n tables; $present_n of them exist"
+          if [ "$present_n" -lt "$declared_n" ]; then
+            echo "[db-init] ERROR: the applied DDL did not take effect." >&2
+            echo "[db-init] Missing:" >&2
+            run -tAc "SELECT x FROM unnest(ARRAY[$in_list]) AS x WHERE x NOT IN (SELECT table_schema||'.'||table_name FROM information_schema.tables);" >&2
+            exit 1
+          fi
+
+          # Same assertion for the write governance: tables existing says
+          # nothing about whether the column locks landed.
+          check_column_locks
+
+          echo "[db-init] done."
+          rm -rf "$DDL_STAGE"
+          REMOTE_SCRIPT
+          # Unique per-product-per-run remote path - same shared-host
+          # collision as deploy.yml (see the comment there).
+          remote_script="/tmp/${PRODUCT_CODE}-db-init-${GITHUB_RUN_ID}.sh"
+          echo 'rm -f -- "$0"' >> /tmp/db-init.sh
+          scp -i ~/.ssh/deploy_key -P "$port" -o ConnectTimeout=30 /tmp/db-init.sh "$DEPLOY_USER@$DEPLOY_HOST:$remote_script"
+          printf '%s\n' "REPO_DIR=$(printf %q "$deploy_dir") DDL_STAGE=$(printf %q "$ddl_stage") PINNED_SHA=$(printf %q "$PINNED_SHA") ACTION=$(printf %q "$ACTION") PRODUCT_CODE=$(printf %q "$PRODUCT_CODE") DEPLOY_ENV=$(printf %q "$DEPLOY_ENV") bash $remote_script" \
+            | ssh "${ssh_opts[@]}" "$DEPLOY_USER@$DEPLOY_HOST" bash -s

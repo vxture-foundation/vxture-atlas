@@ -1,0 +1,123 @@
+name: mirror-image
+
+# Copy a third-party base image into ACR, registry-to-registry.
+#
+# WHY THIS EXISTS. The deploy host cannot pull from Docker Hub: the manifest
+# resolves through the configured mirrors, but fetching the blobs falls back to
+# `production.cloudfront.docker.com`, which the host's network resets. Measured
+# on this repo's own production deploy (2026-08-15, v0.11.1): the
+# `postgres:18-alpine` pull failed with `connection reset by peer` and
+# `compose pull db || true` swallowed it. The database container only starts
+# because the host happens to hold a local cache of that image - so a NEW host
+# cannot bring the stack up at all, which contradicts the one-trigger
+# environment-provisioning promise.
+#
+# The runner has BOTH Hub access and ACR credentials, so it is the one place a
+# copy can happen. `docker buildx imagetools create` copies by reference
+# without pulling layers to disk, and preserves the multi-arch manifest.
+#
+# PIN THE DIGEST THAT IS ALREADY RUNNING, not whatever the tag points at today.
+# The data mount is the versioned PARENT directory (/var/lib/postgresql), so a
+# newer major does not refuse to start - it silently initialises an empty
+# cluster alongside the existing one and the app connects to an empty database
+# without erroring. Read the digest off the host first:
+#   docker image inspect postgres:18-alpine --format '{{index .RepoDigests 0}}'
+#
+# After mirroring, set the reference in the HOST's etc/.env (an operator
+# action, deliberately not automated - it decides what the database runs on):
+#   POSTGRES_IMAGE=<acr-registry>/<namespace>/postgres@sha256:<digest>
+
+on:
+  workflow_dispatch:
+    inputs:
+      source:
+        description: "Source reference, digest-pinned (e.g. postgres:18-alpine@sha256:...)"
+        required: true
+      target_repository:
+        description: "Target repository name inside the ACR namespace (e.g. postgres)"
+        required: true
+      target_tag:
+        description: "Tag to publish in ACR (e.g. 18-alpine). The digest is what production pins; this tag is for humans."
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mirror-image-${{ github.event.inputs.target_repository }}
+  cancel-in-progress: false
+
+jobs:
+  mirror:
+    name: mirror
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      ACR_REGISTRY: ${{ vars.ALIYUN_ACR_REGISTRY }}
+      ACR_NAMESPACE: ${{ vars.ALIYUN_ACR_NAMESPACE }}
+    steps:
+      - name: Validate inputs and registry configuration
+        env:
+          SOURCE: ${{ github.event.inputs.source }}
+          ALIYUN_ACR_USERNAME: ${{ secrets.ALIYUN_ACR_USERNAME }}
+          ALIYUN_ACR_PASSWORD: ${{ secrets.ALIYUN_ACR_PASSWORD }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$ACR_REGISTRY"
+          test -n "$ACR_NAMESPACE"
+          test -n "$ALIYUN_ACR_USERNAME"
+          test -n "$ALIYUN_ACR_PASSWORD"
+          # A tag-only source would mirror whatever the tag means at this
+          # moment, which is the thing this workflow exists to stop depending
+          # on - and for a database image it is how a host silently gets an
+          # empty cluster.
+          case "$SOURCE" in
+            *@sha256:*) ;;
+            *) echo "::error::source must be digest-pinned (…@sha256:…)" >&2; exit 1 ;;
+          esac
+
+      - name: Set up buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+
+      - name: Log in to ACR
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ${{ env.ACR_REGISTRY }}
+          username: ${{ secrets.ALIYUN_ACR_USERNAME }}
+          password: ${{ secrets.ALIYUN_ACR_PASSWORD }}
+
+      - name: Copy image into ACR
+        env:
+          SOURCE: ${{ github.event.inputs.source }}
+          TARGET_REPOSITORY: ${{ github.event.inputs.target_repository }}
+          TARGET_TAG: ${{ github.event.inputs.target_tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          target="${ACR_REGISTRY}/${ACR_NAMESPACE}/${TARGET_REPOSITORY}:${TARGET_TAG}"
+          echo "[mirror] $SOURCE -> $target"
+          docker buildx imagetools create --tag "$target" "$SOURCE"
+
+      - name: Assert the copy is byte-identical
+        env:
+          SOURCE: ${{ github.event.inputs.source }}
+          TARGET_REPOSITORY: ${{ github.event.inputs.target_repository }}
+          TARGET_TAG: ${{ github.event.inputs.target_tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          target="${ACR_REGISTRY}/${ACR_NAMESPACE}/${TARGET_REPOSITORY}:${TARGET_TAG}"
+          src_digest="${SOURCE##*@}"
+          dst_digest="$(docker buildx imagetools inspect "$target" --format '{{.Manifest.Digest}}')"
+          echo "[mirror] source digest: $src_digest"
+          echo "[mirror] target digest: $dst_digest"
+          # A rename, not an upgrade. If these differ, something re-assembled
+          # the manifest and the host would be running a different artifact
+          # than the one that was verified.
+          if [ "$src_digest" != "$dst_digest" ]; then
+            echo "::error::mirrored digest differs from source - refusing to call this a copy" >&2
+            exit 1
+          fi
+          echo "[mirror] OK - pin this in the host .env:"
+          echo "  POSTGRES_IMAGE=${ACR_REGISTRY}/${ACR_NAMESPACE}/${TARGET_REPOSITORY}@${dst_digest}"

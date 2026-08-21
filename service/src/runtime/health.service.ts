@@ -1,0 +1,411 @@
+/**
+ * health.service.ts - 模型平台健康检查编排
+ * @package @atlas/service
+ * @layer Domain
+ * @category service
+ */
+
+import { Inject, Injectable } from "@nestjs/common";
+import {
+  buildHealthIdentity,
+  serviceIdentity,
+  type HealthLiveResponse,
+  type ServiceIdentity,
+} from "@vxture/shared";
+
+import { ProviderKeyRepository } from "../provider-keys/provider-key.repository";
+import { ModelRegistryRepository } from "../registry/model-registry.repository";
+import type { AiModelRecord, ModelConfig } from "../types/runtime.types";
+
+export type HealthCheckStatus = "pass" | "warn" | "fail";
+export type ReadinessStatus = "ready" | "degraded" | "blocked";
+
+export interface HealthCheckResult {
+  status: HealthCheckStatus;
+  latencyMs?: number;
+  message?: string;
+  [key: string]: unknown;
+}
+
+// Liveness + identity per standard 025.
+export type AtlasLiveResponse = HealthLiveResponse;
+
+// Readiness = identity block + per-dependency checks (standard 025 §3).
+export interface AtlasReadyResponse extends ServiceIdentity {
+  status: ReadinessStatus;
+  checks: {
+    database: HealthCheckResult;
+    modelRegistry: HealthCheckResult;
+    providerKeys: HealthCheckResult;
+    usageSummaryRead: HealthCheckResult;
+    reqlogPartitions: HealthCheckResult;
+    registryDrift: HealthCheckResult;
+  };
+}
+
+@Injectable()
+export class AtlasHealthService {
+  constructor(
+    @Inject(ModelRegistryRepository)
+    private readonly repository: ModelRegistryRepository,
+    // The REPOSITORY, not ProviderKeyService: readiness needs to know an alias
+    // has an active row behind it, and nothing more. Injecting the service
+    // would hand a health check the ability to decrypt.
+    @Inject(ProviderKeyRepository)
+    private readonly providerKeys: ProviderKeyRepository,
+  ) {}
+
+  live(): AtlasLiveResponse {
+    return buildHealthIdentity({
+      service: "atlas",
+      product: "vxture",
+    });
+  }
+
+  // GET /readyz is unguarded.
+  ready(): Promise<AtlasReadyResponse> {
+    return this.collect(false);
+  }
+
+  // Behind InternalDiagnosticsGuard.
+  diagnostics(): Promise<AtlasReadyResponse> {
+    return this.collect(true);
+  }
+
+  /**
+   * One body, two surfaces. The only difference is the caught-exception text:
+   * a Prisma/pg error message carries the internal host, port, user and
+   * database name, and must not leave through the unguarded /readyz. Atlas's
+   * own static messages and every structured counter are not sensitive and
+   * stay on both surfaces - withholding them would cost operators the signal
+   * without protecting anything.
+   *
+   * Status is rolled up from the same check results either way, so the two
+   * surfaces can never disagree about whether Atlas is serving.
+   */
+  private async collect(includeDetail: boolean): Promise<AtlasReadyResponse> {
+    const [
+      database,
+      modelRegistry,
+      usageSummaryRead,
+      reqlogPartitions,
+      registryDrift,
+    ] =
+      await Promise.all([
+        this.checkDatabase(includeDetail),
+        this.checkModelRegistry(includeDetail),
+        this.checkUsageSummaryRead(includeDetail),
+        this.checkReqlogPartitions(includeDetail),
+        this.checkRegistryDrift(includeDetail),
+      ]);
+    const providerKeys =
+      modelRegistry.status === "fail"
+        ? { status: "fail" as const, message: "model registry unavailable" }
+        : await this.checkProviderKeys(modelRegistry.models as AiModelRecord[]);
+
+    return {
+      ...serviceIdentity({ service: "atlas", product: "vxture" }),
+      status: resolveReadinessStatus([
+        database,
+        modelRegistry,
+        providerKeys,
+        usageSummaryRead,
+        reqlogPartitions,
+        // registryDrift is deliberately NOT in this list: it reports config
+        // drift, not liveness. Atlas is perfectly healthy while an operator
+        // has a provider switched off and its models still serving - that is
+        // something to see, not a reason to fall out of the load balancer.
+      ]),
+      checks: {
+        database,
+        modelRegistry: omitPrivateCheckData(modelRegistry),
+        providerKeys,
+        usageSummaryRead,
+        reqlogPartitions,
+        registryDrift,
+      },
+    };
+  }
+
+  private async checkDatabase(
+    includeDetail: boolean,
+  ): Promise<HealthCheckResult> {
+    const startedAt = Date.now();
+    try {
+      await this.repository.checkDatabaseConnectivity();
+      return { status: "pass", latencyMs: Date.now() - startedAt };
+    } catch (error) {
+      return {
+        status: "fail",
+        latencyMs: Date.now() - startedAt,
+        message: failureMessage(error, includeDetail),
+      };
+    }
+  }
+
+  private async checkModelRegistry(
+    includeDetail: boolean,
+  ): Promise<HealthCheckResult> {
+    const startedAt = Date.now();
+    try {
+      const models = await this.repository.listActiveModels();
+      if (models.length === 0) {
+        return {
+          status: "fail",
+          latencyMs: Date.now() - startedAt,
+          activeModels: 0,
+          models,
+          message: "active model registry is empty",
+        };
+      }
+
+      return {
+        status: "pass",
+        latencyMs: Date.now() - startedAt,
+        activeModels: models.length,
+        models,
+      };
+    } catch (error) {
+      return {
+        status: "fail",
+        latencyMs: Date.now() - startedAt,
+        message: failureMessage(error, includeDetail),
+      };
+    }
+  }
+
+  /**
+   * Two different things, deliberately reported together.
+   *
+   * `missing` is liveness: a model names an env var that is not set, so its
+   * calls will fail. That fails readiness.
+   *
+   * `envVarModels` is not liveness at all - those models work fine. It is
+   * reported because of what it COSTS: a key resolved from the environment
+   * can only be rotated by editing a file on the host and restarting the
+   * container. It cannot be rotated from the operator plane, and key rotation
+   * is routine.
+   *
+   * **Rewritten 2026-08-17.** It used to check `apiKeyEnvVar` and nothing else:
+   * `checkedKeys` counted env-var references and compared them against
+   * `process.env`, while the vault - the actual key store since ADR-003 - was
+   * outside its field of view entirely. A production reading of
+   * `checkedKeys: 0` therefore meant "no model uses an env var", and was read
+   * (by me, in vxture-atlas#240) as "no model has a key". Those are different
+   * statements, and the check could not tell them apart.
+   *
+   * With the env path retired, the old form would have reported `0` forever -
+   * a check that cannot fail is decoration. This one asks the question that
+   * now matters: does every model that names a vault alias actually have an
+   * active key behind it?
+   *
+   * It does not fail readiness. A model with a dangling alias refuses its own
+   * calls with PROVIDER_UNAVAILABLE, which is the caller's answer; dropping
+   * the whole service out of the load balancer over one misconfigured model
+   * would take down the four that are fine. Same reasoning as `registryDrift`.
+   */
+  private async checkProviderKeys(
+    models: AiModelRecord[],
+  ): Promise<HealthCheckResult> {
+    const aliases = [
+      ...new Set(
+        models
+          .map((model) => readManagedKeyAlias(model.config))
+          .filter((alias): alias is string => Boolean(alias)),
+      ),
+    ].sort();
+
+    // A model with no alias at all: the runtime refuses its calls outright
+    // (the vault is the only source), so it is worth naming here rather than
+    // leaving an operator to discover it one 503 at a time.
+    const keyless = models
+      .filter((model) => !readManagedKeyAlias(model.config))
+      .map((model) => model.modelCode)
+      .sort();
+
+    const rows = await this.providerKeys.list();
+    const active = new Set(
+      rows
+        // list() already excludes soft-deleted rows.
+        .filter((row) => row.isActive)
+        .map((row) => row.keyAlias),
+    );
+    const dangling = aliases.filter((alias) => !active.has(alias));
+
+    const detail = {
+      checkedAliases: aliases.length,
+      dangling,
+      keylessModels: keyless,
+    };
+
+    if (dangling.length > 0 || keyless.length > 0) {
+      return {
+        status: "pass",
+        ...detail,
+        message:
+          [
+            dangling.length > 0
+              ? `${dangling.length} model alias(es) have no active vault key`
+              : "",
+            keyless.length > 0
+              ? `${keyless.length} model(s) have no key at all and will refuse every call`
+              : "",
+          ]
+            .filter(Boolean)
+            .join("; "),
+      };
+    }
+
+    return { status: "pass", ...detail };
+  }
+
+  /**
+   * TD-018: reqlog partitions are pre-built a fixed number of months ahead.
+   * When they run out, **nothing errors** - rows silently land in the DEFAULT
+   * partition and keep working, while drop-based retention quietly stops
+   * being possible. That silence is the actual defect, so it gets a readiness
+   * signal rather than relying on someone remembering the calendar.
+   *
+   * Two independent signals:
+   *  - `monthsAhead`: how much runway is left. Low = act soon.
+   *  - `defaultPartitionRows`: must be 0. Any row here means a write already
+   *    landed with no proper partition - retention is broken *now*, not soon.
+   */
+  /**
+   * Config drift, not liveness - so it never blocks readiness. Atlas is
+   * perfectly healthy while an operator has a provider switched off and its
+   * models still serving; that is a thing to see, not a reason to fail out of
+   * the load balancer.
+   */
+  private async checkRegistryDrift(
+    includeDetail: boolean,
+  ): Promise<HealthCheckResult> {
+    const startedAt = Date.now();
+    try {
+      const [row] = await this.repository.readRegistryDrift();
+      const activeModelsUnderInactiveProvider = Number(
+        row?.activeModelsUnderInactiveProvider ?? 0,
+      );
+      const activeEndpointsWithUnusableModel = Number(
+        row?.activeEndpointsWithUnusableModel ?? 0,
+      );
+      const latencyMs = Date.now() - startedAt;
+      const drifted =
+        activeModelsUnderInactiveProvider + activeEndpointsWithUnusableModel;
+
+      return {
+        status: drifted > 0 ? "warn" : "pass",
+        latencyMs,
+        activeModelsUnderInactiveProvider,
+        activeEndpointsWithUnusableModel,
+        ...(drifted > 0
+          ? {
+              message: `${activeModelsUnderInactiveProvider} active model(s) unusable under a deactivated provider (not routable on /v1 and absent from GET /v1/models), ${activeEndpointsWithUnusableModel} active endpoint(s) cannot resolve their primary model`,
+            }
+          : {}),
+      };
+    } catch (error) {
+      return {
+        status: "fail",
+        latencyMs: Date.now() - startedAt,
+        message: failureMessage(error, includeDetail),
+      };
+    }
+  }
+
+  private async checkReqlogPartitions(
+    includeDetail: boolean,
+  ): Promise<HealthCheckResult> {
+    const startedAt = Date.now();
+    try {
+      const [row] = await this.repository.readReqlogPartitionRunway();
+      const monthsAhead = Number(row?.monthsAhead ?? 0);
+      const defaultPartitionRows = Number(row?.defaultPartitionRows ?? 0);
+      const latencyMs = Date.now() - startedAt;
+
+      if (defaultPartitionRows > 0) {
+        return {
+          status: "fail",
+          latencyMs,
+          monthsAhead,
+          defaultPartitionRows,
+          message:
+            "reqlog rows landed in the DEFAULT partition - explicit partitions were missing, so drop-based retention is already broken; run db-init to extend partitions, then relocate these rows",
+        };
+      }
+
+      if (monthsAhead < 2) {
+        return {
+          status: "warn",
+          latencyMs,
+          monthsAhead,
+          defaultPartitionRows,
+          message: `only ${monthsAhead} month(s) of reqlog partitions remain - run db-init to extend before they run out`,
+        };
+      }
+
+      return { status: "pass", latencyMs, monthsAhead, defaultPartitionRows };
+    } catch (error) {
+      return {
+        status: "fail",
+        latencyMs: Date.now() - startedAt,
+        message: failureMessage(error, includeDetail),
+      };
+    }
+  }
+
+  private async checkUsageSummaryRead(
+    includeDetail: boolean,
+  ): Promise<HealthCheckResult> {
+    const startedAt = Date.now();
+    try {
+      const summaries = await this.repository.listUsageSummaries({});
+      return {
+        status: "pass",
+        latencyMs: Date.now() - startedAt,
+        summaries: summaries.length,
+      };
+    } catch (error) {
+      return {
+        status: "fail",
+        latencyMs: Date.now() - startedAt,
+        message: failureMessage(error, includeDetail),
+      };
+    }
+  }
+}
+
+function resolveReadinessStatus(checks: HealthCheckResult[]): ReadinessStatus {
+  if (checks.some((check) => check.status === "fail")) {
+    return "blocked";
+  }
+
+  if (checks.some((check) => check.status === "warn")) {
+    return "degraded";
+  }
+
+  return "ready";
+}
+
+function readManagedKeyAlias(config: ModelConfig | null): string | null {
+  const value = config?.["managedKeyAlias"];
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function omitPrivateCheckData(check: HealthCheckResult): HealthCheckResult {
+  const publicCheck = { ...check };
+  delete publicCheck["models"];
+  return publicCheck;
+}
+
+// Conveys the failure without its cause. A driver error message names the
+// host, port, user and database it failed to reach.
+const OPAQUE_FAILURE_MESSAGE = "dependency check failed";
+
+function failureMessage(error: unknown, includeDetail: boolean): string {
+  return includeDetail ? errorMessage(error) : OPAQUE_FAILURE_MESSAGE;
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : "unknown error";
+}

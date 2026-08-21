@@ -1,0 +1,330 @@
+name: deploy
+
+# Tag-triggered production deploy. A v*.*.* tag builds the image and deploys the
+# production stack on worker-02 (100.76.219.48, owner-confirmed 2026-07-24 -
+# see docs/50-deployment/00-index.md and docs/70-workplan/00-index.md Phase 6),
+# stack root /srv/md0/atlas, published port 3100 (fixed - see the org port
+# registry). The production GitHub Environment carries a
+# required-reviewer gate, so the deploy job pauses until approved.
+#
+# First real end-to-end run: v0.3.1, 2026-08-12 (TD-032) - docker-build,
+# deploy, and the reviewer gate all exercised for real, verified live
+# afterward via /healthz + /readyz on the production host. v0.3.0 (same day)
+# failed at the image push - see TD-032 for that fix.
+#
+# BETA TIER PENDING (140-repo-governance-standard.md section 4): beta +
+# production is the standard two-tier model for every vxture product. Only the
+# beta half is dormant: during the development phase everything deploys
+# straight to production, and beta is a reserved release channel awaiting its
+# own separate server. Track as a TD in docs/60-operations/10-tech-debt.md once
+# this repo is live.
+#
+# Add the beta-* trigger and routing branch ONLY when that server exists - a tag
+# prefix with no environment behind it deploys nothing and fails confusingly.
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  # Dispatch must be aimed at a TAG ref (`gh workflow run deploy.yml --ref
+  # v0.12.0`), which is how release.yml starts a deploy: `detect` below routes
+  # on `github.ref_name` and hard-fails on anything that is not vX.Y.Z, so a
+  # dispatch from `main` aborts immediately.
+  #
+  # There was an `explicit_environment` input here, described as a debug
+  # override. It appeared exactly once in this file - its own declaration - and
+  # nothing ever read it, so selecting `production` in the UI did nothing
+  # whatsoever while looking like a deliberate choice. Routing has always come
+  # from the tag alone.
+  workflow_dispatch:
+
+# Serialize per target environment (production), never per tag. An in-flight
+# deploy is not cancelled.
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  # Product code: the `atlas` literal. Leave the PRODUCT_CODE repo variable
+  # UNSET here - it is the template's demo escape hatch, and setting it would
+  # repoint the stack root, containers, and DB.
+  PRODUCT_CODE: ${{ vars.PRODUCT_CODE || 'atlas' }}
+
+jobs:
+  detect:
+    name: detect-target-environment
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      environment: ${{ steps.route.outputs.environment }}
+      deploy_env: ${{ steps.route.outputs.deploy_env }}
+    steps:
+      - name: Route tag to GitHub Environment
+        id: route
+        shell: bash
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          # Two values from one routing decision: `environment` is the GitHub
+          # Environment (approval gate), `deploy_env` is the short suffix the
+          # db container name carries (vx-<code>-postgres-db-<env>). They are
+          # deliberately different vocabularies - do not collapse them.
+          case "$TAG" in
+            v*.*.*) environment=production; deploy_env=prod ;;
+            *) echo "deploy.yml triggered on unsupported tag: $TAG" >&2; exit 1 ;;
+          esac
+          echo "environment=$environment" >> "$GITHUB_OUTPUT"
+          echo "deploy_env=$deploy_env" >> "$GITHUB_OUTPUT"
+          echo "route: tag=$TAG -> environment=$environment, deploy_env=$deploy_env"
+
+  call-build:
+    name: docker-build
+    uses: ./.github/workflows/build.yml
+    needs: detect
+    permissions:
+      contents: read
+      packages: write
+      security-events: write
+    with:
+      pass_sha: ${{ github.sha }}
+    secrets:
+      NODE_AUTH_TOKEN: ${{ secrets.NODE_AUTH_TOKEN }}
+      ALIYUN_ACR_USERNAME: ${{ secrets.ALIYUN_ACR_USERNAME }}
+      ALIYUN_ACR_PASSWORD: ${{ secrets.ALIYUN_ACR_PASSWORD }}
+
+  deploy:
+    name: deploy
+    runs-on: ubuntu-latest
+    # Measured job execution, four most recent successful deploys: 1m29s-2m04s.
+    # The production Environment approval wait does NOT count toward this - the
+    # timer starts when the job begins executing - so tightening it does not put
+    # the section 6 approval gate at risk. 15m is ~7x the worst observed, which
+    # covers tailnet join plus scp/ssh variance and still surfaces a hang fast
+    # (vxture-platform#191).
+    timeout-minutes: 15
+    needs: [detect, call-build]
+    permissions:
+      contents: read
+      packages: read
+      issues: write
+    environment:
+      name: ${{ needs.detect.outputs.environment }}
+    env:
+      # Short env suffix carried by the db container name; routed from the tag
+      # in `detect` so there is one mapping, not one per consumer.
+      DEPLOY_ENV: ${{ needs.detect.outputs.deploy_env }}
+    steps:
+      - name: Checkout deploy sources
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+
+      - name: Validate deployment secrets
+        shell: bash
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_WORKER02_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_WORKER02_USER }}
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_WORKER02_SSH_KEY }}
+          DEPLOY_DIR: ${{ secrets.DEPLOY_DIR }}
+          ALIYUN_ACR_REGISTRY: ${{ vars.ALIYUN_ACR_REGISTRY }}
+          ALIYUN_ACR_NAMESPACE: ${{ vars.ALIYUN_ACR_NAMESPACE }}
+          TAILSCALE_OAUTH_CLIENT_ID: ${{ secrets.TAILSCALE_OAUTH_CLIENT_ID }}
+          TAILSCALE_OAUTH_CLIENT_SECRET: ${{ secrets.TAILSCALE_OAUTH_CLIENT_SECRET }}
+        run: |
+          set -euo pipefail
+          test -n "$DEPLOY_HOST"
+          test -n "$DEPLOY_USER"
+          test -n "$DEPLOY_SSH_KEY"
+          test -n "$ALIYUN_ACR_REGISTRY"
+          test -n "$ALIYUN_ACR_NAMESPACE"
+          test -n "$TAILSCALE_OAUTH_CLIENT_ID"
+          test -n "$TAILSCALE_OAUTH_CLIENT_SECRET"
+
+          # DEPLOY_DIR must be an absolute POSIX path. Setting it from Git Bash
+          # on Windows silently rewrites a leading "/" into the MSYS install
+          # prefix (a Windows drive path) - assert the shape here so it fails
+          # in seconds, not after a full build + approval + SSH round trip.
+          # Empty is allowed: the deploy step falls back to /srv/md0/<code>/deploy.
+          if [ -n "${DEPLOY_DIR:-}" ]; then
+            case "$DEPLOY_DIR" in
+              /*) ;;
+              *) echo "::error::DEPLOY_DIR must be an absolute POSIX path (starts with '/')." >&2; exit 1 ;;
+            esac
+            case "$DEPLOY_DIR" in
+              *:*|*"Program Files"*) echo "::error::DEPLOY_DIR contains a Windows path fragment - it was mangled by MSYS path conversion." >&2; exit 1 ;;
+            esac
+          fi
+
+      - name: Join tailnet and prepare SSH
+        uses: ./.github/actions/tailnet-ssh-connect
+        with:
+          tailscale-oauth-client-id: ${{ secrets.TAILSCALE_OAUTH_CLIENT_ID }}
+          tailscale-oauth-secret: ${{ secrets.TAILSCALE_OAUTH_CLIENT_SECRET }}
+          tailscale-tag: ${{ vars.TAILSCALE_OAUTH_CLIENT_TAG }}
+          deploy-host: ${{ secrets.DEPLOY_WORKER02_HOST }}
+          deploy-port: ${{ secrets.DEPLOY_WORKER02_PORT }}
+          deploy-ssh-key: ${{ secrets.DEPLOY_WORKER02_SSH_KEY }}
+          deploy-ssh-passphrase: ${{ secrets.DEPLOY_WORKER02_SSH_KEY_PASSPHRASE }}
+          deploy-known-hosts: ${{ secrets.DEPLOY_WORKER02_KNOWN_HOSTS }}
+
+      - name: Bootstrap .env on target host
+        shell: bash
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_WORKER02_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_WORKER02_USER }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_WORKER02_PORT }}
+          ENV_FILE_B64: ${{ secrets.ENV_FILE_BASE64 }}
+        run: |
+          set -euo pipefail
+          port="${DEPLOY_PORT:-22}"
+          stack_root="/srv/md0/${PRODUCT_CODE}"
+          ssh_opts=(-i ~/.ssh/deploy_key -p "$port" -o ServerAliveInterval=30 -o ServerAliveCountMax=20 -o ConnectTimeout=30)
+          if ssh "${ssh_opts[@]}" "$DEPLOY_USER@$DEPLOY_HOST" "test -f '$stack_root/etc/.env'"; then
+            echo "[bootstrap] $stack_root/etc/.env exists - skipping"
+          else
+            ssh "${ssh_opts[@]}" "$DEPLOY_USER@$DEPLOY_HOST" "mkdir -p '$stack_root/etc'"
+            printf '%s' "$ENV_FILE_B64" | ssh "${ssh_opts[@]}" "$DEPLOY_USER@$DEPLOY_HOST" \
+              "base64 -d > '$stack_root/etc/.env' && chmod 600 '$stack_root/etc/.env'"
+            echo "[bootstrap] .env created"
+          fi
+
+      - name: Deploy over SSH
+        shell: bash
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_WORKER02_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_WORKER02_USER }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_WORKER02_PORT }}
+          DEPLOY_DIR: ${{ secrets.DEPLOY_DIR }}
+          PASSED_SHA: ${{ github.sha }}
+          IMAGE_TAG: ${{ needs.call-build.outputs.image_tag }}
+          # The release tag, carried to the host so the running container reports
+          # the release it is part of rather than whatever APP_VERSION happened to
+          # be baked in. build.yml dedups on sha-<short>, so since PR builds landed
+          # (#245) the release build can be SKIPPED because a BRANCH build already
+          # occupies that key - and a branch build bakes APP_VERSION=dev. v0.18.0
+          # deployed exactly that, and deploy.sh warned about it.
+          RELEASE_VERSION: ${{ github.ref_name }}
+          ALIYUN_ACR_REGISTRY: ${{ vars.ALIYUN_ACR_REGISTRY }}
+          ALIYUN_ACR_NAMESPACE: ${{ vars.ALIYUN_ACR_NAMESPACE }}
+          ALIYUN_ACR_USERNAME: ${{ secrets.ALIYUN_ACR_USERNAME }}
+          ALIYUN_ACR_PASSWORD: ${{ secrets.ALIYUN_ACR_PASSWORD }}
+          GHCR_USERNAME: ${{ github.actor }}
+          GHCR_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          port="${DEPLOY_PORT:-22}"
+          deploy_dir="${DEPLOY_DIR:-/srv/md0/${PRODUCT_CODE}/deploy}"
+          image_tag="$IMAGE_TAG"
+          test -n "$image_tag"
+          ssh_opts=(-i ~/.ssh/deploy_key -p "$port" -o ServerAliveInterval=30 -o ServerAliveCountMax=20 -o ConnectTimeout=30)
+
+          # Push only the deploy subset (deploy/, configs/, docker-compose.yml)
+          # via one staged --delete rsync; the operator .env lives at
+          # <root>/etc/.env, outside the rsync target, so --delete is safe.
+          ssh "${ssh_opts[@]}" "$DEPLOY_USER@$DEPLOY_HOST" "mkdir -p '$deploy_dir'"
+          stage="$(mktemp -d)"
+          cp -a deploy/. "$stage/"
+          [ -d configs ] && cp -a configs "$stage/configs" || true
+          cp -a docker-compose.yml "$stage/docker-compose.yml"
+          rsync -az --delete --exclude='VERSION' --exclude='data' \
+            -e "ssh -i ~/.ssh/deploy_key -p $port -o ServerAliveInterval=30 -o ServerAliveCountMax=20 -o ConnectTimeout=30" \
+            "$stage/" "$DEPLOY_USER@$DEPLOY_HOST:$deploy_dir/"
+          rm -rf "$stage"
+
+          # Confirm the delivered compose carries a db service - catches a stale
+          # or truncated compose being rsync'd before we start the stack. Grep
+          # the container_name TEMPLATE (`vx-${PRODUCT_CODE}-postgres-db-${DEPLOY_ENV}`),
+          # not the resolved literal name, and anchor on the engine segment so
+          # this keeps matching when a second datastore (redis) is added.
+          ssh "${ssh_opts[@]}" "$DEPLOY_USER@$DEPLOY_HOST" \
+            "grep -qE 'container_name:.*-postgres-db-' '$deploy_dir/docker-compose.yml' && echo '[deliver] compose declares a postgres db service' || { echo '[deliver] ERROR: delivered compose has no postgres db service' >&2; exit 1; }"
+          ssh "${ssh_opts[@]}" "$DEPLOY_USER@$DEPLOY_HOST" "printf '%s\n' '$PASSED_SHA' > '$deploy_dir/VERSION'"
+
+          # Remote deploy script: registry primary/fallback for worker-02.
+          # Owner decision 2026-07-26 - ACR primary / GHCR fallback. This is a
+          # deliberate deviation from governance section 5's default for
+          # non-VPC hosts (GHCR primary) - see docs/50-deployment/00-index.md
+          # for the recorded reasoning.
+          cat > /tmp/deploy.sh <<'REMOTE_SCRIPT'
+          set -euo pipefail
+          cd "$REPO_DIR"
+          export IMAGE_REGISTRY="$ALIYUN_ACR_REGISTRY"
+          export IMAGE_NAMESPACE="$ALIYUN_ACR_NAMESPACE"
+          export IMAGE_TAG="$IMAGE_TAG"
+          export FALLBACK_IMAGE_REGISTRY="ghcr.io"
+          export FALLBACK_IMAGE_NAMESPACE="vxture"
+          if [ -n "${ALIYUN_ACR_USERNAME:-}" ] && [ -n "${ALIYUN_ACR_PASSWORD:-}" ]; then
+            for attempt in 1 2 3 4 5; do
+              printf '%s' "$ALIYUN_ACR_PASSWORD" | timeout 45 docker login "$ALIYUN_ACR_REGISTRY" -u "$ALIYUN_ACR_USERNAME" --password-stdin && break || sleep $((attempt * 5))
+            done
+          fi
+          if [ -n "${GHCR_TOKEN:-}" ]; then
+            printf '%s' "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USERNAME" --password-stdin
+          fi
+          bash deploy.sh all
+          bash deploy.sh verify
+          REMOTE_SCRIPT
+          # Unique per-product-per-run remote path. worker-02 is a SHARED host
+          # and bash reads script files incrementally: with a fixed
+          # /tmp/deploy.sh, a concurrent sibling-product deploy overwrites the
+          # file mid-execution and this run's bash resumes reading the OTHER
+          # product's bytes at a stale offset - a phantom syntax error that
+          # fails a deploy which actually succeeded (v0.2.1, 2026-08-10:
+          # arda's deploy landed at 07:32 during ours). The wrapper deletes
+          # itself when done (unlink-while-open is safe on Linux).
+          remote_script="/tmp/${PRODUCT_CODE}-deploy-${GITHUB_RUN_ID}.sh"
+          echo 'rm -f -- "$0"' >> /tmp/deploy.sh
+          scp -i ~/.ssh/deploy_key -P "$port" -o ConnectTimeout=30 /tmp/deploy.sh "$DEPLOY_USER@$DEPLOY_HOST:$remote_script"
+
+          remote_env=(
+            "PRODUCT_CODE=$PRODUCT_CODE" "DEPLOY_ENV=$DEPLOY_ENV"
+            "REPO_DIR=$deploy_dir" "IMAGE_TAG=$image_tag"
+            "RELEASE_VERSION=$RELEASE_VERSION"
+            "ALIYUN_ACR_REGISTRY=$ALIYUN_ACR_REGISTRY" "ALIYUN_ACR_NAMESPACE=$ALIYUN_ACR_NAMESPACE"
+            "ALIYUN_ACR_USERNAME=$ALIYUN_ACR_USERNAME" "ALIYUN_ACR_PASSWORD=$ALIYUN_ACR_PASSWORD"
+            "GHCR_USERNAME=$GHCR_USERNAME" "GHCR_TOKEN=$GHCR_TOKEN"
+          )
+          remote_cmd=""
+          for item in "${remote_env[@]}"; do
+            key="${item%%=*}"; value="${item#*=}"
+            printf -v escaped '%q=%q ' "$key" "$value"
+            remote_cmd+="$escaped"
+          done
+          remote_cmd+="bash $remote_script"
+          # Pipe over stdin (not argv) so secrets never appear in the host's ps/proc.
+          printf '%s\n' "$remote_cmd" | ssh "${ssh_opts[@]}" "$DEPLOY_USER@$DEPLOY_HOST" bash -s
+
+      - name: Notify on deploy failure (open/update issue)
+        if: failure()
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const env = '${{ needs.detect.outputs.environment }}';
+            const title = `Deploy failure: ${env}`;
+            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const tag = context.ref.replace('refs/tags/', '');
+            const { data: issues } = await github.rest.issues.listForRepo({ owner: context.repo.owner, repo: context.repo.repo, state: 'open', labels: 'deploy-failure' });
+            const existing = issues.find((i) => i.title === title);
+            const body = `Deploy to **${env}** failed for \`${context.sha.substring(0,7)}\` (tag \`${tag}\`).\n\nRun: ${runUrl}`;
+            if (existing) {
+              await github.rest.issues.createComment({ owner: context.repo.owner, repo: context.repo.repo, issue_number: existing.number, body });
+            } else {
+              await github.rest.issues.create({ owner: context.repo.owner, repo: context.repo.repo, title, body, labels: ['deploy-failure'] });
+            }
+
+      - name: Close deploy-failure issue on success
+        if: success()
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const env = '${{ needs.detect.outputs.environment }}';
+            const title = `Deploy failure: ${env}`;
+            const { data: issues } = await github.rest.issues.listForRepo({ owner: context.repo.owner, repo: context.repo.repo, state: 'open', labels: 'deploy-failure' });
+            const existing = issues.find((i) => i.title === title);
+            if (existing) {
+              await github.rest.issues.update({ owner: context.repo.owner, repo: context.repo.repo, issue_number: existing.number, state: 'closed' });
+            }

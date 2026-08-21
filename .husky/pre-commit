@@ -1,0 +1,21 @@
+#!/bin/sh
+# Local secret interception - earliest of the four org-mandated detection
+# layers (this hook -> CI gitleaks gate -> GitHub push protection -> public
+# posture, no private fallback). Scans staged content; a hit blocks the commit.
+#
+# One-time wiring per clone (no husky npm package needed):
+#   git config core.hooksPath .husky
+# Install gitleaks: scoop install gitleaks / choco install gitleaks /
+#   brew install gitleaks
+#
+# Not installed -> warn and pass (CI secret-scan + push protection still gate).
+if command -v gitleaks >/dev/null 2>&1; then
+  if ! gitleaks protect --staged --redact --config .gitleaks.toml --no-banner; then
+    echo "gitleaks found a suspected credential in staged content; commit blocked." >&2
+    echo "  False positive -> add an allowlist entry in .gitleaks.toml." >&2
+    echo "  Real value -> remove it from the repo and inject via env instead." >&2
+    exit 1
+  fi
+else
+  echo "WARN: gitleaks not installed; local secret scan skipped (CI gate still applies)." >&2
+fi

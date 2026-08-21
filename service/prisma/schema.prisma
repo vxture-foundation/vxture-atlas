@@ -1,0 +1,445 @@
+generator client {
+  provider = "prisma-client-js"
+  output   = "../src/generated/prisma"
+}
+
+// Prisma 7: no `url` here - the connection is a driver adapter
+// (@prisma/adapter-pg over DATABASE_URL) passed to the PrismaClient
+// constructor in src/prisma.ts. Structure changes still go through db-init
+// only; there is no prisma.config.ts because Migrate is never used.
+datasource db {
+  provider = "postgresql"
+  schemas  = ["key", "reqlog", "model", "provisioning", "audit"]
+}
+
+// Atlas 独立物理库：与平台库零跨库 FK（边界#1）。计量表（metering.*）属于
+// 平台库，Atlas 不直连——配额走 C2 entitlement 读、用量走 C3 consume 写。
+// DDL 权威在本仓 deploy/database/ddl/00_baseline.sql。
+
+// ── model schema（模型治理配置，DDL 权威 deploy/database/ddl/00_baseline.sql） ──
+
+model ModelProvider {
+  id           String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  providerCode String    @unique(map: "uq_model_providers_provider_code") @map("provider_code") @db.VarChar(64)
+  providerType String    @default("online") @map("provider_type") @db.VarChar(32)
+  providerName String    @map("provider_name") @db.VarChar(128)
+  description  String?   @db.VarChar(512)
+  logoUrl      String?   @map("logo_url") @db.Text
+  homepageUrl  String?   @map("homepage_url") @db.Text
+  consoleUrl   String?   @map("console_url") @db.Text
+  billingUrl   String?   @map("billing_url") @db.Text
+  isActive     Boolean   @default(true) @map("is_active")
+  config       Json?     @db.JsonB
+  createdBy    String?   @map("created_by") @db.Uuid
+  updatedBy    String?   @map("updated_by") @db.Uuid
+  createdAt    DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt    DateTime  @default(now()) @map("updated_at") @db.Timestamptz(6)
+  deletedAt    DateTime? @map("deleted_at") @db.Timestamptz(6)
+
+  models ModelDefinition[]
+
+  @@index([isActive], map: "idx_model_providers_is_active")
+  @@index([providerType], map: "idx_model_providers_type")
+  @@index([deletedAt], map: "idx_model_providers_deleted_at")
+  @@map("model_providers")
+  @@schema("model")
+}
+
+// model.models：已退役旧 provider varchar 冗余列（provider_id 为唯一权威 provider 引用）。
+// 服务侧 AiModelRecord.provider 由 providerRef.providerCode 派生（见 repository mapAiModel）。
+model ModelDefinition {
+  id                String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  providerId        String?   @map("provider_id") @db.Uuid
+  modelCode         String    @unique(map: "uq_models_model_code") @map("model_code") @db.VarChar(128)
+  modelType         String    @default("chat") @map("model_type") @db.VarChar(32)
+  protocol          String    @db.VarChar(64)
+  modelName         String    @map("model_name") @db.VarChar(128)
+  description       String?   @db.VarChar(512)
+  endpointUrl       String    @map("endpoint_url") @db.Text
+  contextWindow     Int?      @map("context_window")
+  maxOutputTokens   Int?      @map("max_output_tokens")
+  capabilities      String[]  @default([])
+  supportsStreaming Boolean   @default(true) @map("supports_streaming")
+  isActive          Boolean   @default(true) @map("is_active")
+  sort              Int       @default(999)
+  config            Json?     @db.JsonB
+  createdBy         String?   @map("created_by") @db.Uuid
+  updatedBy         String?   @map("updated_by") @db.Uuid
+  createdAt         DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt         DateTime  @default(now()) @map("updated_at") @db.Timestamptz(6)
+  deletedAt         DateTime? @map("deleted_at") @db.Timestamptz(6)
+  /// product_251 X-4: when this model was retired with notice. NULL is the
+  /// normal case. Orthogonal to `isActive` on purpose - a deprecated model is
+  /// still active, which is the definition: still resolvable, no longer
+  /// recommended. See incr/15_models_deprecated_at.sql.
+  deprecatedAt      DateTime? @map("deprecated_at") @db.Timestamptz(6)
+
+  providerRef ModelProvider?   @relation(fields: [providerId], references: [id])
+  grants      ModelGrant[]
+  priceRules  ModelPriceRule[]
+  policies    ModelPolicy[]
+
+  @@index([isActive], map: "idx_models_is_active")
+  @@index([modelType], map: "idx_models_model_type")
+  @@index([providerId], map: "idx_models_provider_id")
+  @@index([deletedAt], map: "idx_models_deleted_at")
+  @@index([deprecatedAt], map: "idx_models_deprecated_at")
+  @@map("models")
+  @@schema("model")
+}
+
+model ModelGrant {
+  id              String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  modelId         String    @map("model_id") @db.Uuid
+  tenantId        String    @map("tenant_id") @db.Uuid
+  applicationId   String?   @map("application_id") @db.Uuid
+  applicationType String?   @map("application_type") @db.VarChar(32)
+  agentId         String?   @map("agent_id") @db.Uuid
+  // Task-profile routing (docs/70-workplan): a grant with taskProfile set is a
+  // tenant's preferred model for that task profile (e.g. "summarization",
+  // "long-context") - callers may pass taskProfile instead of an explicit
+  // modelCode and let ModelRegistryService.resolveModelCodeForTaskProfile pick
+  // the highest-priority active, non-expired match. NULL = ordinary
+  // entitlement-only grant, unrelated to task-profile routing.
+  taskProfile     String?   @map("task_profile") @db.VarChar(64)
+  priority        Int       @default(100)
+  isActive        Boolean   @default(true) @map("is_active")
+  reason          String?   @db.VarChar(512)
+  expiresAt       DateTime? @map("expires_at") @db.Timestamptz(6)
+  createdBy       String?   @map("created_by") @db.Uuid
+  updatedBy       String?   @map("updated_by") @db.Uuid
+  createdAt       DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt       DateTime  @default(now()) @map("updated_at") @db.Timestamptz(6)
+  deletedAt       DateTime? @map("deleted_at") @db.Timestamptz(6)
+
+  modelDef ModelDefinition @relation(fields: [modelId], references: [id])
+
+  @@index([modelId], map: "idx_model_grants_model")
+  @@index([tenantId], map: "idx_model_grants_tenant")
+  @@index([applicationId], map: "idx_model_grants_application")
+  @@index([applicationType], map: "idx_model_grants_application_type")
+  @@index([agentId], map: "idx_model_grants_agent")
+  @@index([isActive], map: "idx_model_grants_is_active")
+  @@index([taskProfile], map: "idx_model_grants_task_profile")
+  @@map("model_grants")
+  @@schema("model")
+}
+
+model ModelPriceRule {
+  id               String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  modelId          String    @map("model_id") @db.Uuid
+  billingMode      String    @default("token") @map("billing_mode") @db.VarChar(32)
+  currency         String    @default("CNY") @db.VarChar(16)
+  unitTokens       Int       @default(1000000) @map("unit_tokens")
+  inputUnitPrice   Decimal   @default(0) @map("input_unit_price") @db.Decimal(18, 8)
+  outputUnitPrice  Decimal   @default(0) @map("output_unit_price") @db.Decimal(18, 8)
+  requestUnitPrice Decimal   @default(0) @map("request_unit_price") @db.Decimal(18, 8)
+  isActive         Boolean   @default(true) @map("is_active")
+  effectiveAt      DateTime  @default(now()) @map("effective_at") @db.Timestamptz(6)
+  expiresAt        DateTime? @map("expires_at") @db.Timestamptz(6)
+  createdBy        String?   @map("created_by") @db.Uuid
+  updatedBy        String?   @map("updated_by") @db.Uuid
+  createdAt        DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt        DateTime  @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  modelDef ModelDefinition @relation(fields: [modelId], references: [id])
+  deletedAt       DateTime? @map("deleted_at") @db.Timestamptz(6)
+  @@index([modelId], map: "idx_model_price_rules_model")
+  @@index([effectiveAt], map: "idx_model_price_rules_effective")
+  @@index([isActive], map: "idx_model_price_rules_is_active")
+  @@index([deletedAt], map: "idx_model_price_rules_deleted_at")
+  @@map("model_price_rules")
+  @@schema("model")
+}
+
+model ModelPolicy {
+  id               String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  modelId          String    @map("model_id") @db.Uuid
+  tenantId         String?   @map("tenant_id") @db.Uuid
+  name             String?   @db.VarChar(128)
+  priority         Int       @default(100)
+  maxConcurrent    Int?      @map("max_concurrent")
+  rateLimitRpm     Int?      @map("rate_limit_rpm")
+  rateLimitTpm     BigInt?   @map("rate_limit_tpm")
+  rateLimitTpd     BigInt?   @map("rate_limit_tpd")
+  maxContextTokens Int?      @map("max_context_tokens")
+  isActive         Boolean   @default(true) @map("is_active")
+  effectiveAt      DateTime  @default(now()) @map("effective_at") @db.Timestamptz(6)
+  expiresAt        DateTime? @map("expires_at") @db.Timestamptz(6)
+  createdBy        String?   @map("created_by") @db.Uuid
+  updatedBy        String?   @map("updated_by") @db.Uuid
+  createdAt        DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt        DateTime  @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  modelDef ModelDefinition @relation(fields: [modelId], references: [id])
+  deletedAt       DateTime? @map("deleted_at") @db.Timestamptz(6)
+  @@unique([modelId, tenantId], map: "uq_model_policies_model_tenant")
+  @@index([modelId], map: "idx_model_policies_model")
+  @@index([tenantId], map: "idx_model_policies_tenant")
+  @@index([isActive], map: "idx_model_policies_is_active")
+  @@index([deletedAt], map: "idx_model_policies_deleted_at")
+  @@map("model_policies")
+  @@schema("model")
+}
+
+/**
+ * Logical capability entry point (vxture-atlas#143). primaryModelCode /
+ * fallbackModelCode are logical refs to ModelDefinition.modelCode, no FK -
+ * see 00_baseline.sql's model_endpoints comment for why.
+ */
+model ModelEndpoint {
+  id                 String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  code               String    @unique(map: "uq_model_endpoints_code") @db.VarChar(128)
+  category           String    @default("chat") @db.VarChar(32)
+  primaryModelCode   String    @map("primary_model_code") @db.VarChar(128)
+  fallbackModelCode  String?   @map("fallback_model_code") @db.VarChar(128)
+  isActive           Boolean   @default(true) @map("is_active")
+  createdBy          String?   @map("created_by") @db.Uuid
+  updatedBy          String?   @map("updated_by") @db.Uuid
+  createdAt          DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt          DateTime  @default(now()) @map("updated_at") @db.Timestamptz(6)
+  deletedAt          DateTime? @map("deleted_at") @db.Timestamptz(6)
+
+  @@index([isActive], map: "idx_model_endpoints_is_active")
+  @@index([deletedAt], map: "idx_model_endpoints_deleted_at")
+  @@index([primaryModelCode], map: "idx_model_endpoints_primary_model_code")
+  @@map("model_endpoints")
+  @@schema("model")
+}
+
+// ── key schema（provider 密钥，密文，DDL 权威 deploy/database/ddl/00_baseline.sql） ──
+
+model ProviderApiKey {
+  id              String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  providerCode    String    @map("provider_code") @db.VarChar(64)
+  keyAlias        String    @map("key_alias") @db.VarChar(128)
+  encryptedKey    Bytes     @map("encrypted_key")
+  encryptionKeyId String    @map("encryption_key_id") @db.VarChar(128)
+  keyScope        String    @default("shared") @map("key_scope") @db.VarChar(32)
+  isActive        Boolean   @default(true) @map("is_active")
+  lastRotatedAt   DateTime? @map("last_rotated_at") @db.Timestamptz(6)
+  createdAt       DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt       DateTime  @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  rotationLogs KeyRotationLog[]
+  deletedAt       DateTime? @map("deleted_at") @db.Timestamptz(6)
+  @@unique([providerCode, keyAlias], map: "uq_provider_api_keys_code_alias")
+  @@index([providerCode], map: "idx_provider_api_keys_provider_code")
+  @@index([isActive], map: "idx_provider_api_keys_is_active")
+  @@index([deletedAt], map: "idx_provider_api_keys_deleted_at")
+  @@map("provider_api_keys")
+  @@schema("key")
+}
+
+model KeyRotationLog {
+  id               String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  providerApiKeyId String   @map("provider_api_key_id") @db.Uuid
+  rotatedBy        String?  @map("rotated_by") @db.Uuid
+  reason           String?  @db.VarChar(512)
+  rotatedAt        DateTime @default(now()) @map("rotated_at") @db.Timestamptz(6)
+
+  providerApiKey ProviderApiKey @relation(fields: [providerApiKeyId], references: [id], onDelete: Cascade)
+
+  @@index([providerApiKeyId, rotatedAt], map: "idx_key_rotation_logs_key")
+  @@map("key_rotation_logs")
+  @@schema("key")
+}
+
+/**
+ * Gateway caller API keys (vxture-atlas#144, TD-029) - credentials Atlas
+ * issues to whoever calls the Atlas gateway itself, the reverse direction
+ * from ProviderApiKey. keyHash is one-way (sha256), never decryptable - see
+ * 00_baseline.sql's gateway_api_keys comment.
+ */
+model GatewayApiKey {
+  id           String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  name         String    @db.VarChar(128)
+  /// `internal` is retired (incr/08): the database default is `external` and
+  /// chk_gateway_api_keys_kind rejects every other value on new rows. This
+  /// model kept naming `internal` as the default long after that, because the
+  /// DDL<->Prisma guardrail compares column names only, never defaults.
+  kind         String    @default("external") @db.VarChar(16)
+  owner        String?   @db.VarChar(128)
+  keyPrefix    String    @map("key_prefix") @db.VarChar(24)
+  keyHash      String    @unique(map: "uq_gateway_api_keys_key_hash") @map("key_hash") @db.VarChar(128)
+  status       String    @default("active") @db.VarChar(16)
+  expiresAt   DateTime? @map("expires_at") @db.Timestamptz(6)
+  deletedAt   DateTime? @map("deleted_at") @db.Timestamptz(6)
+  lastUsedAt   DateTime? @map("last_used_at") @db.Timestamptz(6)
+  createdBy    String?   @map("created_by") @db.Uuid
+  updatedBy    String?   @map("updated_by") @db.Uuid
+  createdAt    DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt    DateTime  @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  @@index([status], map: "idx_gateway_api_keys_status")
+  @@index([kind], map: "idx_gateway_api_keys_kind")
+  @@index([expiresAt], map: "idx_gateway_api_keys_expires_at")
+  @@index([deletedAt], map: "idx_gateway_api_keys_deleted_at")
+  @@map("gateway_api_keys")
+  @@schema("key")
+}
+
+// ── reqlog schema（高频 AI 请求 / 错误日志，按月分区，append-only） ──
+
+model RequestRecord {
+  id                     String   @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  requestId              String   @map("request_id") @db.VarChar(128)
+  /// product_251 X-2: the caller's task identity, stored verbatim. VarChar and
+  /// not Uuid on purpose - the caller mints it and Atlas must record what it
+  /// was sent, not reject or blank it. See incr/13_reqlog_task_id.sql.
+  taskId                 String?  @map("task_id") @db.VarChar(128)
+  tenantId               String?  @map("tenant_id") @db.Uuid
+  workspaceId            String?  @map("workspace_id") @db.Uuid
+  productId              String?  @map("product_id") @db.Uuid
+  userId                 String?  @map("user_id") @db.Uuid
+  applicationId          String?  @map("application_id") @db.Uuid
+  applicationType        String?  @map("application_type") @db.VarChar(32)
+  agentId                String?  @map("agent_id") @db.Uuid
+  featureId              String?  @map("feature_id") @db.Uuid
+  downstreamIdentityHash String?  @map("downstream_identity_hash") @db.VarChar(128)
+  modelCode              String?  @map("model_code") @db.VarChar(128)
+  providerCode           String?  @map("provider_code") @db.VarChar(64)
+  endpointCode           String?  @map("endpoint_code") @db.VarChar(128)
+  productCode            String?  @map("product_code") @db.VarChar(64)
+  inputTokens            BigInt?  @map("input_tokens")
+  outputTokens           BigInt?  @map("output_tokens")
+  totalTokens            BigInt?  @map("total_tokens")
+  latencyMs              Int?     @map("latency_ms")
+  usageType              String?  @map("usage_type") @db.VarChar(16)
+  status                 String?  @db.VarChar(32)
+  businessId             String?  @map("business_id") @db.VarChar(128)
+  billedMetricKey        String?  @map("billed_metric_key") @db.VarChar(64)
+  billedAmount           BigInt?  @map("billed_amount")
+  /// What `billedAmount` counts (product_251 X-3): token / candidate / page.
+  /// One column carries three units across the four capabilities, and without
+  /// this a SUM over a mixed window adds tokens to pages. CHECK-constrained in
+  /// incr/14 - a plausible wrong unit is worse than the NULL it replaced.
+  costUnit               String?  @map("cost_unit") @db.VarChar(16)
+  usageEventId           String?  @map("usage_event_id") @db.Uuid
+  createdAt              DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@id([id, createdAt])
+  @@index([requestId], map: "idx_request_records_request_id")
+  @@index([usageEventId], map: "idx_request_records_usage_event_id")
+  @@index([tenantId], map: "idx_request_records_tenant_id")
+  @@index([endpointCode], map: "idx_request_records_endpoint_code")
+  @@index([productCode], map: "idx_request_records_product_code")
+  @@index([taskId], map: "idx_request_records_task_id")
+  @@map("request_records")
+  @@schema("reqlog")
+}
+
+model ErrorRecord {
+  id           String   @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  requestId    String?  @map("request_id") @db.VarChar(128)
+  providerCode String?  @map("provider_code") @db.VarChar(64)
+  modelCode    String?  @map("model_code") @db.VarChar(128)
+  endpointCode String?  @map("endpoint_code") @db.VarChar(128)
+  errorCode    String?  @map("error_code") @db.VarChar(64)
+  errorMessage String?  @map("error_message") @db.Text
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@id([id, createdAt])
+  @@index([requestId], map: "idx_error_records_request_id")
+  @@index([errorCode], map: "idx_error_records_error_code")
+  @@map("error_records")
+  @@schema("reqlog")
+}
+
+// ── provisioning schema (C3 provisioning webhook receiver state, TD-003) ──
+
+model WorkspaceProvisioning {
+  id               String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  workspaceId      String    @map("workspace_id") @db.Uuid
+  tenantId         String?   @map("tenant_id") @db.Uuid
+  productCode      String    @default("atlas") @map("product_code") @db.VarChar(64)
+  status           String    @default("pending") @db.VarChar(32)
+  seq              BigInt    @default(0)
+  provisionedAt    DateTime? @map("provisioned_at") @db.Timestamptz(6)
+  deprovisionedAt  DateTime? @map("deprovisioned_at") @db.Timestamptz(6)
+  createdAt        DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt        DateTime  @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  @@unique([workspaceId, productCode], map: "uq_workspace_provisionings_workspace_product")
+  @@index([status], map: "idx_workspace_provisionings_status")
+  @@map("workspace_provisionings")
+  @@schema("provisioning")
+}
+
+model WebhookDelivery {
+  id          String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  deliveryId  String   @unique(map: "uq_webhook_deliveries_delivery_id") @map("delivery_id") @db.VarChar(128)
+  workspaceId String   @map("workspace_id") @db.Uuid
+  productCode String   @default("atlas") @map("product_code") @db.VarChar(64)
+  eventType   String   @map("event_type") @db.VarChar(64)
+  seq         BigInt
+  receivedAt  DateTime @default(now()) @map("received_at") @db.Timestamptz(6)
+
+  @@index([workspaceId, seq], map: "idx_webhook_deliveries_workspace")
+  @@map("webhook_deliveries")
+  @@schema("provisioning")
+}
+
+/// Operator change trail (product_250 M-5). Append-only: the service role has
+/// INSERT and SELECT and nothing else, so nothing in this codebase can amend
+/// or remove a row once written.
+///
+/// `changedFields` holds field NAMES, never values - request bodies on this
+/// plane carry provider API keys and gateway key secrets, and an audit table
+/// that becomes an unencrypted second copy of the key vault is a worse problem
+/// than the gap it closes.
+/// product_251 X-3 renamed the FIELDS, not the columns. `@map` carries the
+/// rename entirely, so there is no incr/ file, no db-init, and no ordering
+/// constraint against the deploy - the physical column names stay exactly as
+/// `00_baseline.sql` declares them, and a rollback needs nothing.
+///
+/// `actorConsole` is `actor_client_id` renamed, NOT a new column. That column
+/// already holds `act.sub`, the workforce RP that minted the OBO exchange,
+/// which is precisely "which management surface this change came from". Adding
+/// a physical column for it would have meant a value Atlas cannot derive from
+/// anything it receives - a column that is always NULL is the
+/// configured-but-inert defect, not compliance.
+model ChangeRecord {
+  eventId        String   @id @map("id") @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  objectType     String   @map("resource_type") @db.VarChar(64)
+  objectId       String?  @map("resource_id") @db.VarChar(128)
+  action         String   @db.VarChar(32)
+  actorId        String   @map("operator_sub") @db.VarChar(128)
+  actorConsole   String?  @map("actor_client_id") @db.VarChar(128)
+  changedFields  String[] @map("changed_fields")
+  requestId      String?  @map("request_id") @db.VarChar(128)
+  outcome        String   @default("success") @db.VarChar(16)
+  occurredAt     DateTime @default(now()) @map("occurred_at") @db.Timestamptz(6)
+
+  @@index([objectType, objectId, occurredAt(sort: Desc)], map: "idx_change_records_resource")
+  @@index([actorId, occurredAt(sort: Desc)], map: "idx_change_records_operator")
+  @@index([occurredAt(sort: Desc)], map: "idx_change_records_occurred_at")
+  @@map("change_records")
+  @@schema("audit")
+}
+
+/// Product-scoped authorization (incr/06): a product is granted ENTRY POINTS.
+/// Granting models instead would break the endpoint's own promise - repointing
+/// one is supposed to be invisible to callers - and would make an endpoint's
+/// failover need a separate grant to fire.
+model ProductEndpointGrant {
+  id              String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  productCode     String    @map("product_code") @db.VarChar(64)
+  endpointCode    String    @map("endpoint_code") @db.VarChar(128)
+  applicationId   String?   @map("application_id") @db.Uuid
+  applicationType String?   @map("application_type") @db.VarChar(32)
+  isActive        Boolean   @default(true) @map("is_active")
+  reason          String?   @db.VarChar(512)
+  expiresAt       DateTime? @map("expires_at") @db.Timestamptz(6)
+  createdBy       String?   @map("created_by") @db.Uuid
+  updatedBy       String?   @map("updated_by") @db.Uuid
+  createdAt       DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt       DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+  deletedAt       DateTime? @map("deleted_at") @db.Timestamptz(6)
+
+  @@index([productCode], map: "idx_product_endpoint_grants_product")
+  @@index([endpointCode], map: "idx_product_endpoint_grants_endpoint")
+  @@index([deletedAt], map: "idx_product_endpoint_grants_deleted_at")
+  @@map("product_endpoint_grants")
+  @@schema("model")
+}

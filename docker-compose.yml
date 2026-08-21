@@ -1,0 +1,269 @@
+# Two-container stack for the services profile: <code>-app (NestJS) plus
+# vx-<code>-postgres-db-<env> (Atlas's own physical database - see
+# docs/30-design/00-index.md for why this is not a shared-platform-DB schema
+# and not a vxturebiz_atlas_{env}-style business-plane DB either).
+#
+# Every container name derives from PRODUCT_CODE and DEPLOY_ENV, so nothing
+# here is atlas-specific and prod/beta/dev never collide on one host:
+#   vx-<code>-app-<env>            the service
+#   vx-<code>-postgres-db-<env>    its datastore
+# The compose SERVICE names (app, db) stay short and are the network aliases
+# other containers resolve - so renaming a container never breaks a
+# DATABASE_URL. No redis service until OIDC_RP_ENABLED=on (see .env.example)
+# actually needs a session store - add it at that point as
+# `vx-<code>-redis-db-<env>`, same shape, `redis` in the engine segment.
+name: ${PROJECT_NAME:-atlas}
+
+services:
+  app:
+    container_name: vx-${PRODUCT_CODE:-atlas}-app-${DEPLOY_ENV:-dev}
+    build:
+      context: .
+      dockerfile: service/Dockerfile
+      # Explicit stage: without it a stage added after `runtime` silently
+      # becomes the app image (docker builds the LAST stage by default, #121).
+      target: runtime
+      # Local `compose build` only; the deploy path pulls the CI-built image (which
+      # injects real provenance). Honest dev/unknown defaults for local builds.
+      args:
+        APP_VERSION: ${APP_VERSION:-dev}
+        GIT_SHA: ${GIT_SHA:-unknown}
+        BUILD_TIME: ${BUILD_TIME:-unknown}
+        # DEPLOY_STAGE is NOT a build arg: it says where the container runs,
+        # not what it is. Passed as a runtime environment variable below.
+      # The Dockerfile installs @vxture/shared from GitHub Packages, which is
+      # private, so the deps stage needs a token. CI passes one; nothing here
+      # did, and local builds appeared to work anyway because the deps LAYER
+      # was always a cache hit - the install never actually ran. The first
+      # lockfile change exposed it as `ERR_PNPM_FETCH_401`, at which point the
+      # image could not be built locally at all.
+      #
+      # With the wiring in place, a missing token fails at the same 401 it
+      # always did - but now the fix is `export NODE_AUTH_TOKEN=...` rather
+      # than editing this file.
+      secrets:
+        - node_auth_token
+    image: ${IMAGE_REGISTRY:-ghcr.io}/${IMAGE_NAMESPACE:-vxture}/${PRODUCT_CODE:-atlas}-app:${IMAGE_TAG:-local}
+    # Load the full operator .env into the app so ALL runtime config (platform
+    # client, webhook, PLATFORM_INTERNAL_AUTH_TOKEN, ...) reaches it - not just the few
+    # keys in `environment:` below. APP_ENV_FILE is the absolute path
+    # deploy.sh passes (<root>/etc/.env); local dev falls back to ./.env.
+    #
+    # Provider API keys (DOUBAO_API_KEY etc., legacy `apiKeyEnvVar` path -
+    # TD-006's managed vault is the target state) load from a SEPARATE file,
+    # not the main .env: this one is never CI-bootstrapped (deploy.yml only
+    # auto-creates <root>/etc/.env, never this file), so it can carry
+    # stricter host permissions (chmod 400, owner-only) and a narrower blast
+    # radius than the general operator .env. `required: false` - its absence
+    # is normal until an operator manually creates it on the host.
+    env_file:
+      - path: ${APP_ENV_FILE:-.env}
+        required: false
+      - path: ${APP_PROVIDER_KEYS_ENV_FILE:-.env.provider-keys}
+        required: false
+    environment:
+      NODE_ENV: production
+      PORT: "3100"
+      DATABASE_URL: ${DATABASE_URL:-}
+      # Where this container runs, decided at RUN time. `dev` is the honest
+      # default: a container nobody told is not production. deploy.sh exports
+      # the real value from the deploy tag.
+      DEPLOY_STAGE: ${DEPLOY_STAGE:-dev}
+      # Which RELEASE this deployment is part of - a run-time fact for the same
+      # reason the stage above is. `gitSha` and `buildTime` are properties of
+      # the binary and stay baked; the release tag is not - the same image can
+      # ship as v0.18.0 and re-ship as v0.18.1 without a byte changing.
+      #
+      # It only became reachable once build.yml started building on PRs (#245):
+      # pre-building a commit under a branch ref poisons the `sha-<short>`
+      # dedup key, the release build is then skipped as "already built", and
+      # production inherits the branch build's APP_VERSION=dev. v0.18.0 shipped
+      # exactly that, and deploy.sh's `version=dev` warning was correct.
+      #
+      # A SEPARATE name, not an override of APP_VERSION: compose's map form
+      # always sets the key, so `APP_VERSION: ${APP_VERSION:-}` would replace
+      # the image's baked value with an empty string and there would be no way
+      # to get it back from inside the container. env.ts promotes this onto
+      # APP_VERSION only when it is non-empty, so a bare `docker compose up`
+      # with no tag to offer still reports what the image was built as.
+      RELEASE_VERSION: ${RELEASE_VERSION:-}
+    ports:
+      - "${APP_PUBLISH_PORT:-3100}:3100"
+    # host.docker.internal: Docker Desktop (Windows/Mac) injects this
+    # automatically; host-gateway makes it resolve on Linux Docker too, for
+    # OIDC_BACKCHANNEL_ISSUER (jwt-shared.ts) when a host-process IdP mints
+    # tokens under a localhost issuer this containerized app can't reach as
+    # "localhost" - see .env.example. Inert everywhere else.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      - db
+    healthcheck:
+      # PATH-resolved node: real /usr/local/bin/node in pre-distroless images,
+      # a shipped symlink to /nodejs/bin/node in distroless ones - the same
+      # probe stays valid across a rollback boundary.
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3100/healthz').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    # Resource ceiling, so one container cannot take the host down with it.
+    # Measured before it was set: this service idles at ~137MiB with every
+    # route mapped, so 512M is roughly 3.7x headroom - enough for a burst of
+    # concurrent SSE streams (each holds an upstream connection and a buffer)
+    # without leaving room for a leak to run unchecked.
+    #
+    # The reservation is not a second limit: it is what the scheduler must be
+    # able to give this container before it starts, which is what stops a host
+    # already packed with sibling products from admitting an atlas it cannot
+    # actually run.
+    #
+    # memswap_limit == memory: unset, docker grants 2x memory as swap, so the
+    # 512M limit was really "512M resident plus 512M of swap to degrade into"
+    # (found 2026-08-17 via runos#247, measured as memswap=1073741824 on the
+    # running container). A node process that has started swapping is not
+    # usefully alive; failing at the stated number is the honest behaviour.
+    memswap_limit: 512M
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
+          pids: 512
+        reservations:
+          cpus: "0.25"
+          memory: 256M
+    # `pids` is inside limits, not the top-level `pids_limit`: compose 5
+    # treats them as one setting and refuses a project that sets both.
+    networks: [appnet]
+    restart: unless-stopped
+
+  db:
+    # Both names derive from PRODUCT_CODE, so a sibling product repo gets its
+    # own pair by changing one variable:
+    #   container  vx-<code>-postgres-db-<env>   (env distinguishes dev/beta/prod
+    #              on one host; DEPLOY_ENV comes from the deploy tag, and is
+    #              `dev` for a local stack; the engine segment lives HERE)
+    #   database   vx_<code>_db                  (runos ADR-007: no engine
+    #              segment - inside the engine it is tautological; snake_case
+    #              because a hyphen in a Postgres identifier would force double
+    #              quotes in every hand-written statement)
+    container_name: vx-${PRODUCT_CODE:-atlas}-postgres-db-${DEPLOY_ENV:-dev}
+    # Parameterised for the same reason the app image is: the deploy host
+    # cannot reach Docker Hub. Pulls of `postgres:18-alpine` there fail with a
+    # connection reset from Hub's CDN while the manifest still resolves through
+    # the configured mirrors, and `compose pull db || true` swallows it - the
+    # service only starts because a local cache happens to hold the image, so a
+    # NEW host cannot bootstrap at all. Production sets POSTGRES_IMAGE in the
+    # host .env to a digest-pinned ACR reference mirrored by
+    # .github/workflows/mirror-image.yml. Unset = Hub, so local dev is
+    # unaffected.
+    image: ${POSTGRES_IMAGE:-postgres:18-alpine}
+    environment:
+      # The container superuser is the DB OWNER, NOT the service role. The DDL
+      # (db-init, as this owner) creates the least-privilege <code>_svc role that
+      # the app connects as via DATABASE_URL (product_240 section 2.7: connect
+      # identity = <code>_svc, never owner-direct).
+      POSTGRES_DB: ${POSTGRES_DB:-vx_${PRODUCT_CODE:-atlas}_db}
+      POSTGRES_USER: ${POSTGRES_DB_OWNER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-}
+    volumes:
+      # Postgres 18+ image layout: mount the PARENT directory, not .../data -
+      # the actual data lives in a versioned subdirectory under the mount,
+      # which is what enables pg_upgrade --link across future majors without
+      # mount-boundary issues. The 18 image refuses the pre-18 layout.
+      - ${DATA_DIR:-./data}/db:/var/lib/postgresql
+    # Every number the ceiling below is computed from is PINNED here rather than
+    # inherited from the image. Reported by runos (#247) against the previous
+    # revision, which sized 512M for "a dozen concurrent queries" while
+    # max_connections sat at the postgres default of 100 - the ceiling was
+    # guessing at an unbounded configuration. Pinning is the half that makes the
+    # arithmetic hold: a base-image default that moves would otherwise move the
+    # peak without moving the cap, and nothing would report it.
+    command: >
+      postgres
+      -c shared_buffers=128MB
+      -c work_mem=4MB
+      -c maintenance_work_mem=48MB
+      -c max_connections=32
+      -c autovacuum_max_workers=2
+    #   fixed      shared_buffers                   128MB
+    #   per conn   work_mem 4MB + backend overhead ~3MB
+    #   vacuum     2 workers x maintenance_work_mem  96MB
+    #
+    #   realistic  128 + 10x7 + 96             = 294MB   (app pool is 10)
+    #   admitted   128 + 32x7 + 96             = 448MB   (max_connections)
+    #
+    # 512M holds the ADMITTED peak, not just the realistic one - which is the
+    # property #247 asked for and the previous revision did not have.
+    #
+    # max_connections is 32, not runos's 100: atlas's database is reached by one
+    # app container's pool (`DB_POOL_MAX` in service/src/prisma.ts, 10), plus
+    # db-init and an operator psql. Products reach atlas over HTTP, not over
+    # postgres, so the fleet-wide connection budget runos sizes for does not
+    # apply here. 32 leaves room for a second app replica, db-init and the 3
+    # superuser-reserved slots. Raising DB_POOL_MAX means re-deriving this.
+    #
+    # memswap_limit == memory: with it unset docker grants 2x memory as swap, so
+    # a container over its limit silently degrades into swapping instead of
+    # failing. For a database that is the worse outcome - unbounded latency on
+    # every query, and the OOM killer arrives anyway. Pairing them makes an
+    # overshoot deterministic and visible, which is defensible only because the
+    # ceiling above is now derived to hold the configuration rather than to
+    # guess at it.
+    memswap_limit: 512M
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
+          pids: 256
+        reservations:
+          cpus: "0.25"
+          memory: 128M
+    networks: [appnet]
+    restart: unless-stopped
+
+  # Host-access forwarder, DEV ONLY (compose profile `dev`): publishes the db
+  # to 127.0.0.1:5432 for host tools (psql, DDL verify, dumps). The db service
+  # itself publishes no port on purpose. Not a datastore, so it takes the
+  # sibling auxiliary-service shape vx-<code>-<role>-<env> with a single-word
+  # role (matching runos's `executor`), not the vx-<code>-<engine>-db-<env>
+  # datastore cascade. deploy.sh runs compose without profiles, so beta/prod
+  # never start it.
+  #   COMPOSE_PROFILES=dev docker compose up -d
+  forwarder:
+    profiles: ["dev"]
+    container_name: vx-${PRODUCT_CODE:-atlas}-forwarder-${DEPLOY_ENV:-dev}
+    image: alpine/socat
+    command: tcp-listen:5432,fork,reuseaddr tcp:db:5432
+    ports:
+      - "127.0.0.1:5432:5432"
+    depends_on:
+      - db
+    # A socat pipe. It measured 2.9MiB; 64M is already generous, and the point
+    # of stating it is that an unbounded container is unbounded no matter how
+    # small its job - this one is dev-only and still gets a ceiling.
+    memswap_limit: 64M
+    deploy:
+      resources:
+        limits:
+          cpus: "0.25"
+          memory: 64M
+          pids: 64
+        reservations:
+          memory: 16M
+    networks: [appnet]
+    restart: unless-stopped
+
+networks:
+  appnet:
+    name: ${PROJECT_NAME:-atlas}-net
+
+secrets:
+  # A GitHub Packages read token for the private @vxture/shared package.
+  # `environment:` rather than a file so it never lands on disk in a repo that
+  # is public. An unset NODE_AUTH_TOKEN yields an empty secret rather than a
+  # hard error, and the Dockerfile skips writing an npmrc line when it is
+  # empty - so a build that hits the deps cache still succeeds untouched.
+  node_auth_token:
+    environment: NODE_AUTH_TOKEN

@@ -1,0 +1,23 @@
+# pnpm workspace roots. The services profile (product_240 section 2.5) roots
+# the one NestJS package under service/, per the governance source-directory
+# slots (portals/ for app profile, service/ for services profile).
+packages:
+  - "service"
+# Build-script allowlist (pnpm 11 supply-chain policy): only these packages
+# may run postinstall scripts. Additions are a reviewed change, not a default.
+allowBuilds:
+  '@prisma/engines': true
+  esbuild: true
+  prisma: true
+# pnpm 11 no longer reads the package.json `pnpm` field - overrides live here.
+overrides:
+  postcss: ^8.5.23
+  # GHSA-2v37-7h3g-55p8 (high): nanoid 3.x < 3.3.17 predictable-ID fix.
+  # Transitive via postcss; remove once postcss floats past it on its own.
+  'nanoid@^3': ^3.3.17
+  # GHSA-ggr8-5vv4-36mx (high): deepmerge-ts stack-exhaustion DoS on a crafted
+  # recursive object graph, merging two self-referencing values at the same
+  # path. Transitive via @prisma/config (Prisma CLI/config tooling - dev-time
+  # only, never reaches the deployed image), which pins 7.1.5. Fixed in 8.0.0.
+  # Remove once @prisma/config floats past it on its own.
+  'deepmerge-ts@^7': ^8.0.1

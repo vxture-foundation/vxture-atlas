@@ -1,0 +1,44 @@
+version: 2
+
+# Root .npmrc points the @vxture scope at GitHub Packages, so Dependabot needs
+# its own credential to resolve the dependency graph at all. Dependabot secrets
+# are a separate store from Actions secrets - the org NODE_AUTH_TOKEN exists in
+# both, but a registry declared here is what makes Dependabot actually use it.
+# Without this block every npm update run fails wholesale with
+# private_source_authentication_failure (not just on @vxture/* - the whole
+# resolution aborts, so nestjs/prisma/vitest updates die too). This bit the
+# reference template (product_240 section 6#32) - do not skip it.
+registries:
+  github-packages:
+    type: npm-registry
+    url: https://npm.pkg.github.com
+    token: ${{secrets.NODE_AUTH_TOKEN}}
+
+updates:
+  # pnpm workspace root (repo root - pnpm-lock.yaml lives here, covering
+  # service/). Dependabot's "npm" ecosystem reads pnpm-lock.yaml too.
+  - package-ecosystem: npm
+    directory: /
+    registries:
+      - github-packages
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 10
+    groups:
+      # @vxture/* is org-internal and needs a deliberate look, not batched.
+      vxture-packages:
+        patterns:
+          - '@vxture/*'
+    ignore:
+      # @vxture/* moves on its own release cadence from a different repo -
+      # bump it deliberately, not via an automated PR.
+      - dependency-name: '@vxture/*'
+
+  # Action refs are pinned to full commit SHAs (a tag is mutable, and these
+  # steps hold the ACR credentials). Dependabot reads the trailing `# vX.Y.Z`
+  # comment as the current version and raises the SHA with it, so pinning does
+  # not mean going stale.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly

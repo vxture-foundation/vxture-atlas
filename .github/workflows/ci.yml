@@ -1,0 +1,248 @@
+name: ci
+
+# Trunk-based CI: runs on PRs to main and on push:main (the squash commit that
+# lands on main is a new SHA, so it gets its own gate run). Does NOT deploy.
+#
+# Produces four of the five required status checks named in
+# docs/50-deployment/rebuild/main-ruleset.json: `quality-gate` / `build` /
+# `test-coverage` / `audit` (the fifth, `gitleaks`, is in secret-scan.yml). Job
+# names are a stable contract - renaming one breaks branch protection.
+
+on:
+  pull_request:
+    branches:
+      - main
+  push:
+    branches:
+      - main
+
+concurrency:
+  group: ci-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || format('push-{0}', github.ref_name) }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  # -- Audit (SCA hard gate) --------------------------------------------------
+  audit:
+    name: audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      # Single point of upgrade (see https://github.com/google/osv-scanner/releases).
+      # Bump both the version and the sha256 below together.
+      OSV_SCANNER_VERSION: "2.4.0"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Cache osv-scanner binary
+        id: osv-cache
+        uses: actions/cache@v6
+        with:
+          path: /tmp/osv-bin
+          key: osv-scanner-${{ env.OSV_SCANNER_VERSION }}-linux-amd64
+
+      - name: Download osv-scanner (cache miss only)
+        if: ${{ steps.osv-cache.outputs.cache-hit != 'true' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          sha256=15314940c10d26af9c6649f150b8a47c1262e8fc7e17b1d1029b0e479e8ed8a0
+          url="https://github.com/google/osv-scanner/releases/download/v${OSV_SCANNER_VERSION}/osv-scanner_linux_amd64"
+          mkdir -p /tmp/osv-bin
+          curl -fsSL "$url" -o /tmp/osv-bin/osv-scanner
+          echo "${sha256}  /tmp/osv-bin/osv-scanner" | sha256sum -c -
+
+      - name: OSV dependency scan
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod +x /tmp/osv-bin/osv-scanner
+          # Must pass --config explicitly: when scanning a --lockfile,
+          # osv-scanner does not auto-discover the repo-root config, so the
+          # ignore baseline would silently not apply. A new advisory exits
+          # non-zero and fails this required check.
+          /tmp/osv-bin/osv-scanner scan -L pnpm-lock.yaml --config .osv-scanner.toml
+
+  # -- Static checks (feed quality-gate) --------------------------------------
+  static-checks:
+    name: static-checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Whitespace and conflict-marker check
+        run: git diff --check
+
+      - name: Docs numbering guardrail (strict)
+        run: node scripts/guardrails/check-docs-numbering.mjs --strict
+
+      - name: Data architecture guardrail (DDL <-> Prisma lockstep)
+        run: node scripts/guardrails/check-data-architecture.mjs --strict
+
+      - name: Workflow guardrail (workflows parse and keep their triggers)
+        run: node scripts/guardrails/check-workflows.mjs --strict
+
+      # TD-023: esbuild silently drops design:paramtypes, so a Nest parameter
+      # injected by type alone is undefined at runtime while tsc, vitest and
+      # the build all stay green. This is the static half of that fix; the
+      # boot smoke in `build` is the other half.
+      - name: DI metadata guardrail (Nest constructors carry @Inject)
+        run: node scripts/guardrails/check-di-metadata.mjs --strict
+
+      # product_251 X-1: every consumption-plane error carries a `code`, and the
+      # published vocabulary is the one actually thrown. Both drift silently -
+      # nothing breaks, the envelope just stops being uniform and a consumer
+      # pays months later.
+      - name: Error envelope guardrail (product_251 X-1)
+        run: node scripts/guardrails/check-error-codes.mjs --strict
+
+      # A list endpoint that silently drops an unrecognised filter answers a
+      # different question than the caller asked, with HTTP 200 and a
+      # well-formed body. There is no signal for that on either side, so it has
+      # to be a check rather than a review habit.
+      - name: Query-filter guardrail (product_251 D-2)
+        run: node scripts/guardrails/check-query-filters.mjs --strict
+
+      # 140-repo-governance-standard.md sec.10 froze docs/80-liaison/ on
+      # 2026-07-27 - liaison is Issues, not files. It was not enforced, one
+      # letter landed 17 days later, and everything that went wrong with it
+      # followed from a file existing where an issue belonged.
+      - name: Liaison archive guardrail (governance sec.10)
+        run: node scripts/guardrails/check-liaison-archive.mjs --strict
+
+      # Lint needs the workspace installed, unlike the guardrails above, which
+      # run on the runner's bare node. It stays in static-checks rather than
+      # riding along in `build` because a lint failure is a static-check
+      # failure, and quality-gate is the aggregator for those.
+      - name: Set up Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+
+      - name: Enable corepack (pnpm from packageManager)
+        run: corepack enable
+
+      - name: Install (frozen lockfile)
+        # pnpm 11 ignores env-expanded credentials in the committed project
+        # .npmrc (secret-leak hardening), so auth goes to the runner's user
+        # npmrc; the project .npmrc keeps only the scope->registry mapping.
+        run: |
+          echo "//npm.pkg.github.com/:_authToken=${NODE_AUTH_TOKEN}" >> ~/.npmrc
+          pnpm install --frozen-lockfile
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NODE_AUTH_TOKEN }}
+
+      # No `db:generate` needed: the parser is syntax-only (no `project` in
+      # parserOptions) and src/generated/** is ignored by the flat config.
+
+      # AFTER the install, unlike every guardrail above: this one resolves the
+      # `Update*Input` types through the TypeScript checker, so it needs
+      # `typescript` from the workspace. Running it on the bare node with the
+      # others failed with MODULE_NOT_FOUND - and passed locally, where
+      # service/node_modules already exists. That gap is why this step sits
+      # here rather than with its siblings.
+      - name: Guardrail - a writable field must be a writable column (TD-039)
+        run: node scripts/guardrails/check-column-writes.mjs --strict
+
+      - name: Lint
+        run: pnpm lint
+
+  # -- Quality gate (aggregator; stable required-check name) ------------------
+  quality-gate:
+    name: quality-gate
+    runs-on: ubuntu-latest
+    needs: [static-checks]
+    steps:
+      - name: Aggregate
+        run: |
+          echo "quality gate: all aggregated checks passed"
+
+  # -- Build (required check): install the pnpm workspace, type-check, and
+  # produce the NestJS esbuild bundle for the service.
+  build:
+    name: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+
+      - name: Enable corepack (pnpm from packageManager)
+        run: corepack enable
+
+      - name: Install (frozen lockfile)
+        # pnpm 11 ignores env-expanded credentials in the committed project
+        # .npmrc (secret-leak hardening), so auth goes to the runner's user
+        # npmrc; the project .npmrc keeps only the scope->registry mapping.
+        run: |
+          echo "//npm.pkg.github.com/:_authToken=${NODE_AUTH_TOKEN}" >> ~/.npmrc
+          pnpm install --frozen-lockfile
+        env:
+          # @vxture/shared resolves from GitHub Packages (org secret, visibility
+          # "all" - every org repo's Actions can read it).
+          NODE_AUTH_TOKEN: ${{ secrets.NODE_AUTH_TOKEN }}
+
+      - name: Generate Prisma client
+        run: pnpm --filter @atlas/service db:generate
+
+      - name: Type-check
+        run: pnpm type-check:all
+
+      - name: Build service (esbuild bundle)
+        run: pnpm build
+        env:
+          # Provenance is read at runtime (server env), not baked by esbuild;
+          # set GIT_SHA so the CI build environment is representative.
+          GIT_SHA: ${{ github.sha }}
+
+      # TD-023: everything above this line validates the SOURCE. Nothing had
+      # ever started the artifact that actually ships. This boots
+      # dist/main.cjs and requires it to serve - no database and no IdP, so a
+      # degraded /readyz is expected and fine; a crash, a 5xx, or a route
+      # that 404s is not. Catches the "cannot boot" class (a provider missing
+      # from AtlasModule) that shipped green once already.
+      - name: Boot smoke (the built bundle actually serves)
+        run: node scripts/dev/boot-smoke.mjs
+
+  # -- Test coverage (required check): run the service's vitest suite.
+  test-coverage:
+    name: test-coverage
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+
+      - name: Enable corepack (pnpm from packageManager)
+        run: corepack enable
+
+      - name: Install (frozen lockfile)
+        # pnpm 11 ignores env-expanded credentials in the committed project
+        # .npmrc (secret-leak hardening), so auth goes to the runner's user
+        # npmrc; the project .npmrc keeps only the scope->registry mapping.
+        run: |
+          echo "//npm.pkg.github.com/:_authToken=${NODE_AUTH_TOKEN}" >> ~/.npmrc
+          pnpm install --frozen-lockfile
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NODE_AUTH_TOKEN }}
+
+      - name: Generate Prisma client
+        run: pnpm --filter @atlas/service db:generate
+
+      - name: Run tests (coverage)
+        run: pnpm --filter @atlas/service test:coverage

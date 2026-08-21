@@ -1,0 +1,352 @@
+name: build
+
+# Reusable image build, called by deploy.yml after it routes the tag to an
+# environment. Publishes both an immutable sha-<short> tag (what deploy pulls by,
+# and the build-dedup key) and the exact pushed ref tag. Always pushes to BOTH
+# GHCR and Aliyun ACR - which one deploy.sh treats as primary vs fallback is
+# decided in deploy.yml (worker-02: ACR primary / GHCR fallback, owner decision
+# 2026-07-26 - see docs/50-deployment/00-index.md), not here.
+on:
+  workflow_call:
+    inputs:
+      pass_sha:
+        description: Commit SHA to build and tag
+        required: true
+        type: string
+    secrets:
+      NODE_AUTH_TOKEN:
+        required: true
+      ALIYUN_ACR_USERNAME:
+        required: true
+      ALIYUN_ACR_PASSWORD:
+        required: true
+    outputs:
+      image_tag:
+        description: Immutable sha-<short> tag the deploy job should pull by
+        value: ${{ jobs.docker-build.outputs.image_tag }}
+  workflow_dispatch:
+    inputs:
+      pass_sha:
+        description: Commit SHA to build (defaults to branch HEAD)
+        required: false
+        type: string
+        default: ''
+  # A PR builds the image too, and pushes it to GHCR as sha-<short>.
+  #
+  # Until 2026-08-17 the image existed only from the moment a release was cut,
+  # so "deploy locally and verify before pushing to production" - the rule
+  # CLAUDE.md states - was physically impossible for any change to application
+  # code: the artifact to verify did not exist yet, and this repo's workstation
+  # cannot build it (the private @vxture/shared needs a token it does not
+  # carry). Every release therefore shipped a Dockerfile nobody had run.
+  #
+  # Now the image is on GHCR before the merge:
+  #   docker pull ghcr.io/vxture/atlas-app:sha-<short>
+  #   IMAGE_TAG=sha-<short> docker compose --profile dev up -d
+  # and what gets verified is the exact binary the release will deploy, not a
+  # local rebuild of it.
+  #
+  # GHCR only - ACR is the production registry and every PR image in it would
+  # be cost and noise. deploy.yml still pushes both.
+  pull_request:
+    branches: [main]
+    paths:
+      - service/**
+      - package.json
+      - pnpm-lock.yaml
+      - pnpm-workspace.yaml
+      - .npmrc
+      - .dockerignore
+      - .github/workflows/build.yml
+
+permissions:
+  contents: read
+  packages: write
+  security-events: write
+
+jobs:
+  docker-build:
+    name: docker-build
+    runs-on: ubuntu-latest
+    # Sized against measured job execution, not a round number: the four most
+    # recent successful runs took 1m44s-3m07s. An oversized timeout is not free
+    # headroom - it is how long a hung job burns before anyone hears about it
+    # (vxture-platform#191). 15m leaves ~5x for a cold `type=gha` cache miss,
+    # which is the only plausible slow path here.
+    timeout-minutes: 15
+    outputs:
+      image_tag: ${{ steps.meta.outputs.image_tag }}
+    env:
+      GHCR_NAMESPACE: vxture
+      # A PR build publishes to GHCR only; ACR is the production registry and
+      # a PR image in it would be cost and noise.
+      GHCR_ONLY: ${{ github.event_name == 'pull_request' }}
+      ACR_REGISTRY: ${{ vars.ALIYUN_ACR_REGISTRY }}
+      ACR_NAMESPACE: ${{ vars.ALIYUN_ACR_NAMESPACE }}
+      VXTURE_NPM_REGISTRY: ${{ vars.VXTURE_NPM_REGISTRY }}
+      # Product code: the `atlas` literal. The PRODUCT_CODE repo variable stays
+      # UNSET for this repo - setting it here would silently point the image,
+      # stack root, and DB names at another product.
+      IMAGE: ${{ vars.PRODUCT_CODE || 'atlas' }}-app
+      IMAGE_CONTEXT: .
+      IMAGE_DOCKERFILE: ./service/Dockerfile
+    steps:
+      - name: Resolve build SHA
+        id: sha
+        shell: bash
+        env:
+          CALLER_SHA: ${{ inputs.pass_sha }}
+          DEFAULT_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          resolved="${CALLER_SHA:-$DEFAULT_SHA}"
+          test -n "$resolved"
+          echo "sha=$resolved" >> "$GITHUB_OUTPUT"
+
+      - name: Validate registry secrets
+        shell: bash
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NODE_AUTH_TOKEN }}
+          ALIYUN_ACR_USERNAME: ${{ secrets.ALIYUN_ACR_USERNAME }}
+          ALIYUN_ACR_PASSWORD: ${{ secrets.ALIYUN_ACR_PASSWORD }}
+        run: |
+          set -euo pipefail
+          # NODE_AUTH_TOKEN is required either way - it is what makes the
+          # image buildable at all. The ACR set matters only when publishing there.
+          test -n "$NODE_AUTH_TOKEN"
+          if [ "$GHCR_ONLY" != "true" ]; then
+            test -n "$ACR_REGISTRY"
+            test -n "$ACR_NAMESPACE"
+            test -n "$ALIYUN_ACR_USERNAME"
+            test -n "$ALIYUN_ACR_PASSWORD"
+          fi
+
+      - name: Checkout passed revision
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ steps.sha.outputs.sha }}
+
+      - name: Compute image metadata
+        id: meta
+        shell: bash
+        env:
+          PASSED_SHA: ${{ steps.sha.outputs.sha }}
+          REF_NAME: ${{ github.ref_name }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          short_sha="${PASSED_SHA::7}"
+          echo "image_tag=sha-$short_sha" >> "$GITHUB_OUTPUT"
+          # A docker tag matches [A-Za-z0-9_][A-Za-z0-9._-]{0,127}; `github.ref_name`
+          # does NOT. On a pull_request it is `<number>/merge`, and that slash failed
+          # the first PR build with `invalid reference format` before the daemon was
+          # reached (run 32002395115). A branch name with a slash would do the same.
+          # So PRs get an explicit `pr-N`, and any other ref is sanitised rather
+          # than trusted.
+          if [ -n "${PR_NUMBER:-}" ]; then
+            ref_tag="pr-$PR_NUMBER"
+          else
+            ref_tag="$(printf '%s' "$REF_NAME" | tr -c 'A-Za-z0-9._-' '-')"
+            case "$ref_tag" in [!A-Za-z0-9_]*) ref_tag="ref-$ref_tag" ;; esac
+          fi
+          echo "ref_tag=${ref_tag:0:128}" >> "$GITHUB_OUTPUT"
+
+      # Health provenance (025 section 4.2): derive the four build-injected values
+      # from git tag / sha / date, with honest fallbacks. gitSha is BARE (no
+      # `sha-` prefix - that prefix is the image-tag form, not the data).
+      - name: Compute health provenance
+        id: prov
+        shell: bash
+        env:
+          PASSED_SHA: ${{ steps.sha.outputs.sha }}
+          REF_NAME: ${{ github.ref_name }}
+          REF_TYPE: ${{ github.ref_type }}
+        run: |
+          set -euo pipefail
+          if [ "$REF_TYPE" = "tag" ]; then app_version="$REF_NAME"; else app_version="dev"; fi
+          case "$REF_TYPE:$REF_NAME" in
+            tag:v*)    stage="production" ;;
+            tag:beta-*) stage="beta" ;;
+            tag:dev-*) stage="dev" ;;
+            *)         stage="dev" ;;
+          esac
+          {
+            echo "app_version=$app_version"
+            echo "git_sha=${PASSED_SHA::8}"
+            echo "build_time=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            echo "deploy_stage=$stage"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Set up Docker Buildx
+        id: buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+        continue-on-error: true
+
+      - name: Set up Docker Buildx (retry)
+        if: ${{ steps.buildx.outcome == 'failure' }}
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+
+      - name: Login to GHCR
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Login to Aliyun ACR
+        if: ${{ github.event_name != 'pull_request' }}
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ${{ env.ACR_REGISTRY }}
+          username: ${{ secrets.ALIYUN_ACR_USERNAME }}
+          password: ${{ secrets.ALIYUN_ACR_PASSWORD }}
+
+      - name: Decide build vs retag
+        id: decide
+        shell: bash
+        env:
+          IMAGE_TAG: ${{ steps.meta.outputs.image_tag }}
+        run: |
+          set -euo pipefail
+          ghcr_repo="ghcr.io/${GHCR_NAMESPACE}/${IMAGE}"
+          acr_repo="${ACR_REGISTRY}/${ACR_NAMESPACE}/${IMAGE}"
+          # Retag by digest if this exact commit was already built under a prior
+          # tag (check BOTH registries). Otherwise build.
+          if [ "$GHCR_ONLY" = "true" ]; then
+            # PR build: GHCR is the only place it lands, so it is the only
+            # place worth asking. Requiring ACR here would rebuild every time.
+            if docker buildx imagetools inspect "${ghcr_repo}:${IMAGE_TAG}" >/dev/null 2>&1; then
+              echo "build=false" >> "$GITHUB_OUTPUT"
+            else
+              echo "build=true" >> "$GITHUB_OUTPUT"
+            fi
+            exit 0
+          fi
+          if docker buildx imagetools inspect "${ghcr_repo}:${IMAGE_TAG}" >/dev/null 2>&1 \
+            && docker buildx imagetools inspect "${acr_repo}:${IMAGE_TAG}" >/dev/null 2>&1; then
+            echo "build=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "build=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Compute push tags
+        id: tags
+        shell: bash
+        env:
+          IMAGE_TAG: ${{ steps.meta.outputs.image_tag }}
+          REF_TAG: ${{ steps.meta.outputs.ref_tag }}
+        run: |
+          set -euo pipefail
+          # A PR build never logged in to ACR, so an ACR tag here would fail
+          # the push. Building the list in a step keeps that conditional in
+          # one place rather than duplicating the whole build step.
+          {
+            echo 'list<<EOF'
+            echo "ghcr.io/${GHCR_NAMESPACE}/${IMAGE}:${IMAGE_TAG}"
+            echo "ghcr.io/${GHCR_NAMESPACE}/${IMAGE}:${REF_TAG}"
+            if [ "$GHCR_ONLY" != "true" ]; then
+              echo "${ACR_REGISTRY}/${ACR_NAMESPACE}/${IMAGE}:${IMAGE_TAG}"
+              echo "${ACR_REGISTRY}/${ACR_NAMESPACE}/${IMAGE}:${REF_TAG}"
+            fi
+            echo EOF
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Build and push image
+        if: ${{ steps.decide.outputs.build == 'true' }}
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: ${{ env.IMAGE_CONTEXT }}
+          file: ${{ env.IMAGE_DOCKERFILE }}
+          # Explicit target: with no --target, docker builds the LAST stage of
+          # a multi-stage Dockerfile - adding any stage after `runtime` (a
+          # worker, an executor sidecar) would silently repoint the app image
+          # at it. runos shipped exactly that near-miss in its v0.2.0 (#121).
+          target: runtime
+          push: true
+          # docker/build-push-action v6+ defaults both attestations on, which
+          # pushes an OCI referrers manifest (media type
+          # application/vnd.oci.empty.v1+json) alongside the image. Aliyun
+          # ACR's registry (crpi-xhjfv6mu59629oau.cn-beijing.personal.cr.aliyuncs.com)
+          # rejects that manifest class outright ("unknown manifest class"),
+          # failing the push - found live on this repo's first real tag-
+          # triggered deploy (v0.3.0, 2026-08-12, TD-032). GHCR accepts it
+          # fine; ACR does not, so both are disabled for both registries
+          # rather than only on the ACR push.
+          provenance: false
+          sbom: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          # @vxture/* needs a PAT (GITHUB_TOKEN lacks read_package for the
+          # separate packages repo). The PAT rides a BuildKit secret (mounted at
+          # /run/secrets in the Dockerfile deps stage), NOT a build-arg (a
+          # build-arg would persist into the exported mode=max gha cache).
+          build-args: |
+            VXTURE_NPM_REGISTRY=${{ env.VXTURE_NPM_REGISTRY }}
+            APP_VERSION=${{ steps.prov.outputs.app_version }}
+            GIT_SHA=${{ steps.prov.outputs.git_sha }}
+            BUILD_TIME=${{ steps.prov.outputs.build_time }}
+          secrets: |
+            node_auth_token=${{ secrets.NODE_AUTH_TOKEN }}
+          tags: ${{ steps.tags.outputs.list }}
+
+      - name: Scan image (trivy, report-only)
+        if: ${{ steps.decide.outputs.build == 'true' }}
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: ghcr.io/${{ env.GHCR_NAMESPACE }}/${{ env.IMAGE }}:${{ steps.meta.outputs.image_tag }}
+          format: sarif
+          output: trivy-results.sarif
+          severity: CRITICAL,HIGH
+          exit-code: '0'
+
+      - name: Upload trivy results
+        if: ${{ steps.decide.outputs.build == 'true' }}
+        uses: github/codeql-action/upload-sarif@v4
+        continue-on-error: true
+        with:
+          sarif_file: trivy-results.sarif
+
+      - name: Retag unchanged image by digest
+        if: ${{ steps.decide.outputs.build == 'false' }}
+        shell: bash
+        env:
+          IMAGE: ${{ env.IMAGE }}
+          IMAGE_TAG: ${{ steps.meta.outputs.image_tag }}
+          REF_TAG: ${{ steps.meta.outputs.ref_tag }}
+        run: |
+          set -euo pipefail
+          # Retry with backoff. A registry can answer 403 Forbidden as a
+          # THROTTLE rather than a permission failure - the giveaway is that
+          # identical credentials succeed for some tags and fail for others in
+          # the same run (vxture-platform#191, observed on umbra v0.1.1).
+          #
+          # Retrying is safe: `imagetools create` only repoints a tag at a
+          # manifest that already exists, so a partially completed attempt has
+          # nothing to roll back and re-running is a no-op.
+          #
+          # Note this loop copies WITHIN one registry (ghcr->ghcr, acr->acr),
+          # which is the form umbra saw succeed; its failures were all on the
+          # cross-registry leg, which atlas does not have (the build step pushes
+          # to both registries directly). So this is defence in depth against a
+          # transient, not a fix for an observed atlas failure.
+          retag() {
+            local repo="$1" delay
+            for delay in 15 30 45 0; do
+              if docker buildx imagetools create \
+                   -t "${repo}:${IMAGE_TAG}" \
+                   -t "${repo}:${REF_TAG}" \
+                   "${repo}:${IMAGE_TAG}"; then
+                return 0
+              fi
+              [ "$delay" -eq 0 ] && break
+              echo "retag ${repo} failed; retrying in ${delay}s"
+              sleep "$delay"
+            done
+            echo "::error::retag failed for ${repo} after 4 attempts"
+            return 1
+          }
+          for repo in \
+            "ghcr.io/${GHCR_NAMESPACE}/${IMAGE}" \
+            "${ACR_REGISTRY}/${ACR_NAMESPACE}/${IMAGE}"; do
+            retag "$repo"
+          done

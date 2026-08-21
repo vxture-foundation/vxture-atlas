@@ -1,0 +1,104 @@
+name: logs
+
+# Read-only diagnostic: fetches recent container logs/status from the
+# production host over SSH. No mutation, but still touches worker-02 with the
+# same DEPLOY_WORKER02_* credentials as deploy.yml/db-init.yml, so it goes
+# through the same production Environment gate for consistency.
+on:
+  workflow_dispatch:
+    inputs:
+      service:
+        description: "Compose service to fetch logs for"
+        required: true
+        type: choice
+        default: app
+        options:
+          - app
+          - db
+      tail:
+        description: "Number of log lines to fetch"
+        required: false
+        type: string
+        default: "200"
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  PRODUCT_CODE: ${{ vars.PRODUCT_CODE || 'atlas' }}
+
+jobs:
+  logs:
+    name: logs
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment:
+      name: production
+    steps:
+      - name: Validate secrets
+        shell: bash
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_WORKER02_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_WORKER02_USER }}
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_WORKER02_SSH_KEY }}
+          TAILSCALE_OAUTH_CLIENT_ID: ${{ secrets.TAILSCALE_OAUTH_CLIENT_ID }}
+          TAILSCALE_OAUTH_CLIENT_SECRET: ${{ secrets.TAILSCALE_OAUTH_CLIENT_SECRET }}
+        run: |
+          set -euo pipefail
+          test -n "$DEPLOY_HOST"
+          test -n "$DEPLOY_USER"
+          test -n "$DEPLOY_SSH_KEY"
+          test -n "$TAILSCALE_OAUTH_CLIENT_ID"
+          test -n "$TAILSCALE_OAUTH_CLIENT_SECRET"
+
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Join tailnet and prepare SSH
+        uses: ./.github/actions/tailnet-ssh-connect
+        with:
+          tailscale-oauth-client-id: ${{ secrets.TAILSCALE_OAUTH_CLIENT_ID }}
+          tailscale-oauth-secret: ${{ secrets.TAILSCALE_OAUTH_CLIENT_SECRET }}
+          tailscale-tag: ${{ vars.TAILSCALE_OAUTH_CLIENT_TAG }}
+          deploy-host: ${{ secrets.DEPLOY_WORKER02_HOST }}
+          deploy-port: ${{ secrets.DEPLOY_WORKER02_PORT }}
+          deploy-ssh-key: ${{ secrets.DEPLOY_WORKER02_SSH_KEY }}
+          deploy-ssh-passphrase: ${{ secrets.DEPLOY_WORKER02_SSH_KEY_PASSPHRASE }}
+          deploy-known-hosts: ${{ secrets.DEPLOY_WORKER02_KNOWN_HOSTS }}
+
+      - name: Fetch logs
+        shell: bash
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_WORKER02_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_WORKER02_USER }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_WORKER02_PORT }}
+          SERVICE: ${{ inputs.service }}
+          TAIL: ${{ inputs.tail }}
+        run: |
+          set -euo pipefail
+          port="${DEPLOY_PORT:-22}"
+          ssh_opts=(-i ~/.ssh/deploy_key -p "$port" -o ServerAliveInterval=30 -o ServerAliveCountMax=20 -o ConnectTimeout=30)
+          # Container names follow docker-compose.yml, and the two services do
+          # NOT share one shape: the app is vx-<code>-app-<env> while a
+          # datastore carries its engine segment, vx-<code>-postgres-db-<env>.
+          # A single "<code>-<service>" template matches neither, so `docker
+          # logs` silently found nothing and `|| true` swallowed it - the db
+          # logs were unreachable through the one tool meant to fetch them.
+          case "$SERVICE" in
+            db) container="vx-${PRODUCT_CODE}-postgres-db-prod" ;;
+            *)  container="vx-${PRODUCT_CODE}-${SERVICE}-prod" ;;
+          esac
+          echo "[logs] docker ps:"
+          ssh "${ssh_opts[@]}" "$DEPLOY_USER@$DEPLOY_HOST" "docker ps -a --filter name=${PRODUCT_CODE}-"
+          # The image a container actually runs, by digest. `docker ps` shows
+          # only the tag, which is what let a stale cached image sit unnoticed
+          # while every pull of that tag failed (vxture-atlas#194).
+          echo "[logs] image identity:"
+          ssh "${ssh_opts[@]}" "$DEPLOY_USER@$DEPLOY_HOST" "docker inspect --format '{{.Name}} image={{.Config.Image}} id={{.Image}}' ${container}" || true
+          ssh "${ssh_opts[@]}" "$DEPLOY_USER@$DEPLOY_HOST" "docker image inspect --format '{{index .RepoDigests 0}}' \$(docker inspect --format '{{.Config.Image}}' ${container})" || true
+          echo "[logs] last ${TAIL} lines of ${container}:"
+          ssh "${ssh_opts[@]}" "$DEPLOY_USER@$DEPLOY_HOST" "docker logs --tail ${TAIL} ${container} 2>&1" || true

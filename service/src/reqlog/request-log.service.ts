@@ -1,0 +1,185 @@
+import { Injectable, Logger } from "@nestjs/common";
+
+import { prisma } from "../prisma";
+import { isUuid } from "../uuid";
+import type { ErrorLogEntry, RequestLogEntry } from "./request-log.types";
+
+/** The CHECK vocabulary on `reqlog.request_records.usage_type`. */
+const USAGE_TYPES: ReadonlySet<string> = new Set(["normal", "retry", "test"]);
+
+/**
+ * `reqlog.request_records`'s attribution columns are `uuid` (nullable). A
+ * caller's own composite identifier - karda's `tenantId` is the live example -
+ * would abort the INSERT with a UUID cast error.
+ *
+ * The request path turns that into a 400; here it must not: refusing to log
+ * because one dimension is malformed would lose the whole record, including
+ * the dimensions that were fine. So a non-UUID is written NULL. That is
+ * honest - the column cannot hold the value - and the row still carries
+ * model/provider/tokens/latency plus whatever else resolved.
+ */
+function asUuidOrNull(value: string | undefined): string | null {
+  const trimmed = value?.trim();
+  return trimmed && isUuid(trimmed) ? trimmed : null;
+}
+
+function asBigIntOrNull(value: number | undefined): bigint | null {
+  return typeof value === "number" && Number.isFinite(value)
+    ? BigInt(Math.trunc(value))
+    : null;
+}
+
+/** Postgres `varchar(n)` rejects overlong input; truncate rather than lose the row. */
+function clamp(value: string | undefined, max: number): string | null {
+  const trimmed = value?.trim();
+  return trimmed ? trimmed.slice(0, max) : null;
+}
+
+/**
+ * Atlas's own per-request history - the detail layer of the metering
+ * split described in `docs/30-design/210-usage-metering-and-history.md`.
+ *
+ * Hard rule: **recording must never fail the request it describes.** An
+ * inference call that succeeded must not be turned into an error because the
+ * log write failed. Every method swallows its errors into a warning.
+ */
+@Injectable()
+export class RequestLogService {
+  private readonly logger = new Logger(RequestLogService.name);
+
+  /**
+   * Say out loud that a request's tenant attribution is being dropped.
+   *
+   * Writing NULL is still the right call - see `asUuidOrNull`, the column is
+   * `uuid` and losing the whole row over one bad dimension would be worse -
+   * but doing it silently is not. The observed failure (#198 §4) was that a
+   * caller sent a non-UUID tenantId, every call succeeded, and their traffic
+   * was simply absent from every tenant-dimension report. No error, no
+   * warning, nothing to notice: it surfaced only much later, wearing a
+   * completely different error's face.
+   *
+   * P3: the deviation itself may be justified, being quiet about it is not.
+   * `productCode` rides along so an operator knows whom to tell, and this is
+   * per-request on purpose - a caller doing it on every call is exactly the
+   * case worth being noisy about, and it stops the moment they fix it.
+   */
+  private warnOnDroppedTenant(entry: RequestLogEntry): void {
+    const raw = entry.tenantId?.trim();
+    if (!raw || isUuid(raw)) return;
+    this.logger.warn(
+      `tenant attribution dropped for requestId=${entry.requestId}: ` +
+        `tenantId is not a UUID, so reqlog.tenant_id is written NULL and this ` +
+        `request will not appear in any tenant-dimension report` +
+        (entry.productCode ? ` (product=${entry.productCode})` : ""),
+    );
+  }
+
+  async record(entry: RequestLogEntry): Promise<void> {
+    this.warnOnDroppedTenant(entry);
+    try {
+      await prisma.requestRecord.create({
+        data: {
+          requestId: clamp(entry.requestId, 128) ?? entry.requestId,
+          status: entry.status,
+          // Clamped but NOT coerced (product_251 X-2 requires it verbatim).
+          // Deliberately not `asUuidOrNull`: the caller mints this and runos -
+          // the other half of the same agent task - does not constrain it to a
+          // uuid either. Coercing would silently break exactly the join the
+          // column exists to make, which is the failure `tenantId` already had.
+          taskId: clamp(entry.taskId, 128),
+          // Token-derived (authoritative per S2S rule 8).
+          workspaceId: asUuidOrNull(entry.workspaceId),
+          userId: asUuidOrNull(entry.userId),
+          // Caller-supplied scope, as the grant/quota lookup used it.
+          tenantId: asUuidOrNull(entry.tenantId),
+          applicationId: asUuidOrNull(entry.applicationId),
+          applicationType: clamp(entry.applicationType, 32),
+          agentId: asUuidOrNull(entry.agentId),
+          featureId: asUuidOrNull(entry.featureId),
+          // Atlas domain facts.
+          modelCode: clamp(entry.modelCode, 128),
+          providerCode: clamp(entry.providerCode, 64),
+          // NULL when the caller named a model/taskProfile directly - a real
+          // routing mode, not a gap. Also NULL for every row predating
+          // incr/03_reqlog_endpoint_code.sql, which is not backfillable.
+          endpointCode: clamp(entry.endpointCode, 128),
+          productCode: clamp(entry.productCode, 64),
+          inputTokens: asBigIntOrNull(entry.inputTokens),
+          outputTokens: asBigIntOrNull(entry.outputTokens),
+          totalTokens: asBigIntOrNull(entry.totalTokens),
+          latencyMs:
+            typeof entry.latencyMs === "number"
+              ? Math.trunc(entry.latencyMs)
+              : null,
+          usageType: this.asUsageTypeOrNull(entry.usageType, entry.requestId),
+          businessId: clamp(entry.businessId, 128),
+          billedMetricKey: clamp(entry.billedMetricKey, 64),
+          billedAmount: asBigIntOrNull(entry.billedAmount),
+          // CHECK-constrained in incr/14. clamp() would silently truncate an
+          // out-of-vocabulary value into something the constraint might still
+          // accept, so this passes through and lets the constraint reject it.
+          costUnit: entry.costUnit ?? null,
+          // The platform's usage_events id (210 §4). NULL until the platform
+          // adds the field to its consume response - the client parses it
+          // defensively, correlation meanwhile is via `requestId`, which both
+          // sides record. A NULL `billedAmount` is the reconciliation signal
+          // for "served but not billed".
+          usageEventId: asUuidOrNull(entry.usageEventId),
+          // `productId` stays NULL and always will - a uuid FK-shaped
+          // reference into the platform's product.products, in another
+          // database. The resolvable form is `product_code` above (incr/05).
+        },
+      });
+    } catch (error) {
+      this.logger.warn(
+        `request log write failed for requestId=${entry.requestId}: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
+  }
+
+  /**
+   * `usage_type` carries `CHECK (usage_type IN ('normal','retry','test'))`.
+   * An out-of-vocabulary value would fail the CHECK and abort the INSERT -
+   * losing the whole row after the workspace was already billed, i.e. "billed
+   * but never served" as far as reqlog can tell. Same degradation rule as
+   * asUuidOrNull: the column cannot hold the value, so it goes NULL and the
+   * rest of the record survives.
+   */
+  private asUsageTypeOrNull(
+    value: string | undefined,
+    requestId: string,
+  ): string | null {
+    const trimmed = value?.trim();
+    if (!trimmed) return null;
+    if (USAGE_TYPES.has(trimmed)) return trimmed;
+    this.logger.warn(
+      `usage_type "${trimmed}" is outside the reqlog vocabulary (normal|retry|test) for requestId=${requestId} - written NULL`,
+    );
+    return null;
+  }
+
+  async recordError(entry: ErrorLogEntry): Promise<void> {
+    try {
+      await prisma.errorRecord.create({
+        data: {
+          requestId: clamp(entry.requestId, 128),
+          providerCode: clamp(entry.providerCode, 64),
+          modelCode: clamp(entry.modelCode, 128),
+          endpointCode: clamp(entry.endpointCode, 128),
+          errorCode: clamp(entry.errorCode, 64),
+          // error_message is `text` - no length cap, but keep a sane bound so a
+          // provider echoing back a huge body cannot bloat the partition.
+          errorMessage: clamp(entry.errorMessage, 4000),
+        },
+      });
+    } catch (error) {
+      this.logger.warn(
+        `error log write failed for requestId=${entry.requestId}: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
+  }
+}
