@@ -205,8 +205,11 @@ Always branch off `origin/main`, never off a stale local branch.
    If a step genuinely cannot run here - the image build needs a token this
    machine does not have - **say so plainly** and name what was verified
    instead. Never imply a local run that did not happen.
-4. Open a PR into `main`. Direct `git push origin main` is BLOCKED by the ruleset
-   (must go through a PR, and the required checks must pass).
+4. Open a PR into `main`. On `vxture-foundation`'s current plan (private repo,
+   Free), **nothing technically blocks a direct `git push origin main`** - see
+   the Branch protection section below. Going through a PR here is discipline,
+   not enforcement; a direct push still lands, silently, except for the
+   `direct-push-audit` workflow flagging it after the fact.
 5. CI runs on the PR. Squash-merge once green; the branch is auto-deleted on
    merge. This does not deploy anything.
 6. When ready to release, cut a tag from the commit you want deployed and push it.
@@ -224,8 +227,26 @@ import would block that import.
 
 ## Branch protection (GitHub Rulesets, not legacy protection)
 
-Enforced via repo Rulesets (`gh api repos/vxture-foundation/vxture-atlas/rulesets`).
-The authoritative ruleset is `docs/50-deployment/rebuild/main-ruleset.json`.
+**Not currently applied on this fork - confirmed unavailable, not just
+unconfigured.** Both `gh api repos/vxture-foundation/vxture-atlas/rulesets`
+(Rulesets) and the legacy `branches/main/protection` API return the same 403:
+`Upgrade to GitHub Pro or make this repository public to enable this
+feature.` `vxture-foundation` is a Free-plan org and this repo is private;
+GitHub does not offer branch protection of either kind on that combination,
+full stop - there is no bypass_actor or misconfiguration to fix here, the
+feature itself is gated off. The org-secrets-for-private-repos gap and the
+production Environment's required-reviewer gap (see docs/50-deployment/
+00-index.md) are the same root cause. All three are solved at once by
+upgrading to GitHub Team; until/unless that happens, treat everything below
+as the design intent for when a ruleset CAN be applied, not as a description
+of current enforcement. The `direct-push-audit` workflow
+(`.github/workflows/direct-push-audit.yml`) is the compensating control in
+the meantime: it cannot block a direct push, but it flags one - loudly, via
+an auto-opened issue - the moment one lands.
+
+Design (apply via `gh api repos/vxture-foundation/vxture-atlas/rulesets` once
+upgraded). The authoritative ruleset is
+`docs/50-deployment/rebuild/main-ruleset.json`.
 
 **Required checks (authoritative set of five):** `quality-gate` / `build` /
 `test-coverage` / `audit` / `gitleaks`. CI job names must produce exactly these
