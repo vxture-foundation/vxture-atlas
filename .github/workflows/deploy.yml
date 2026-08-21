@@ -202,6 +202,12 @@ jobs:
           ALIYUN_ACR_PASSWORD: ${{ secrets.ALIYUN_ACR_PASSWORD }}
           GHCR_USERNAME: ${{ github.actor }}
           GHCR_TOKEN: ${{ github.token }}
+          # Repo variable, not a literal: which registry worker-02 pulls from
+          # first. 'acr' or 'ghcr'. GHCR_NAMESPACE is derived, not hardcoded -
+          # see build.yml's GHCR_NAMESPACE comment for why a literal org name
+          # here breaks on any future fork.
+          IMAGE_PRIMARY_REGISTRY: ${{ vars.IMAGE_PRIMARY_REGISTRY }}
+          GHCR_NAMESPACE: ${{ github.repository_owner }}
         run: |
           set -euo pipefail
           port="${DEPLOY_PORT:-22}"
@@ -209,6 +215,26 @@ jobs:
           image_tag="$IMAGE_TAG"
           test -n "$image_tag"
           ssh_opts=(-i ~/.ssh/deploy_key -p "$port" -o ServerAliveInterval=30 -o ServerAliveCountMax=20 -o ConnectTimeout=30)
+
+          # Primary/fallback registry pair, driven by the IMAGE_PRIMARY_REGISTRY
+          # repo variable rather than hardcoded - computed here (not inside the
+          # quoted REMOTE_SCRIPT heredoc below, where $VARS are deliberately
+          # left unexpanded for the remote shell) and handed to the remote host
+          # via remote_env, same as every other value below.
+          case "$IMAGE_PRIMARY_REGISTRY" in
+            acr)
+              image_registry="$ALIYUN_ACR_REGISTRY"; image_namespace="$ALIYUN_ACR_NAMESPACE"
+              fallback_image_registry="ghcr.io"; fallback_image_namespace="$GHCR_NAMESPACE"
+              ;;
+            ghcr)
+              image_registry="ghcr.io"; image_namespace="$GHCR_NAMESPACE"
+              fallback_image_registry="$ALIYUN_ACR_REGISTRY"; fallback_image_namespace="$ALIYUN_ACR_NAMESPACE"
+              ;;
+            *)
+              echo "::error::IMAGE_PRIMARY_REGISTRY repo variable must be 'acr' or 'ghcr' (got '$IMAGE_PRIMARY_REGISTRY')" >&2
+              exit 1
+              ;;
+          esac
 
           # Push only the deploy subset (deploy/, configs/, docker-compose.yml)
           # via one staged --delete rsync; the operator .env lives at
@@ -232,19 +258,22 @@ jobs:
             "grep -qE 'container_name:.*-postgres-db-' '$deploy_dir/docker-compose.yml' && echo '[deliver] compose declares a postgres db service' || { echo '[deliver] ERROR: delivered compose has no postgres db service' >&2; exit 1; }"
           ssh "${ssh_opts[@]}" "$DEPLOY_USER@$DEPLOY_HOST" "printf '%s\n' '$PASSED_SHA' > '$deploy_dir/VERSION'"
 
-          # Remote deploy script: registry primary/fallback for worker-02.
-          # Owner decision 2026-07-26 - ACR primary / GHCR fallback. This is a
-          # deliberate deviation from governance section 5's default for
-          # non-VPC hosts (GHCR primary) - see docs/50-deployment/00-index.md
-          # for the recorded reasoning.
+          # Remote deploy script: registry primary/fallback for worker-02,
+          # chosen by the IMAGE_PRIMARY_REGISTRY repo variable above (owner
+          # decision 2026-07-26 set it to ACR primary / GHCR fallback for this
+          # host - a deliberate deviation from governance section 5's default
+          # for non-VPC hosts (GHCR primary), see docs/50-deployment/00-index.md).
+          # The four values below are computed above and injected via
+          # remote_env, not hardcoded here - this heredoc is quoted, so $VARS
+          # in it are resolved on the REMOTE host from that injected env.
           cat > /tmp/deploy.sh <<'REMOTE_SCRIPT'
           set -euo pipefail
           cd "$REPO_DIR"
-          export IMAGE_REGISTRY="$ALIYUN_ACR_REGISTRY"
-          export IMAGE_NAMESPACE="$ALIYUN_ACR_NAMESPACE"
+          export IMAGE_REGISTRY="$IMAGE_REGISTRY"
+          export IMAGE_NAMESPACE="$IMAGE_NAMESPACE"
           export IMAGE_TAG="$IMAGE_TAG"
-          export FALLBACK_IMAGE_REGISTRY="ghcr.io"
-          export FALLBACK_IMAGE_NAMESPACE="vxture"
+          export FALLBACK_IMAGE_REGISTRY="$FALLBACK_IMAGE_REGISTRY"
+          export FALLBACK_IMAGE_NAMESPACE="$FALLBACK_IMAGE_NAMESPACE"
           if [ -n "${ALIYUN_ACR_USERNAME:-}" ] && [ -n "${ALIYUN_ACR_PASSWORD:-}" ]; then
             for attempt in 1 2 3 4 5; do
               printf '%s' "$ALIYUN_ACR_PASSWORD" | timeout 45 docker login "$ALIYUN_ACR_REGISTRY" -u "$ALIYUN_ACR_USERNAME" --password-stdin && break || sleep $((attempt * 5))
@@ -275,6 +304,8 @@ jobs:
             "ALIYUN_ACR_REGISTRY=$ALIYUN_ACR_REGISTRY" "ALIYUN_ACR_NAMESPACE=$ALIYUN_ACR_NAMESPACE"
             "ALIYUN_ACR_USERNAME=$ALIYUN_ACR_USERNAME" "ALIYUN_ACR_PASSWORD=$ALIYUN_ACR_PASSWORD"
             "GHCR_USERNAME=$GHCR_USERNAME" "GHCR_TOKEN=$GHCR_TOKEN"
+            "IMAGE_REGISTRY=$image_registry" "IMAGE_NAMESPACE=$image_namespace"
+            "FALLBACK_IMAGE_REGISTRY=$fallback_image_registry" "FALLBACK_IMAGE_NAMESPACE=$fallback_image_namespace"
           )
           remote_cmd=""
           for item in "${remote_env[@]}"; do
