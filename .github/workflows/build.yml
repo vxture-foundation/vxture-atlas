@@ -41,7 +41,7 @@ on:
   # carry). Every release therefore shipped a Dockerfile nobody had run.
   #
   # Now the image is on GHCR before the merge:
-  #   docker pull ghcr.io/vxture/atlas-app:sha-<short>
+  #   docker pull ghcr.io/vxture-foundation/atlas-app:sha-<short>
   #   IMAGE_TAG=sha-<short> docker compose --profile dev up -d
   # and what gets verified is the exact binary the release will deploy, not a
   # local rebuild of it.

@@ -164,8 +164,8 @@ Always branch off `origin/main`, never off a stale local branch.
 
    ```
    PR=249                       # your PR number
-   docker pull ghcr.io/vxture/atlas-app:pr-$PR
-   PROJECT_NAME=atlas-val DEPLOY_ENV=val DATA_DIR=./data/val      APP_PUBLISH_PORT=3102 IMAGE=ghcr.io/vxture/atlas-app IMAGE_TAG=pr-$PR      DATABASE_URL=postgresql://atlas_svc:PW@db:5432/vx_atlas_db      docker compose --profile dev up -d
+   docker pull ghcr.io/vxture-foundation/atlas-app:pr-$PR
+   PROJECT_NAME=atlas-val DEPLOY_ENV=val DATA_DIR=./data/val      APP_PUBLISH_PORT=3102 IMAGE=ghcr.io/vxture-foundation/atlas-app IMAGE_TAG=pr-$PR      DATABASE_URL=postgresql://atlas_svc:PW@db:5432/vx_atlas_db      docker compose --profile dev up -d
    curl localhost:3102/healthz && curl localhost:3102/readyz
    ```
 
@@ -174,7 +174,7 @@ Always branch off `origin/main`, never off a stale local branch.
 
    ```
    gh workflow run build.yml --ref main -f pass_sha=$(git rev-parse HEAD)
-   docker pull ghcr.io/vxture/atlas-app:sha-$(git rev-parse --short HEAD)
+   docker pull ghcr.io/vxture-foundation/atlas-app:sha-$(git rev-parse --short HEAD)
    ```
 
    That build tags `APP_VERSION=dev` because its ref is a branch, and it
@@ -224,8 +224,8 @@ import would block that import.
 
 ## Branch protection (GitHub Rulesets, not legacy protection)
 
-Enforced via repo Rulesets (`gh api repos/vxture/<repo>/rulesets`). The
-authoritative ruleset is `docs/50-deployment/rebuild/main-ruleset.json`.
+Enforced via repo Rulesets (`gh api repos/vxture-foundation/vxture-atlas/rulesets`).
+The authoritative ruleset is `docs/50-deployment/rebuild/main-ruleset.json`.
 
 **Required checks (authoritative set of five):** `quality-gate` / `build` /
 `test-coverage` / `audit` / `gitleaks`. CI job names must produce exactly these
