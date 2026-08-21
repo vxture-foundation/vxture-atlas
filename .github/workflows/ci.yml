@@ -22,6 +22,9 @@ concurrency:
 
 permissions:
   contents: read
+  # actions: read lets the per-job timing-summary step query this run's own
+  # job/step timestamps via the API - no other job in this workflow needs it.
+  actions: read
 
 jobs:
   # -- Audit (SCA hard gate) --------------------------------------------------
@@ -65,6 +68,20 @@ jobs:
           # ignore baseline would silently not apply. A new advisory exits
           # non-zero and fails this required check.
           /tmp/osv-bin/osv-scanner scan -L pnpm-lock.yaml --config .osv-scanner.toml
+
+      - name: Step timing summary
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          JOB_NAME: ${{ github.job }}
+        run: |
+          {
+            echo "### ${JOB_NAME} step timings"
+            echo "| step | duration |"
+            echo "|---|---|"
+            gh api "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/jobs?per_page=100" \
+              | jq -r --arg job "$JOB_NAME" '.jobs[] | select(.name==$job) | .steps[] | select(.completed_at != null) | "| \(.name) | \(((.completed_at | fromdateiso8601) - (.started_at | fromdateiso8601)))s |"'
+          } >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || echo "timing summary unavailable" >> "$GITHUB_STEP_SUMMARY"
 
   # -- Static checks (feed quality-gate) --------------------------------------
   static-checks:
@@ -119,13 +136,17 @@ jobs:
       # run on the runner's bare node. It stays in static-checks rather than
       # riding along in `build` because a lint failure is a static-check
       # failure, and quality-gate is the aggregator for those.
+      - name: Enable corepack (pnpm from packageManager)
+        run: corepack enable
+
+      # corepack enable must run BEFORE setup-node: cache: 'pnpm' shells out to
+      # `pnpm store path` to locate the cache dir, which needs the pnpm shim
+      # corepack just activated. Ordered any other way, cache silently no-ops.
       - name: Set up Node
         uses: actions/setup-node@v7
         with:
           node-version: 24
-
-      - name: Enable corepack (pnpm from packageManager)
-        run: corepack enable
+          cache: 'pnpm'
 
       - name: Install (frozen lockfile)
         # pnpm 11 ignores env-expanded credentials in the committed project
@@ -152,6 +173,20 @@ jobs:
       - name: Lint
         run: pnpm lint
 
+      - name: Step timing summary
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          JOB_NAME: ${{ github.job }}
+        run: |
+          {
+            echo "### ${JOB_NAME} step timings"
+            echo "| step | duration |"
+            echo "|---|---|"
+            gh api "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/jobs?per_page=100" \
+              | jq -r --arg job "$JOB_NAME" '.jobs[] | select(.name==$job) | .steps[] | select(.completed_at != null) | "| \(.name) | \(((.completed_at | fromdateiso8601) - (.started_at | fromdateiso8601)))s |"'
+          } >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || echo "timing summary unavailable" >> "$GITHUB_STEP_SUMMARY"
+
   # -- Quality gate (aggregator; stable required-check name) ------------------
   quality-gate:
     name: quality-gate
@@ -172,13 +207,14 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
 
+      - name: Enable corepack (pnpm from packageManager)
+        run: corepack enable
+
       - name: Set up Node
         uses: actions/setup-node@v7
         with:
           node-version: 24
-
-      - name: Enable corepack (pnpm from packageManager)
-        run: corepack enable
+          cache: 'pnpm'
 
       - name: Install (frozen lockfile)
         # pnpm 11 ignores env-expanded credentials in the committed project
@@ -214,6 +250,20 @@ jobs:
       - name: Boot smoke (the built bundle actually serves)
         run: node scripts/dev/boot-smoke.mjs
 
+      - name: Step timing summary
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          JOB_NAME: ${{ github.job }}
+        run: |
+          {
+            echo "### ${JOB_NAME} step timings"
+            echo "| step | duration |"
+            echo "|---|---|"
+            gh api "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/jobs?per_page=100" \
+              | jq -r --arg job "$JOB_NAME" '.jobs[] | select(.name==$job) | .steps[] | select(.completed_at != null) | "| \(.name) | \(((.completed_at | fromdateiso8601) - (.started_at | fromdateiso8601)))s |"'
+          } >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || echo "timing summary unavailable" >> "$GITHUB_STEP_SUMMARY"
+
   # -- Test coverage (required check): run the service's vitest suite.
   test-coverage:
     name: test-coverage
@@ -223,13 +273,14 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
 
+      - name: Enable corepack (pnpm from packageManager)
+        run: corepack enable
+
       - name: Set up Node
         uses: actions/setup-node@v7
         with:
           node-version: 24
-
-      - name: Enable corepack (pnpm from packageManager)
-        run: corepack enable
+          cache: 'pnpm'
 
       - name: Install (frozen lockfile)
         # pnpm 11 ignores env-expanded credentials in the committed project
@@ -246,3 +297,17 @@ jobs:
 
       - name: Run tests (coverage)
         run: pnpm --filter @atlas/service test:coverage
+
+      - name: Step timing summary
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          JOB_NAME: ${{ github.job }}
+        run: |
+          {
+            echo "### ${JOB_NAME} step timings"
+            echo "| step | duration |"
+            echo "|---|---|"
+            gh api "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/jobs?per_page=100" \
+              | jq -r --arg job "$JOB_NAME" '.jobs[] | select(.name==$job) | .steps[] | select(.completed_at != null) | "| \(.name) | \(((.completed_at | fromdateiso8601) - (.started_at | fromdateiso8601)))s |"'
+          } >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || echo "timing summary unavailable" >> "$GITHUB_STEP_SUMMARY"
