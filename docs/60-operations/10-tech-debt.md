@@ -34,6 +34,7 @@ because those are the ones still needing a decision.
 | [TD-042](#td-042) | `/v1/endpoints` and `/tenancy/grants` keep the words X-4 renamed everywhere else | 2026-08-17 |
 | [TD-043](#td-043) | Two grant resources, two rules on whether the application scope may be edited | 2026-08-17 |
 | [TD-044](#td-044) | The tool-descriptor `version` field never moves, so its drift signal is dead | 2026-08-18 |
+| [TD-045](#td-045) | `codeql.yml` disabled - code scanning on a private repo needs GitHub Advanced Security | 2026-08-24 |
 
 ## Closed
 
@@ -440,3 +441,40 @@ until the version field can be trusted.
 consistent with what was found, not evidence of a missing channel - the
 channel worked; nobody was told to use it, and its cheapest signal was never
 maintained.
+
+---
+
+## TD-045 - `codeql.yml` disabled (Advanced Security required on a private repo)
+
+**Clause:** `codeql.yml` runs SAST over the service source on every PR, every
+push to `main`, and a weekly schedule - informational rather than one of the
+required checks, but expected to run and report to the Security tab.
+
+**Reason:** on `vxture-foundation/vxture-atlas` (private), `codeql-action/analyze`
+completes the analysis every time and generates the SARIF; the **upload** is
+then refused:
+
+    Advanced Security must be enabled for this repository to use code scanning.
+
+The workflow's `permissions:` block was also missing `actions: read` - a real
+bug, fixed in the same commit - but fixing it only unmasks this. Code scanning
+on a private repo requires GitHub Advanced Security, an Enterprise-tier licence
+add-on that GitHub Team does not unlock. The old public repo ran this workflow
+clean the entire time: code scanning is free on any public repo regardless of
+plan, which is what the workflow's own header comment was asserting.
+
+**Why disabled rather than left red:** it had failed on *every* run since the
+repo went private - `main` pushes and unrelated dependabot PRs included. A
+check that is permanently red teaches people to read red as normal, and the
+next genuinely broken check inherits that habit. Registering the deviation
+keeps the fact visible without spending the signal.
+
+Same finding, same resolution as runos TD-021 - both repos moved to the same
+private org in the same migration, and both carried the public-repo assumption
+across in a comment nobody re-checked.
+
+**Recovery:** either the org adds GitHub Advanced Security (Enterprise-tier),
+or the repo goes public again. Either condition lets `codeql.yml` be
+re-enabled with `gh api -X PUT .../actions/workflows/{id}/enable` and no
+further changes - the `actions: read` fix in this commit is the only thing
+that was actually wrong with the file.

@@ -5,7 +5,19 @@ name: codeql
 # credentials) and trivy (build.yml, which scans the built container image's
 # OS/dependency layers) - this looks for actual code-level vulnerability
 # patterns (injection, unsafe deserialization, etc.) in the service's own
-# source. Free for public repos, no GHAS license needed.
+# source.
+#
+# DISABLED (TD-045, 2026-08-24) - `gh api -X PUT .../workflows/{id}/disable`.
+# The last line of this comment used to read "Free for public repos, no GHAS
+# license needed." That is true, and this repo is PRIVATE: code scanning on a
+# private repo requires GitHub Advanced Security, an Enterprise-tier add-on.
+# Every run since the repo went private has failed - the analysis completes
+# and the SARIF is generated, then the upload is refused with "Advanced
+# Security must be enabled for this repository to use code scanning."
+#
+# The file is kept rather than deleted because the fix is a licence or a
+# visibility change, not a code change: re-enable with
+# `gh api -X PUT .../actions/workflows/{id}/enable` and nothing else moves.
 
 on:
   pull_request:
@@ -22,6 +34,14 @@ on:
 permissions:
   contents: read
   security-events: write
+  # codeql-action/analyze's post-processing calls GET .../actions/runs/{id}
+  # for run metadata - fails "Resource not accessible by integration" without
+  # this on a private repo (silent on the old public repo; an explicit
+  # permissions: block grants nothing implicitly). Same class as the
+  # direct-push-audit pull-requests:read fix.
+  #
+  # This was a real bug, but fixing it only unmasked the next one: see TD-045.
+  actions: read
 
 concurrency:
   group: codeql-${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.ref }}
