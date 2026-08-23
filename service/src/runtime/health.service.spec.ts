@@ -305,6 +305,80 @@ describe("AtlasHealthService", () => {
   });
 });
 
+/**
+ * Readiness must answer under a deadline, and a timed-out check must be a
+ * FAILING check rather than an unknown one.
+ *
+ * Measured 2026-08-23 by stopping the dev postgres container: `/readyz` took
+ * **19.8s and 23.0s** while each check sat on a connection it would never get.
+ * The console probes readiness with a 4s timeout, so it recorded
+ * "unreachable / probe timed out" every time and the `blocked` body this
+ * service computes was **never once observed in practice** - a different
+ * diagnosis, and one that throws away which dependency actually failed.
+ */
+describe("AtlasHealthService readiness deadline", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+    delete process.env["ATLAS_TEST_KEY"];
+  });
+
+  it("a check that never settles becomes a failing check, and the roll-up says blocked", async () => {
+    process.env["ATLAS_TEST_KEY"] = "configured";
+    const service = new AtlasHealthService(
+      makeRepository({
+        /* Never resolves - a dependency that has gone quiet rather than
+           refused, which is what a stopped database looks like from here. */
+        checkDatabaseConnectivity: vi.fn(() => new Promise<void>(() => {})),
+      }),
+      makeVault(),
+    );
+
+    const result = await service.ready();
+
+    expect(result.checks.database.status).toBe("fail");
+    expect(String(result.checks.database.message)).toContain("did not answer");
+    /* The point of the deadline: still `blocked`, still naming the dependency.
+       A prober that gave up first would have had neither. */
+    expect(result.status).toBe("blocked");
+  });
+
+  it("answers well inside a prober's timeout even when a dependency is gone", async () => {
+    process.env["ATLAS_TEST_KEY"] = "configured";
+    const service = new AtlasHealthService(
+      makeRepository({
+        checkDatabaseConnectivity: vi.fn(() => new Promise<void>(() => {})),
+        listActiveModels: vi.fn(() => new Promise<AiModelRecord[]>(() => {})),
+      }),
+      makeVault(),
+    );
+
+    const startedAt = Date.now();
+    await service.ready();
+    const elapsed = Date.now() - startedAt;
+
+    /* The console's probe timeout is 4s. This asserts the endpoint stays well
+       under it - the whole reason the deadline exists. */
+    expect(elapsed).toBeLessThan(3_000);
+  });
+
+  it("a check that throws is reported, not propagated - /readyz 500 tells a prober nothing", async () => {
+    process.env["ATLAS_TEST_KEY"] = "configured";
+    const service = new AtlasHealthService(
+      makeRepository({
+        checkDatabaseConnectivity: vi.fn(() => {
+          throw new Error("pool destroyed");
+        }),
+      }),
+      makeVault(),
+    );
+
+    const result = await service.ready();
+
+    expect(result.checks.database.status).toBe("fail");
+    expect(result.status).toBe("blocked");
+  });
+});
+
 describe("AtlasHealthService reqlog partition runway (TD-018)", () => {
   it("degrades readiness when the partition runway is nearly exhausted", async () => {
     process.env["ATLAS_TEST_KEY"] = "x";
