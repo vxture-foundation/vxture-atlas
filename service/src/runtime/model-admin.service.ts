@@ -9,6 +9,7 @@ import {
 import {
   ANTHROPIC_WIRE_DEFAULTS,
   OPENAI_WIRE_DEFAULTS,
+  resolveWireFor,
   validateWire,
   WIRE_SCHEMA_VERSION,
 } from "../providers/wire";
@@ -251,6 +252,23 @@ export interface AiModelAdminRecord {
   deprecatedAt: string | null;
   /** Opaque upstream+wire fingerprint; see model-behavior-version.ts. */
   behaviorVersion: string;
+  /**
+   * What this model actually runs with: protocol defaults, overlaid by the
+   * provider's `config.wire`, then by the model's own.
+   *
+   * Added 2026-08-24 because `behaviorVersion` had a hole next to it. It says
+   * THAT the configuration moved - which is its whole job, and it does it well -
+   * but the only way to see WHAT it moved to was `POST :id/probe`, and a probe
+   * makes a real upstream call and spends tokens. So the cheap signal pointed at
+   * an expensive answer, and in practice nobody asked the question.
+   *
+   * `config` below is the raw overlay this model declares; this is the merged
+   * result. Both are here on purpose: the console needs to show which layer set
+   * a key, and it must not merge them itself - `applyOverlay` merges per key,
+   * so a console-side implementation would be a second source of truth for the
+   * same fact.
+   */
+  resolvedWire: ResolvedWire;
   config: ModelConfig | null;
   keyReference: ModelKeyReference | null;
   createdAt: string;
@@ -2058,6 +2076,9 @@ function mapModel(
     // consumer watching for it - which is the wrong way round, and is how
     // `deprecatedAt` ended up settable-but-invisible (#236).
     behaviorVersion: modelBehaviorVersion(model),
+    /* Same three inputs the runtime uses, same function - not a re-derivation.
+       Pure config merge, no upstream call, so it is free to compute per row. */
+    resolvedWire: resolveWireFor(model),
     config: sanitizeModelConfig(model.config),
     keyReference: readKeyReference(model.config),
     createdAt: model.createdAt.toISOString(),
