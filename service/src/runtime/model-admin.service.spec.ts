@@ -2026,7 +2026,7 @@ describe("quota and usage read contracts", () => {
     > as ModelRegistryRepository;
     const service = new ModelAdminService(repository);
 
-    const [summary] = await service.listUsageSummaries({
+    const { items: [summary] } = await service.listUsageSummaries({
       tenantId: "00000000-0000-4000-a000-000000000200",
       applicationId: "00000000-0000-4000-a000-000000000300",
       applicationType: "agent",
@@ -2058,7 +2058,7 @@ describe("quota and usage read contracts", () => {
     > as ModelRegistryRepository;
     const service = new ModelAdminService(repository);
 
-    const [summary] = await service.listUsageSummaries({});
+    const { items: [summary] } = await service.listUsageSummaries({});
 
     expect(summary?.productCode).toBe("karda");
   });
@@ -2076,7 +2076,7 @@ describe("quota and usage read contracts", () => {
     > as ModelRegistryRepository;
     const service = new ModelAdminService(repository);
 
-    const [summary] = await service.listUsageSummaries({});
+    const { items: [summary] } = await service.listUsageSummaries({});
 
     expect(summary?.productCode).toBeNull();
   });
@@ -2122,10 +2122,12 @@ describe("quota and usage read contracts", () => {
     > as ModelRegistryRepository;
     const service = new ModelAdminService(repository);
 
-    const [summary] = await service.listUsageSummaries({});
+    const { dimension, items: [summary] } = await service.listUsageSummaries({});
 
+    /* 轴在信封上，不在行上（A-4）——空结果时行会消失，而轴是服务端解析出来的，
+       必须留在一个空结果也带得走的位置。 */
+    expect(dimension).toBe("tenant");
     expect(summary).toMatchObject({
-      dimension: "tenant",
       tenantId: "00000000-0000-4000-a000-000000000200",
       applicationType: "agent",
       // The rollup-only identity fields are present but empty on this axis.
@@ -2150,19 +2152,21 @@ describe("quota and usage read contracts", () => {
     } as unknown as ModelRegistryRepository;
     const service = new ModelAdminService(repository);
 
-    const [byProvider] = await service.listUsageSummaries({
+    const providerPage = await service.listUsageSummaries({
       groupBy: "provider",
     });
-    const [byModel] = await service.listUsageSummaries({ groupBy: "model" });
+    const modelPage = await service.listUsageSummaries({ groupBy: "model" });
+    const [byProvider] = providerPage.items;
+    const [byModel] = modelPage.items;
 
+    expect(providerPage.dimension).toBe("provider");
+    expect(modelPage.dimension).toBe("model");
     expect(byProvider).toMatchObject({
-      dimension: "provider",
       providerCode: "doubao",
       modelCode: null,
       totalTokens: "30",
     });
     expect(byModel).toMatchObject({
-      dimension: "model",
       modelCode: "doubao-pro",
       providerCode: null,
     });
@@ -2188,10 +2192,12 @@ describe("quota and usage read contracts", () => {
     } as unknown as ModelRegistryRepository;
     const service = new ModelAdminService(repository);
 
-    const [row] = await service.listUsageSummaries({ groupBy: "endpoint" });
+    const { dimension, items: [row] } = await service.listUsageSummaries({
+      groupBy: "endpoint",
+    });
 
+    expect(dimension).toBe("endpoint");
     expect(row).toMatchObject({
-      dimension: "endpoint",
       endpointCode: "chat/default",
       modelCode: null,
       providerCode: null,
@@ -2215,10 +2221,12 @@ describe("quota and usage read contracts", () => {
     } as unknown as ModelRegistryRepository;
     const service = new ModelAdminService(repository);
 
-    const [row] = await service.listUsageSummaries({ groupBy: "product" });
+    const { dimension, items: [row] } = await service.listUsageSummaries({
+      groupBy: "product",
+    });
 
+    expect(dimension).toBe("product");
     expect(row).toMatchObject({
-      dimension: "product",
       productCode: "karda",
       tenantId: null,
       workspaceId: null,
@@ -2237,10 +2245,10 @@ describe("quota and usage read contracts", () => {
     > as ModelRegistryRepository;
     const service = new ModelAdminService(repository);
 
-    const [row] = await service.listUsageSummaries({});
+    const { dimension, items: [row] } = await service.listUsageSummaries({});
 
+    expect(dimension).toBe("tenant");
     expect(row).toMatchObject({
-      dimension: "tenant",
       tenantId: "00000000-0000-4000-a000-000000000200",
       workspaceId: "00000000-0000-4000-a000-000000000201",
     });
