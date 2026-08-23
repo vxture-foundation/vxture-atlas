@@ -1,6 +1,11 @@
 import { describe, it, expect, vi } from "vitest";
 
 import { ModelAdminService } from "./model-admin.service";
+import {
+  ANTHROPIC_WIRE_DEFAULTS,
+  OPENAI_WIRE_DEFAULTS,
+  WIRE_SCHEMA_VERSION,
+} from "../providers/wire";
 import { ModelAdminException } from "./model-admin.errors";
 import { metricsRegistry } from "./metrics.registry";
 import type {
@@ -532,6 +537,86 @@ describe("normalizeUpdateModel", () => {
     const result = normalizeUpdate({ sort: 5 } satisfies UpdateAiModelBody);
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     expect(Object.keys(result as any)).toEqual(["sort"]);
+  });
+});
+
+// ── resolved wire ─────────────────────────────────────────────────────────────
+
+/**
+ * `resolvedWire` closes the hole next to `behaviorVersion`: the fingerprint said
+ * THAT the configuration moved, and the only way to see WHAT it moved to was
+ * `POST :id/probe` - a real upstream call that spends tokens. A cheap signal
+ * pointing at an expensive answer means the question does not get asked.
+ *
+ * These pin the LAYERING, not the presence of the field. Order is the part a
+ * console-side re-implementation would get wrong, and getting it wrong is
+ * silent: you would render a plausible descriptor that no request ever used.
+ */
+describe("model admin resolvedWire", () => {
+  async function firstModel(model: AiModelRecord) {
+    const repository = {
+      countGrantsByModel: async () => new Map(),
+      countEndpointRefsByModelCode: async () => new Map(),
+      listModels: async () => [model],
+    } as Pick<ModelRegistryRepository, "listModels"> as ModelRegistryRepository;
+    const [row] = await new ModelAdminService(repository).listModels(true);
+    return row!;
+  }
+
+  it("falls back to the protocol defaults when neither layer overrides", async () => {
+    const row = await firstModel(makeModel({ providerConfig: null, config: null }));
+
+    expect(row.resolvedWire.schemaVersion).toBe(WIRE_SCHEMA_VERSION);
+    expect(row.resolvedWire.authStyle).toBe(OPENAI_WIRE_DEFAULTS.authStyle);
+  });
+
+  it("the model's own wire wins over the provider's", async () => {
+    const row = await firstModel(
+      makeModel({
+        providerConfig: { wire: { chatPath: "/provider/chat" } },
+        config: { wire: { chatPath: "/model/chat" } },
+      }),
+    );
+
+    expect(row.resolvedWire.chatPath).toBe("/model/chat");
+  });
+
+  it("a provider override survives when the model does not touch that key", async () => {
+    const row = await firstModel(
+      makeModel({
+        providerConfig: { wire: { chatPath: "/provider/chat" } },
+        config: { wire: { streamUsage: "native" } },
+      }),
+    );
+
+    /* The layers merge per key rather than replacing wholesale - which is
+       exactly why the console must not do this merge itself. */
+    expect(row.resolvedWire.chatPath).toBe("/provider/chat");
+    expect(row.resolvedWire.streamUsage).toBe("native");
+  });
+
+  it("picks the Anthropic defaults from the model's protocol", async () => {
+    const row = await firstModel(
+      makeModel({ protocol: "anthropic-messages", providerConfig: null, config: null }),
+    );
+
+    expect(row.resolvedWire.headers).toEqual(ANTHROPIC_WIRE_DEFAULTS.headers);
+    expect(row.resolvedWire.authStyle).toBe(ANTHROPIC_WIRE_DEFAULTS.authStyle);
+  });
+
+  /**
+   * `config` and `resolvedWire` are both on the record on purpose: the console
+   * shows which layer declared a key (raw) AND what runs (merged). Collapsing
+   * them would force the console to merge, and `config` is also where the
+   * secret redaction happens - the two serve different questions.
+   */
+  it("keeps the raw declaration alongside the merged result", async () => {
+    const row = await firstModel(
+      makeModel({ providerConfig: null, config: { wire: { chatPath: "/x" } } }),
+    );
+
+    expect(row.config).toEqual({ wire: { chatPath: "/x" } });
+    expect(row.resolvedWire.chatPath).toBe("/x");
   });
 });
 

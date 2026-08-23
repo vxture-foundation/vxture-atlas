@@ -2,9 +2,8 @@ import { HttpStatus, Inject, Injectable, Logger } from "@nestjs/common";
 import { randomUUID } from "node:crypto";
 
 import { ProviderKeyService } from "../provider-keys/provider-key.service";
-import { OPENAI_WIRE_DEFAULTS, resolveWire } from "../providers/wire";
+import { resolveWireFor } from "../providers/wire";
 import type { ResolvedWire } from "../providers/wire";
-import { ANTHROPIC_WIRE_DEFAULTS } from "../providers/wire";
 import { normalizeProtocol } from "../providers/protocol";
 import { COMMERCE_SENTINEL_UUID } from "../quota/quota.service";
 import { ModelRegistryRepository } from "../registry/model-registry.repository";
@@ -369,14 +368,6 @@ function buildProbeRequest(
   };
 }
 
-function resolveWireFor(model: AiModelRecord): ResolvedWire {
-  const defaults =
-    normalizeProtocol(model.protocol) === "anthropic-messages"
-      ? ANTHROPIC_WIRE_DEFAULTS
-      : OPENAI_WIRE_DEFAULTS;
-
-  return resolveWire(defaults, model.providerConfig, model.config);
-}
 
 async function collectStreamUsage(
   provider: {

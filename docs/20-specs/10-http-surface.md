@@ -167,6 +167,42 @@ would enforce it today, and a column promising a deadline the runtime ignores is
 worse than no column: the caller plans against an end that never arrives. It
 lands with the code that honours it.
 
+### `resolvedWire` - what the fingerprint was pointing at
+
+`behaviorVersion` says THAT the configuration moved. Until 2026-08-24 the only
+way to see WHAT it moved to was `POST /capability/models/:id/probe`, which makes
+a real upstream call and spends tokens. A cheap signal pointing at an expensive
+answer is a signal nobody follows, so `GET /capability/models` now carries the
+merged descriptor directly:
+
+```jsonc
+{
+  "behaviorVersion": "b1-9f2c1a4b7e30",
+  "config":        { "wire": { "chatPath": "/v4/chat/completions" } },  // declared
+  "resolvedWire":  { "schemaVersion": 1, "chatPath": "/v4/chat/completions",
+                     "authStyle": "bearer", "headers": {}, "streamUsage": "stream_options",
+                     "supports": { }, "paramMap": { } }                 // effective
+}
+```
+
+Three layers, in this order: **protocol defaults → the provider's `config.wire`
+→ the model's own**. It is the same `resolveWireFor()` the runtime and the probe
+call - a pure config merge, no upstream call, so it costs nothing per row.
+
+**`config` and `resolvedWire` are both present on purpose.** They answer
+different questions: `config` is what THIS model declares (so a console can show
+which layer set a key, and it is also where secret redaction happens),
+`resolvedWire` is what runs. A caller must not merge them itself: `applyOverlay`
+merges per key - `headers` is a string-map merge, `authStyle` is an enum read
+that silently falls back on an unknown value - so a second implementation would
+be a second source of truth for the same fact, and it would fail silently by
+rendering a descriptor no request ever used.
+
+Like `behaviorVersion`, it is computed at the mapping boundary and stored
+nowhere. Writes still go through `config.wire`, which is validated strictly
+(unknown keys rejected at `/capability/*`, ignored at runtime - see section 6 of
+`docs/30-design/100-model-onboarding-and-protocol-adapters.md`).
+
 ### The vault is the only source of an upstream key
 
 `config.apiKeyEnvVar` and `keyReference.source: "env"` are retired (ADR-003,

@@ -1,6 +1,7 @@
 import { Logger } from "@nestjs/common";
 
 import type { ModelConfig } from "../types/runtime.types";
+import { normalizeProtocol } from "./protocol";
 
 /**
  * 线格式怪癖描述符（docs/30-design/100-model-onboarding-and-protocol-adapters.md §6）。
@@ -336,4 +337,35 @@ function readEnum<T extends string>(
   return typeof value === "string" && allowed.has(value as T)
     ? (value as T)
     : undefined;
+}
+
+/**
+ * The wire descriptor a model actually runs with: protocol defaults, overlaid
+ * by the provider's `config.wire`, overlaid by the model's own.
+ *
+ * Lives here rather than in the probe service because it touches nothing but
+ * configuration - no upstream call, no token spend. It was private to
+ * `model-probe.service.ts` until 2026-08-24, which had one consequence worth
+ * recording: **the only way to see a model's effective wire was to run a probe**,
+ * and a probe makes a real upstream call. `behaviorVersion` told an operator
+ * THAT the configuration had moved; finding out WHAT it moved to cost a live
+ * request against the provider.
+ *
+ * The three layers are why a caller cannot recompute this from the admin
+ * record: `applyOverlay` merges per key (`headers` string-map merge, `authStyle`
+ * enum read), so a second implementation on the console side would be a second
+ * source of truth for the same fact - the exact failure this repo's contract
+ * work has been removing everywhere else.
+ */
+export function resolveWireFor(model: {
+  protocol: string;
+  providerConfig: ModelConfig | null;
+  config: ModelConfig | null;
+}): ResolvedWire {
+  const defaults =
+    normalizeProtocol(model.protocol) === "anthropic-messages"
+      ? ANTHROPIC_WIRE_DEFAULTS
+      : OPENAI_WIRE_DEFAULTS;
+
+  return resolveWire(defaults, model.providerConfig, model.config);
 }
