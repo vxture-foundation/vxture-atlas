@@ -20,6 +20,70 @@ import type { AiModelRecord, ModelConfig } from "../types/runtime.types";
 export type HealthCheckStatus = "pass" | "warn" | "fail";
 export type ReadinessStatus = "ready" | "degraded" | "blocked";
 
+/**
+ * Per-check deadline for `/readyz`.
+ *
+ * Readiness is answered under a deadline because the whole point of the
+ * endpoint is to answer FAST whether this instance should take traffic. Before
+ * this bound it was fastest when everything was fine and slowest exactly when
+ * the answer mattered: measured 2026-08-23 against a stopped database,
+ * `/readyz` took **19.8s and 23.0s** while each check sat on a connection that
+ * would never be acquired.
+ *
+ * That is not a slow-page problem, it is a signal-loss problem. Any prober with
+ * a sane timeout gives up first and records "unreachable / timed out", which is
+ * a different diagnosis from "the service answered and told you it is blocked,
+ * and here is which dependency failed". The console does exactly this at a 4s
+ * probe timeout, so the `blocked` body - carefully computed here, and pinned by
+ * tests on the consumer side - was **never once observed in practice**.
+ *
+ * A timed-out check is a FAILING check, not an unknown one: it resolves to
+ * `fail` with a message naming the deadline, so the roll-up still says
+ * `blocked` and `checks` still names which dependency went quiet. The caller
+ * gets strictly more than a probe timeout would have told it.
+ */
+const CHECK_DEADLINE_MS = 2_000;
+
+/**
+ * Run a check under the deadline. Never rejects - a check that overruns becomes
+ * a `fail` result, because "we could not find out in time" is an answer about
+ * readiness, and readiness must not depend on a dependency's willingness to
+ * time out politely.
+ */
+async function withDeadline(
+  name: string,
+  run: () => Promise<HealthCheckResult>,
+): Promise<HealthCheckResult> {
+  const startedAt = Date.now();
+  let timer: NodeJS.Timeout | undefined;
+  const deadline = new Promise<HealthCheckResult>((resolve) => {
+    timer = setTimeout(
+      () =>
+        resolve({
+          status: "fail",
+          latencyMs: Date.now() - startedAt,
+          message: `check did not answer within ${CHECK_DEADLINE_MS}ms`,
+        }),
+      CHECK_DEADLINE_MS,
+    );
+  });
+
+  try {
+    return await Promise.race([run(), deadline]);
+  } catch (error) {
+    /* A check that throws outside its own try/catch still must not take the
+       endpoint down - /readyz returning 500 tells a prober nothing about which
+       dependency broke. */
+    return {
+      status: "fail",
+      latencyMs: Date.now() - startedAt,
+      message: `${name} threw: ${error instanceof Error ? error.message : String(error)}`,
+    };
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 export interface HealthCheckResult {
   status: HealthCheckStatus;
   latencyMs?: number;
@@ -92,16 +156,26 @@ export class AtlasHealthService {
       registryDrift,
     ] =
       await Promise.all([
-        this.checkDatabase(includeDetail),
-        this.checkModelRegistry(includeDetail),
-        this.checkUsageSummaryRead(includeDetail),
-        this.checkReqlogPartitions(includeDetail),
-        this.checkRegistryDrift(includeDetail),
+        withDeadline("database", () => this.checkDatabase(includeDetail)),
+        withDeadline("modelRegistry", () =>
+          this.checkModelRegistry(includeDetail),
+        ),
+        withDeadline("usageSummaryRead", () =>
+          this.checkUsageSummaryRead(includeDetail),
+        ),
+        withDeadline("reqlogPartitions", () =>
+          this.checkReqlogPartitions(includeDetail),
+        ),
+        withDeadline("registryDrift", () =>
+          this.checkRegistryDrift(includeDetail),
+        ),
       ]);
     const providerKeys =
       modelRegistry.status === "fail"
         ? { status: "fail" as const, message: "model registry unavailable" }
-        : await this.checkProviderKeys(modelRegistry.models as AiModelRecord[]);
+        : await withDeadline("providerKeys", () =>
+            this.checkProviderKeys(modelRegistry.models as AiModelRecord[]),
+          );
 
     return {
       ...serviceIdentity({ service: "atlas", product: "vxture" }),

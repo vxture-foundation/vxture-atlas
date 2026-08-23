@@ -80,8 +80,27 @@ const ROLLUP_COLUMN: Record<Exclude<UsageRollupDimension, "tenant">, string> = {
 
 @Injectable()
 export class ModelRegistryRepository {
-  checkDatabaseConnectivity(): Promise<void> {
-    return prisma.$connect();
+  /**
+   * A real round-trip, not `$connect()`.
+   *
+   * `$connect()` is a no-op on an already-connected client: it resolves
+   * instantly, without issuing anything, whether or not the database is still
+   * there. This check therefore passed against a database that had been
+   * stopped outright - measured 2026-08-23 by stopping the dev postgres
+   * container, where `/readyz` reported `database=pass` alongside
+   * `modelRegistry=fail`, `providerKeys=fail`, `usageSummaryRead=fail` and
+   * `reqlogPartitions=fail`.
+   *
+   * That reading is worse than no check at all. Every check that actually
+   * queries failed, and the one named `database` said the database was fine,
+   * so the honest conclusion from the page was "the database is up, the
+   * registry code is broken" - the exact inverse of the truth, pointing an
+   * operator at the wrong system during an outage.
+   */
+  async checkDatabaseConnectivity(): Promise<void> {
+    /* `$queryRawUnsafe` with a constant and no interpolation - exactly the use
+       its own doc comment sanctions. `$queryRaw` is not on the narrowed client. */
+    await prisma.$queryRawUnsafe("SELECT 1");
   }
 
   listProviders(includeInactive = false): Promise<ModelProviderRecord[]> {
