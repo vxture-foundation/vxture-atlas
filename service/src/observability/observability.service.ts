@@ -91,11 +91,29 @@ type LogSummaryTotals = Omit<
   "modelCode" | "providerCode" | "endpointCode"
 >;
 
+/**
+ * The wire shape of `/capability/logs/summary` (product_251 A-4).
+ *
+ * A-4 decides envelope-vs-bare-array by one test: did the server *resolve*
+ * something the caller must be told about? Here it did - `window` defaults to
+ * `24h`, so a caller that sent no window has no other way to learn which 24
+ * hours it got. Hence an envelope, carrying the resolved window.
+ *
+ * The field names are A-4's, not this module's: `from`/`to` for the resolved
+ * window and `items` for the collection, matching runos `/audit/usage-summaries`.
+ * They used to be `windowStart`/`windowEnd`/`byGroup` - three private words for
+ * two concepts runos already had words for, which is how an operator ends up
+ * reading two aggregates that mean the same thing and look nothing alike.
+ *
+ * `overall` stays. It is a peer aggregate, not the collection, and A-4 only
+ * fixes the collection key. It deliberately carries no token sum of its own -
+ * see the note in `summarize()`.
+ */
 export interface LogSummaryResult {
-  windowStart: string;
-  windowEnd: string;
+  from: string;
+  to: string;
   overall: LogSummaryTotals;
-  byGroup: LogSummaryGroup[];
+  items: LogSummaryGroup[];
 }
 
 /**
@@ -221,14 +239,16 @@ export class ObservabilityService {
     });
 
     return {
-      windowStart: from.toISOString(),
-      windowEnd: to.toISOString(),
+      from: from.toISOString(),
+      to: to.toISOString(),
       // `overall` has no token sum of its own - it comes from a separate
       // aggregate that predates this field. Summing the groups would be a
       // second source of truth for the same number, so it is left to the
-      // caller to add up `byGroup` when it wants a window total.
+      // caller to add up `items` when it wants a window total.
       overall: toSummaryNumbers(overall),
-      byGroup: byGroup.map((group) => ({
+      // The repository keeps calling its half `byGroup` - that name is correct
+      // for the storage layer, and A-4 only governs the wire.
+      items: byGroup.map((group) => ({
         modelCode: group.modelCode,
         providerCode: group.providerCode,
         endpointCode: group.endpointCode,

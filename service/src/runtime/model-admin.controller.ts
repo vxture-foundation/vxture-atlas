@@ -32,7 +32,7 @@ import {
   type ModelProviderAdminRecord,
   type ProtocolCatalogResponse,
   type TenantQuotaAdminRecord,
-  type TenantUsageSummaryAdminRecord,
+  type UsageSummaryPage,
   type UpdateAiModelBody,
   type UpdateAiModelGrantBody,
   type UpdateModelEndpointBody,
@@ -512,7 +512,7 @@ export class ModelAdminController {
     @Query("modelCode") modelCode?: string,
     @Query("productCode") productCode?: string,
     @Query("groupBy") groupBy?: string,
-  ): Promise<TenantUsageSummaryAdminRecord[]> {
+  ): Promise<UsageSummaryPage> {
     rejectUnknownFilters(all, ["tenantId", "applicationId", "applicationType", "cycleMonth", "providerCode", "modelCode", "productCode", "groupBy"], "CAPABILITY_UNKNOWN_FILTER");
     return this.admin.listUsageSummaries({
       ...(tenantId !== undefined ? { tenantId } : {}),

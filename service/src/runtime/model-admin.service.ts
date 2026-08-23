@@ -325,19 +325,19 @@ export interface TenantQuotaAdminRecord {
 }
 
 /**
- * Aggregated from reqlog.
+ * One aggregated row from reqlog. The identity fields not belonging to the
+ * grouping axis are `null` - a provider rollup row has no tenant, because it
+ * sums across all of them.
  *
- * `dimension` says which axis
- * the row was grouped on, and the identity fields not belonging to that axis
- * are `null` - a provider rollup row has no tenant, because it sums across all
- * of them.
- *
- * A caller that passes no `groupBy` gets `dimension: "tenant"` rows whose other
- * fields are exactly what they were before, so the existing shape survives
- * additively.
+ * **Which axis produced these rows is NOT on the row** - it is `dimension` on
+ * the enclosing `UsageSummaryPage`. It used to be repeated on every row, and
+ * product_251 A-4 forbids that for one concrete reason: `groupBy` defaults to
+ * `tenant` server-side, so the axis is something the server *resolved*; carried
+ * per row, it vanishes exactly when the result is empty, and a caller holding
+ * `[]` cannot tell which axis it just queried. A resolved value that disappears
+ * on the empty case is not an answer.
  */
 export interface TenantUsageSummaryAdminRecord {
-  dimension: UsageRollupDimension;
   cycleMonth: string;
   /**
    * The billing subject is the (tenantId, workspaceId) PAIR - grouping by
@@ -358,6 +358,25 @@ export interface TenantUsageSummaryAdminRecord {
   outputTokens: string;
   totalTokens: string;
   errors: string;
+}
+
+/**
+ * The wire shape of `/capability/usage-summaries` (product_251 A-4).
+ *
+ * An envelope rather than a bare array because `groupBy` is resolved
+ * server-side (absent means `tenant`), and A-4's test is exactly that: if the
+ * server decided something the caller did not send, the caller must be told,
+ * and the place to tell it is the envelope - the one spot that survives an
+ * empty result.
+ *
+ * `cycleMonth` is deliberately NOT echoed here: it is a pass-through filter
+ * with no server-side default (see `normalizeUsageSummaryFilters`), so there is
+ * nothing resolved to report. A-4 asks for resolved values, not for a copy of
+ * the query string.
+ */
+export interface UsageSummaryPage {
+  dimension: UsageRollupDimension;
+  items: TenantUsageSummaryAdminRecord[];
 }
 
 /**
@@ -1193,20 +1212,20 @@ export class ModelAdminService {
     endpointCode?: string;
     productCode?: string;
     groupBy?: string;
-  }): Promise<TenantUsageSummaryAdminRecord[]> {
+  }): Promise<UsageSummaryPage> {
     const dimension = normalizeUsageRollupDimension(filters.groupBy);
     const normalized = normalizeUsageSummaryFilters(filters);
 
     if (dimension === "tenant") {
       const summaries = await this.repository.listUsageSummaries(normalized);
-      return summaries.map(mapUsageSummary);
+      return { dimension, items: summaries.map(mapUsageSummary) };
     }
 
     const rows = await this.repository.listUsageRollup({
       ...normalized,
       dimension,
     });
-    return rows.map((row) => mapUsageRollup(dimension, row));
+    return { dimension, items: rows.map((row) => mapUsageRollup(dimension, row)) };
   }
 
   private normalizeCreateProvider(
@@ -2106,7 +2125,7 @@ function mapUsageSummary(
   summary: TenantUsageSummaryRecord,
 ): TenantUsageSummaryAdminRecord {
   return {
-    dimension: "tenant",
+    /* No `dimension` here — it rides on the envelope (A-4). */
     cycleMonth: summary.cycleMonth,
     tenantId: summary.tenantId,
     workspaceId: summary.workspaceId,
@@ -2140,7 +2159,8 @@ function mapUsageRollup(
   row: UsageRollupRecord,
 ): TenantUsageSummaryAdminRecord {
   return {
-    dimension,
+    /* `dimension` still selects which identity field `groupKey` fills, but it is
+       no longer copied onto the row — see `UsageSummaryPage`. */
     cycleMonth: row.cycleMonth,
     tenantId: null,
     workspaceId: null,

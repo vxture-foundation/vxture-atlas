@@ -293,7 +293,10 @@ describe("ObservabilityService.summarize", () => {
       avgLatencyMs: 120.5,
       p95LatencyMs: 400,
     });
-    expect(result.byGroup[0]).toEqual({
+    /* The repository still hands back `byGroup` (see the mock above) - that is
+       the storage layer's word. The wire says `items` (product_251 A-4), and
+       the mapping between the two is exactly what this line pins. */
+    expect(result.items[0]).toEqual({
       modelCode: "gpt-4o",
       providerCode: "openai",
       endpointCode: "chat/default",

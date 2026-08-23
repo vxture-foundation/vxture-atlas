@@ -641,6 +641,36 @@ same pair the query orders by DESC) - treat it as a token, not a format to
 hand-construct. A response's `nextCursor` is `null` once there is no further
 page.
 
+### Response shape: bare array vs envelope
+
+**Authority is `product_251` A-4, not this file.** Recorded here only because
+this repo has to implement it; if it ever disagrees with A-4, A-4 wins. It was
+this section inventing its own answer that created the divergence A-4 exists to
+close - runos independently invented a different one, and both were internally
+consistent.
+
+The test is **whether the server resolved something the caller must be told
+about**, not what kind of resource it is:
+
+| Case | Shape | Here |
+|------|-------|------|
+| Nothing resolved | bare JSON array | `providers`, `models`, `model-routes`, `provider-keys`, `api-keys`, `product-endpoint-grants` |
+| Cursor | `{items, nextCursor}` | `/capability/logs`, `/capability/audit-logs` |
+| Resolved window or axis | `{from, to, dimension?, items, ...}` | `/capability/logs/summary`, `/capability/usage-summaries` |
+
+Three rules that are easy to get wrong:
+
+- The collection key is **`items`**, never `rows` / `data` / `byGroup`. Internal
+  layers may keep their own words - the repository still returns `byGroup` - but
+  the wire says `items`.
+- **The resolved value goes on the envelope, never on every row.** It was on the
+  row for `usage-summaries` and that is a defect, not a style: `groupBy` defaults
+  to `tenant` server-side, so with zero rows the echo vanished and a caller
+  holding `[]` could not tell which axis it had queried.
+- **Only resolved values are echoed, not the query string.** `cycleMonth` is a
+  pass-through filter with no server default, so it is not on the envelope.
+  `dimension` and the summary window are, because the server picked them.
+
 ### Price-rule unit semantics
 
 A price is three fields that only mean something together, and two of them have

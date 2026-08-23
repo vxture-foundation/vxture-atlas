@@ -14,10 +14,10 @@ function makeController() {
   const observability = {
     searchLogs: vi.fn().mockResolvedValue({ items: [], nextCursor: null }),
     summarize: vi.fn().mockResolvedValue({
-      windowStart: "",
-      windowEnd: "",
+      from: "",
+      to: "",
       overall: {},
-      byGroup: [],
+      items: [],
     }),
   };
   return {
