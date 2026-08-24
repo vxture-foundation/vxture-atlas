@@ -282,6 +282,17 @@ function mergeStringMap(
 }
 
 /**
+ * 面向人的键名清单。
+ *
+ * 显式给 `sort` 传比较函数：不带参数的 `Array.prototype.sort` 按 UTF-16 码元
+ * 排序，对非 ASCII 的键会给出与阅读顺序不一致的结果（Sonar S2871）。这串字符
+ * 是运营在保存失败时唯一能看到的提示，顺序稳定比省几个字符重要。
+ */
+function sortedList(keys: ReadonlySet<string>): string {
+  return [...keys].sort((a, b) => a.localeCompare(b)).join(", ");
+}
+
+/**
  * 写入时的严格校验（§6：写入严格、运行时宽松）。
  *
  * 返回问题列表，空数组表示通过。与 `resolveWire` 的宽松读取是刻意的一对：
@@ -301,7 +312,7 @@ export function validateWire(raw: unknown): string[] {
   for (const key of Object.keys(wire)) {
     if (!KNOWN_KEYS.has(key)) {
       problems.push(
-        `config.wire.${key} is not a known key (allowed: ${[...KNOWN_KEYS].sort().join(", ")})`,
+        `config.wire.${key} is not a known key (allowed: ${sortedList(KNOWN_KEYS)})`,
       );
     }
   }
@@ -383,7 +394,7 @@ function validateExtraBody(raw: unknown): string[] {
     .filter((key) => RESERVED_BODY_KEYS.has(key))
     .map(
       (key) =>
-        `config.wire.extraBody.${key} is reserved by the adapter (reserved: ${[...RESERVED_BODY_KEYS].sort().join(", ")})`,
+        `config.wire.extraBody.${key} is reserved by the adapter (reserved: ${sortedList(RESERVED_BODY_KEYS)})`,
     );
 }
 
