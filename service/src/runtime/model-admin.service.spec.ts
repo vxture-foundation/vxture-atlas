@@ -2575,6 +2575,18 @@ describe("normalizeCreatePriceRule - cached input price (TD-047)", () => {
     expect(result.cachedInputUnitPrice).toBeNull();
   });
 
+  it("treats an empty string as undeclared, not as a parse error", async () => {
+    // Forms post "" for a field the operator left blank. Sending that down the
+    // decimal parser would answer a blank box with a validation error.
+    const result = await create({
+      modelId: "00000000-0000-4000-a000-000000000100",
+      inputUnitPrice: "3.0",
+      cachedInputUnitPrice: "",
+    });
+
+    expect(result.cachedInputUnitPrice).toBeNull();
+  });
+
   it("rejects a non-decimal cached rate rather than storing it", async () => {
     await expect(
       create({
@@ -2582,5 +2594,52 @@ describe("normalizeCreatePriceRule - cached input price (TD-047)", () => {
         cachedInputUnitPrice: "cheap",
       }),
     ).rejects.toBeInstanceOf(ModelAdminException);
+  });
+});
+
+describe("mapPriceRule - the cached rate on the wire (TD-047)", () => {
+  const rule = (cached: { toString(): string } | null) => ({
+    id: "pr-1",
+    modelId: "00000000-0000-4000-a000-000000000100",
+    billingMode: "token",
+    currency: "CNY",
+    unitTokens: 1000000,
+    inputUnitPrice: "3.00000000",
+    outputUnitPrice: "9.00000000",
+    requestUnitPrice: "0.00000000",
+    cachedInputUnitPrice: cached,
+    isActive: true,
+    effectiveAt: new Date("2026-08-01T00:00:00.000Z"),
+    expiresAt: null,
+    createdBy: null,
+    updatedBy: null,
+    createdAt: new Date("2026-08-01T00:00:00.000Z"),
+    updatedAt: new Date("2026-08-01T00:00:00.000Z"),
+  });
+
+  const read = async (cached: { toString(): string } | null) => {
+    const repo = {
+      listPriceRules: vi.fn().mockResolvedValue([rule(cached)]),
+    } as unknown as ModelRegistryRepository;
+    const [row] = await new ModelAdminService(repo).listPriceRules({});
+    return row as { cachedInputUnitPrice: string | null; inputUnitPrice: string };
+  };
+
+  it("serialises a declared cached rate as a decimal string", async () => {
+    // Decimal, not number: these are money and the wire must not round them
+    // through a float. Same treatment the other three prices get.
+    const row = await read("0.10000000");
+
+    expect(row.cachedInputUnitPrice).toBe("0.10000000");
+    expect(row.inputUnitPrice).toBe("3.00000000");
+  });
+
+  it("reports null when no cached rate was declared", async () => {
+    // Not "0". The operator has to be able to tell "cached input is free" from
+    // "nobody said", because only the second one means fall back to the
+    // uncached price.
+    const row = await read(null);
+
+    expect(row.cachedInputUnitPrice).toBeNull();
   });
 });
