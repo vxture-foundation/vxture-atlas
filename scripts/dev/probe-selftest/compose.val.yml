@@ -1,0 +1,59 @@
+# Overlay for the probe self-test, on top of docker-compose.yml.
+#
+# Adds two throwaway services to the val stack and gives the app an issuer it
+# can actually verify:
+#   dev-issuer  the same stub OIDC issuer the devbox uses - the operator plane
+#               is guarded, so without a mintable token the probe route cannot
+#               be reached at all
+#   stub        a DeepSeek-V4-shaped thinking model (./stub-upstream.mjs)
+#
+# Neither publishes a port. They are reachable only from the val stack's own
+# network, for the reason the devbox issuer's comment gives: exposing an issuer
+# grants a CAPABILITY (minting credentials), not access to disposable data.
+#
+# Paths are relative to the PROJECT directory (where docker-compose.yml lives),
+# not to this file - that is how compose resolves relative paths in an overlay.
+services:
+  dev-issuer:
+    container_name: vx-atlas-dev-issuer-val
+    image: node:24-alpine
+    command: node /srv/server.mjs
+    working_dir: /srv
+    volumes:
+      - ./scripts/dev/dev-issuer:/srv:ro
+    environment:
+      PORT: "3181"
+      # Must equal the app's OIDC_ISSUER exactly - it is the `iss` claim and the
+      # guard compares strings.
+      DEV_ISSUER_URL: "http://dev-issuer:3181"
+    networks: [appnet]
+
+  stub:
+    container_name: vx-atlas-stub-upstream-val
+    image: node:24-alpine
+    command: node /srv/stub-upstream.mjs
+    working_dir: /srv
+    volumes:
+      - ./scripts/dev/probe-selftest:/srv:ro
+    environment:
+      PORT: "8080"
+    networks: [appnet]
+
+  app:
+    environment:
+      OIDC_ISSUER: "http://dev-issuer:3181"
+      # The app fetches JWKS from the BACKCHANNEL issuer, and `.env` points that
+      # at a host-process IdP on 3081 which is not running here. Overriding only
+      # OIDC_ISSUER leaves every operator token failing verification, with
+      # OPERATOR_TOKEN_INVALID and nothing in the log saying why.
+      OIDC_BACKCHANNEL_ISSUER: "http://dev-issuer:3181"
+      S2S_AUDIENCE: "atlas"
+      # Deterministic, and not a secret: it protects fixture ciphertext in a
+      # throwaway database. Needed because set-provider-key.mjs must encrypt with
+      # the same key set the app decrypts with.
+      PROVIDER_KEY_ENCRYPTION_KEYS: '{"val":"ZGV2Ym94LWZpeHR1cmUta2V5LTMyLWJ5dGVzLW9rISE="}'
+      PROVIDER_KEY_ENCRYPTION_ACTIVE_KEY_ID: "val"
+    depends_on:
+      - db
+      - dev-issuer
+      - stub
