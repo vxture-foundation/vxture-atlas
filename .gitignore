@@ -83,6 +83,15 @@ service/src/generated/
 # have swept in whole.
 .api-key/
 
+# Same drop-box, single-file form. Named explicitly for the reason the comment
+# above already gives: `*.key` matches a file ENDING in `.key`, and
+# `.deepseek-api-key` ends in `-key`, so it was untracked-but-not-ignored -
+# one `git add -A` away from history. Add a line here per provider rather than
+# widening the glob; a pattern loose enough to catch these would also catch
+# real source files.
+.deepseek-api-key
+*-api-key
+
 # Published-artifact sources (the rendered docs live on claude.ai; these are
 # the authoring copies, kept out of the repo so the doc set has one home).
 .artifacts/
