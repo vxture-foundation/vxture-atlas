@@ -3,6 +3,7 @@ import { Injectable } from "@nestjs/common";
 import { BaseProvider, joinEndpoint, resolveUpstreamModel } from "./base.provider";
 import { openSseRequest, readSseMessages } from "./sse";
 import { ANTHROPIC_WIRE_DEFAULTS, resolveWire } from "./wire";
+import type { ResolvedWire } from "./wire";
 import { errorFrame } from "../types/runtime.types";
 import type {
   ChatMessage,
@@ -74,10 +75,11 @@ export class ClaudeProvider extends BaseProvider {
   readonly providerName = "claude";
 
   async chat(request: ProviderChatRequest): Promise<ProviderChatResponse> {
+    const wire = resolveClaudeWire(request);
     const response = await this.postJson<ClaudeChatResponse>(
       resolveClaudeMessagesEndpoint(request.endpointUrl),
-      buildClaudeHeaders(request),
-      buildClaudeBody(request, false),
+      buildClaudeHeaders(request, wire),
+      buildClaudeBody(request, false, wire),
       request.signal,
     );
 
@@ -130,11 +132,12 @@ export class ClaudeProvider extends BaseProvider {
   override async *chatStream(
     request: ProviderChatRequest,
   ): AsyncGenerator<StreamEvent> {
+    const wire = resolveClaudeWire(request);
     const body = await openSseRequest({
       providerName: this.providerName,
       url: resolveClaudeMessagesEndpoint(request.endpointUrl),
-      headers: buildClaudeHeaders(request),
-      body: buildClaudeBody(request, true),
+      headers: buildClaudeHeaders(request, wire),
+      body: buildClaudeBody(request, true, wire),
       ...(request.signal !== undefined ? { signal: request.signal } : {}),
     });
 
@@ -142,11 +145,29 @@ export class ClaudeProvider extends BaseProvider {
   }
 }
 
-function buildClaudeBody(
+/**
+ * 与 openai-compatible 侧同一个描述符，同一套解析。单独提出来是因为本适配器
+ * 的 header 与 body 都要用它，各自 resolve 一次会让"生效值"有两个来源。
+ */
+function resolveClaudeWire(request: ProviderChatRequest): ResolvedWire {
+  return resolveWire(
+    ANTHROPIC_WIRE_DEFAULTS,
+    request.providerConfig,
+    request.config,
+  );
+}
+
+/** 导出仅为可测：`extraBody` 若在这一侧静默失效，就成了"配了不生效"的开关。 */
+export function buildClaudeBody(
   request: ProviderChatRequest,
   stream: boolean,
+  wire: ResolvedWire,
 ): Record<string, unknown> {
   const body: Record<string, unknown> = {
+    // extraBody 先铺底，适配器管理的键随后覆盖 —— 与 openai-compatible 同规则。
+    // 这里必须一起支持，否则 `config.wire.extraBody` 就成了"在一半适配器上配了
+    // 不生效"的开关。
+    ...wire.extraBody,
     model: resolveUpstreamModel(request),
     system: buildSystemPrompt(request.messages),
     messages: buildClaudeMessages(request.messages),
@@ -167,13 +188,8 @@ function buildClaudeBody(
 
 function buildClaudeHeaders(
   request: ProviderChatRequest,
+  wire: ResolvedWire,
 ): Record<string, string> {
-  const wire = resolveWire(
-    ANTHROPIC_WIRE_DEFAULTS,
-    request.providerConfig,
-    request.config,
-  );
-
   const headers: Record<string, string> = { ...wire.headers };
 
   // `config.anthropicVersion` 是 wire 描述符之前的写法，仍然优先 —— 存量数据

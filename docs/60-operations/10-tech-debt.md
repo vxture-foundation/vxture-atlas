@@ -35,6 +35,8 @@ because those are the ones still needing a decision.
 | [TD-043](#td-043) | Two grant resources, two rules on whether the application scope may be edited | 2026-08-17 |
 | [TD-044](#td-044) | The tool-descriptor `version` field never moves, so its drift signal is dead | 2026-08-18 |
 | [TD-045](#td-045) | `codeql.yml` disabled - code scanning on a private repo needs GitHub Advanced Security | 2026-08-24 |
+| [TD-046](#td-046) | Reasoning-model output (`reasoning_content`) is parsed for diagnostics but never delivered | 2026-08-24 |
+| [TD-047](#td-047) | Cache-hit and reasoning token splits are dropped, so cost cannot be reconstructed | 2026-08-24 |
 
 ## Closed
 
@@ -478,3 +480,63 @@ or the repo goes public again. Either condition lets `codeql.yml` be
 re-enabled with `gh api -X PUT .../actions/workflows/{id}/enable` and no
 further changes - the `actions: read` fix in this commit is the only thing
 that was actually wrong with the file.
+
+## TD-046
+
+**Reasoning-model output (`reasoning_content`) is parsed for diagnostics but
+never delivered.**
+
+`openai-compatible.ts` now reads `message.reasoning_content` (and the streaming
+`delta.reasoning_content` is typed) for exactly one purpose: telling an operator
+*why* a response came back empty. Nothing carries it any further - not to the
+`/v1/chat` response body, not as a stream frame, not into `ChatMessage`.
+
+Two consequences, one of them a hard failure:
+
+1. A caller talking to a thinking model sees the answer but never the chain.
+   That is a product decision Atlas has not made yet, and defaulting to "drop
+   it" is defensible.
+2. **DeepSeek rejects a multi-round tool-calling conversation whose assistant
+   turns do not echo `reasoning_content` back** (api-docs.deepseek.com, 思考模式:
+   "携带 tools 参数时必须在所有后续交互中完整回传，否则返回 400"). So function
+   calling over more than one round against a thinking model is not merely
+   degraded, it is unavailable - and it fails at the caller, not here.
+
+**Why it is not fixed in the same change:** the field has to land somewhere in
+the product_251 A-4 response shape, which is a three-party contract
+(`docs/40-implementation/40-l1-api-conformance.md`), not a unilateral addition.
+The streaming half additionally needs a new `StreamEvent` variant and a new
+published error/event name.
+
+**Recovery:** agree the field position with the platform line and karda, then
+carry it through `ProviderChatResponse` -> `ChatResponse` and as a stream event.
+
+## TD-047
+
+**Cache-hit and reasoning token splits are dropped, so cost cannot be
+reconstructed.**
+
+Upstreams report more than three numbers now. DeepSeek returns
+`prompt_cache_hit_tokens` / `prompt_cache_miss_tokens` and
+`completion_tokens_details.reasoning_tokens`; Atlas reads
+`prompt_tokens` / `completion_tokens` / `total_tokens` and discards the rest
+(`openai-compatible.ts` `normalizeOpenAiCompatibleResponse`).
+
+The split is not a nicety. **A cached input token costs 1/30 of an uncached
+one** on DeepSeek (0.10 vs 3.00 CNY per million at peak, flash). Two months of
+traffic with identical `input_tokens` can differ by an order of magnitude in
+real spend, and nothing downstream can tell them apart, because Atlas is where
+the distinction was available and it was not written down.
+
+`reqlog.request_records` has `input_tokens` / `output_tokens` / `total_tokens`
+and no room for the split; `model_price_rules` has `input_unit_price` /
+`output_unit_price` and no cached-input price. Both need columns.
+
+This is squarely inside Atlas's own remit rather than a downstream concern:
+Atlas is the sole inference-metering entry point for every vxture product
+(CLAUDE.md, product_240 section 3), so a fact lost here is lost for the whole
+company.
+
+**Recovery:** DDL for the two token columns and the cached-input price, through
+db-init as the sole structure-change path; then read the fields in the OpenAI
+adapter and thread them into `RequestLogService.record`.

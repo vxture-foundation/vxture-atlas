@@ -312,10 +312,13 @@ describe("ModelProbeService", () => {
   });
 
   it("caps the probe request so a self-check cannot cost real money", async () => {
+    // 上限从 16 提到 2048（见 PROBE_MAX_TOKENS）：16 对思考型模型是必然误报，
+    // 而 2048 按注册表里最贵的单价算仍不到 0.06 元。"不花钱"仍是约束,
+    // 只是它的下界由"能不能答出一个字"决定,不是由一个越小越好的数字决定。
     await ctx.service.probe("model-1");
 
     expect(ctx.provider.chat).toHaveBeenCalledWith(
-      expect.objectContaining({ maxTokens: 16, temperature: 0 }),
+      expect.objectContaining({ maxTokens: 2048, temperature: 0 }),
     );
   });
 
@@ -420,6 +423,99 @@ describe("ModelProbeService", () => {
 
       const result = await local.service.probeProvider("prov-1");
       expect(result.ok).toBe(false);
+    });
+  });
+
+  describe("output budget - a thinking model needs room to answer", () => {
+    it("sends a budget large enough for a reasoning chain to finish", async () => {
+      // 16 曾经是这个值。思考链算在 completion 里，16 个 token 全烧在思考上，
+      // 正文一个字都轮不到 - 一个完全正常的模型被判接入失败。
+      await ctx.service.probe("model-1");
+
+      const sent = ctx.provider.chat.mock.calls[0]?.[0] as { maxTokens: number };
+      expect(sent.maxTokens).toBe(2048);
+    });
+
+    it("never exceeds the output ceiling the model itself declares", async () => {
+      // 发一个大于上游允许值的 max_tokens 会被判 400 - 又一次假的接入失败。
+      const local = build({ model: makeModel({ maxOutputTokens: 512 }) });
+      await local.service.probe("model-1");
+
+      const sent = local.provider.chat.mock.calls[0]?.[0] as {
+        maxTokens: number;
+      };
+      expect(sent.maxTokens).toBe(512);
+    });
+
+    it("falls back to the default when the model declares no ceiling", async () => {
+      const local = build({ model: makeModel({ maxOutputTokens: null }) });
+      await local.service.probe("model-1");
+
+      const sent = local.provider.chat.mock.calls[0]?.[0] as {
+        maxTokens: number;
+      };
+      expect(sent.maxTokens).toBe(2048);
+    });
+  });
+
+  describe("content frames - the stream check used to be a false green", () => {
+    it("fails a stream that completes without a single content frame", async () => {
+      // 只吐 reasoning_content 的思考型模型长这样：HTTP 200、usage 齐全、
+      // 一个字都没交付。此前这里稳定判绿，而真实客户端拿到的是一个空流。
+      const local = build({
+        chatStream: vi.fn(async function* () {
+          yield {
+            type: "done",
+            usage: { promptTokens: 84, completionTokens: 16, totalTokens: 100 },
+          };
+        }),
+      });
+
+      const result = await local.service.probe("model-1");
+      const stream = result.checks.find((c) => c.mode === "stream");
+
+      expect(stream?.contentReceived).toBe(false);
+      expect(stream?.ok).toBe(false);
+      expect(result.ok).toBe(false);
+    });
+
+    it("gives the empty stream a reason instead of a bare red light", async () => {
+      const local = build({
+        chatStream: vi.fn(async function* () {
+          yield { type: "done" };
+        }),
+      });
+
+      const result = await local.service.probe("model-1");
+      const stream = result.checks.find((c) => c.mode === "stream");
+
+      expect(stream?.error?.code).toBe("PROBE_STREAM_EMPTY");
+      expect(stream?.error?.message).toContain("reasoning_content");
+    });
+
+    it("counts a tool call as delivered content", async () => {
+      // 一个只回工具调用、没有正文的流是正常的，不该被判成空流。
+      const local = build({
+        chatStream: vi.fn(async function* () {
+          yield {
+            type: "tool_call",
+            toolCall: { id: "1", name: "f", arguments: {} },
+          };
+          yield { type: "done" };
+        }),
+      });
+
+      const result = await local.service.probe("model-1");
+      const stream = result.checks.find((c) => c.mode === "stream");
+
+      expect(stream?.contentReceived).toBe(true);
+      expect(stream?.ok).toBe(true);
+    });
+
+    it("reports contentReceived on the non-streaming check too", async () => {
+      const result = await ctx.service.probe("model-1");
+
+      expect(result.checks.every((c) => c.contentReceived)).toBe(true);
     });
   });
 });

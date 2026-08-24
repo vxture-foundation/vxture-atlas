@@ -42,6 +42,7 @@ Onboarding then touches only the first and third.
 | Auth `Authorization: Bearer` vs `x-api-key` | data | same request body |
 | Needs `stream_options.include_usage` | data | one extra switch |
 | Supports tool calling / `top_p` | data | capability declaration, decides which fields are sent |
+| Vendor switch with no canonical equivalent (`thinking`, `reasoning_effort`, `response_format`) | data | a field to pass through, not a shape change - `wire.extraBody` |
 | `max_tokens` vs `max_completion_tokens` | data | a rename, not a shape change |
 | Model id differs from `model_code` | data | already `config.upstreamModel` |
 | Response is `choices[].message` vs `content[]` blocks | **code** | different response shape |
@@ -74,12 +75,15 @@ this layer costs **zero DDL**. A `wire` sub-object carries the quirks:
 // model_providers.config - provider-level defaults
 {
   "wire": {
-    "schemaVersion": 1,
+    "schemaVersion": 2,
     "chatPath": "/chat/completions",
     "auth": { "style": "bearer" },          // bearer | x-api-key | header
     "streamUsage": "stream_options",        // stream_options | native | none
     "supports": { "tools": true, "toolChoice": true, "topP": true },
-    "paramMap": { "maxTokens": "max_tokens" }   // only names that differ
+    "paramMap": { "maxTokens": "max_tokens" },  // only names that differ
+    "extraBody": {                              // vendor switches, sent verbatim
+      "thinking": { "type": "disabled" }
+    }
   }
 }
 
@@ -98,6 +102,14 @@ top-level (it is a model identifier, not a wire quirk); the Anthropic API
 version lives in `wire.headers["anthropic-version"]`, with the legacy
 top-level `anthropicVersion` key still honoured for existing rows.
 
+`extraBody` is merged into the request body verbatim, under the keys the
+adapter owns (`model`, `messages`, `stream`, `stream_options`, `system`), which
+it may not override - those are rejected on write. It exists because `paramMap`
+can only *rename* a parameter Atlas already sends, while every vendor switch is
+a **new** field: DeepSeek's `thinking` / `reasoning_effort`, `response_format`,
+`stop`, `logprobs`. Without it, section 3's own criterion ("parameters differ ->
+data") had no home and the difference went back into code.
+
 **`wire` is a closed schema, not a free dictionary.** Unknown keys are rejected
 on write - otherwise this becomes a second dumping ground. Validation lives on
 the `/capability/providers` and `/capability/models` write paths, not at
@@ -106,7 +118,8 @@ runtime.
 **Strict on write, lenient at runtime.** Operators change configuration faster
 than the service ships, so an older service reading a newer key must ignore it
 and warn, never take a running model out of service. `wire.schemaVersion` is
-the carrier of that rule: an optional integer, currently `1`. Write validation
+the carrier of that rule: an optional integer, currently `2` (`2` added
+`extraBody`). Write validation
 checks it only when it is present - it must be an integer, and a version newer
 than the running build is rejected - so a `wire` written without the key is
 accepted and resolves to the adapter's base version. At runtime an adapter
@@ -172,12 +185,27 @@ The onboarding surface:
 | `/capability/providers`, `/capability/models`, `/capability/tenant-model-grants`, `/capability/price-rules`, `/capability/provider-keys` | CRUD for the registry itself |
 | `GET /capability/protocols` | dropdown source: the vocabulary plus each protocol's `wire` defaults and schema version |
 | `POST`/`PUT /capability/models` | `protocol` is validated against the vocabulary (through the alias table) and `config.wire` is strictly schema-validated on write (§5) - unknown keys are rejected |
-| `POST /capability/models/:id/probe` | connectivity self-check: one minimal non-streaming and (when the model declares streaming) one streaming call, reporting reachability, key resolution, the effective merged `wire`, and whether usage came back |
+| `POST /capability/models/:id/probe` | connectivity self-check: one minimal non-streaming and (when the model declares streaming) one streaming call, reporting reachability, key resolution, the effective merged `wire`, whether usage came back, and whether any content actually arrived |
 | `POST /capability/providers/:id/probe` | the same check through one deterministic active model of the provider |
 
 `probe` is what makes this design genuinely page-driven. Without it, a model
 configured through a page is only proven correct by production traffic; with
 it, a wrong `wire` is caught at save time.
+
+**A check passes only when content actually arrived.** `contentReceived` is
+reported per check and a stream without a single text or tool-call frame is a
+failure, not a pass. The streaming leg used to assert nothing but "no exception
+was thrown", so a thinking model that emits only `reasoning_content` - HTTP 200,
+usage complete, not one deliverable token - was reported green while real
+callers got an empty stream. A self-check that can return a false pass is worse
+than none: it is trusted.
+
+**The probe's output budget is sized to let a model finish, not to be small.**
+A reasoning chain is charged as completion tokens, so a budget picked to make
+the check cheap (16) guarantees a false negative on every thinking model -
+`finish_reason: length`, empty content, indistinguishable from a broken
+upstream. The budget is 2048, capped by the model's own declared
+`max_output_tokens`.
 
 **Probe usage is attributed to the platform, not to any tenant.** A probe
 writes `reqlog.request_records` with `usage_type='test'` and the all-zero

@@ -65,4 +65,26 @@ describe("validateWire (strict on write)", () => {
 
     expect(problems.length).toBeGreaterThanOrEqual(3);
   });
+
+  it("accepts vendor switches in extraBody", () => {
+    expect(
+      validateWire({
+        extraBody: { thinking: { type: "disabled" }, reasoning_effort: "low" },
+      }),
+    ).toEqual([]);
+  });
+
+  it("rejects an extraBody key the adapter owns", () => {
+    // 写入严格：运营在保存时就被告知，而不是让一个静默失效的开关躺在注册表里。
+    const problems = validateWire({ extraBody: { model: "smuggled" } });
+
+    expect(problems).toHaveLength(1);
+    expect(problems[0]).toContain("config.wire.extraBody.model is reserved");
+  });
+
+  it("rejects a non-object extraBody", () => {
+    expect(validateWire({ extraBody: ["nope"] })).toEqual([
+      "config.wire.extraBody must be an object",
+    ]);
+  });
 });

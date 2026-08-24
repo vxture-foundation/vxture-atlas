@@ -178,3 +178,90 @@ describe("normalizeOpenAiCompatibleResponse", () => {
     expect(result.toolCalls).toBeUndefined();
   });
 });
+
+// ── empty-response diagnostics ────────────────────────────────────────────────
+//
+// 每一条都对应运营在自检页面上看到的那句话。它们此前被压成同一句
+// "empty model response"，而三种成因的处置完全不同 —— 一个是调大预算，一个是
+// 关思考，一个是上游真的坏了。
+
+describe("normalizeOpenAiCompatibleResponse - why the response was empty", () => {
+  it("names the reasoning chain when it ate the whole output budget", () => {
+    // DeepSeek V4 默认开思考、effort=high，思考链算 completion。预算太小时
+    // content 为空而 finish_reason=length —— 模型完全正常。
+    const response: OpenAiCompatibleChatResponse = {
+      choices: [
+        {
+          message: { content: "", reasoning_content: "let me think about ping" },
+          finish_reason: "length",
+        },
+      ],
+    };
+
+    expect(() =>
+      normalizeOpenAiCompatibleResponse("openai-compatible", response),
+    ).toThrow(/reasoning chain.*finish_reason=length.*23 chars/s);
+  });
+
+  it("tells the operator both ways out - raise the budget or turn thinking off", () => {
+    const response: OpenAiCompatibleChatResponse = {
+      choices: [
+        { message: { content: "", reasoning_content: "..." }, finish_reason: "length" },
+      ],
+    };
+
+    const run = () =>
+      normalizeOpenAiCompatibleResponse("openai-compatible", response);
+    expect(run).toThrow(/raise max_tokens/);
+    expect(run).toThrow(/config\.wire\.extraBody/);
+  });
+
+  it("reports a truncated non-thinking response without inventing a reasoning chain", () => {
+    const response: OpenAiCompatibleChatResponse = {
+      choices: [{ message: { content: "" }, finish_reason: "length" }],
+    };
+
+    const run = () => normalizeOpenAiCompatibleResponse("test", response);
+    expect(run).toThrow(/finish_reason=length/);
+    expect(run).not.toThrow(/reasoning/);
+  });
+
+  it("reports reasoning-only output that was not truncated", () => {
+    const response: OpenAiCompatibleChatResponse = {
+      choices: [
+        { message: { content: null, reasoning_content: "hmm" }, finish_reason: "stop" },
+      ],
+    };
+
+    expect(() => normalizeOpenAiCompatibleResponse("test", response)).toThrow(
+      "test returned invalid response: model returned 3 chars of reasoning_content and no content",
+    );
+  });
+
+  it("names the content filter rather than blaming the model", () => {
+    const response: OpenAiCompatibleChatResponse = {
+      choices: [{ message: { content: "" }, finish_reason: "content_filter" }],
+    };
+
+    expect(() => normalizeOpenAiCompatibleResponse("test", response)).toThrow(
+      /content filter/,
+    );
+  });
+
+  it("distinguishes an empty choices array from an empty message", () => {
+    expect(() => normalizeOpenAiCompatibleResponse("test", { choices: [] })).toThrow(
+      "test returned invalid response: response carried no choices",
+    );
+  });
+
+  it("still prefers the upstream's own error message over any of the above", () => {
+    const response: OpenAiCompatibleChatResponse = {
+      choices: [{ message: { content: "" }, finish_reason: "length" }],
+      error: { message: "insufficient balance" },
+    };
+
+    expect(() => normalizeOpenAiCompatibleResponse("test", response)).toThrow(
+      "test returned invalid response: insufficient balance",
+    );
+  });
+});

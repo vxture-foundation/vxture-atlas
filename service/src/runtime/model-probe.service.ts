@@ -14,11 +14,12 @@ import { resolveApiKey } from "./resolve-api-key";
 import type {
   AiModelRecord,
   ProviderChatRequest,
+  ProviderChatResponse,
   TokenUsage,
 } from "../types/runtime.types";
 
 /**
- * 连通性自检（docs/30-design/100-model-onboarding-and-protocol-adapters.md §10）。
+ * 连通性自检（docs/30-design/100-model-onboarding-and-protocol-adapters.md §8）。
  *
  * 没有它，运营在管理页面配完一个模型只能上生产流量才知道配没配对；有了它，
  * `config.wire` 配错在保存时就能发现。这是"纯页面接入"能否成立的关键一环。
@@ -28,8 +29,17 @@ import type {
  * `usage_type='test'`、租户/工作区用全零哨兵、**不扣配额、不上报平台计量内核**。
  */
 
-/** 自检请求的上限：足够验证连通，不足以产生有意义的花费。 */
-const PROBE_MAX_TOKENS = 16;
+/**
+ * 自检请求的输出上限。
+ *
+ * 这个值曾经是 16，理由写着"足够验证连通，不足以产生有意义的花费"。对**思考型
+ * 模型**这条理由不成立：思考链算在 completion 里（DeepSeek V4 默认开思考、
+ * effort 默认 high），16 个 token 全烧在思考上，正文一个字都轮不到 —— 自检看到
+ * 的是 `finish_reason=length` 的空正文，与"上游坏了"长得一模一样，而模型本身
+ * 完全正常。一次误报的接入失败远比几分钱贵：2048 个输出 token 按注册表里最贵的
+ * 单价算也不到 0.06 元。
+ */
+const PROBE_MAX_TOKENS = 2048;
 const PROBE_TIMEOUT_MS = 20_000;
 const PROBE_PROMPT = "ping";
 
@@ -55,6 +65,14 @@ export interface ModelProbeCheck {
   mode: ProbeMode;
   ok: boolean;
   latencyMs: number;
+  /**
+   * 这次检查有没有拿到**可交付的内容** —— 正文或工具调用，思维链不算。
+   *
+   * 流式这一路此前只统计 usage、完全不看有没有内容帧，于是一个只吐
+   * `reasoning_content` 的思考型模型稳定判绿，而真实客户端拿到的是一个空流。
+   * 这是自检能犯的最坏一种错：它不是没结论，是给了一个假结论。
+   */
+  contentReceived: boolean;
   /**
    * 上游有没有回 usage。**这是本自检最有价值的一条**：`runtime.service` 只在
    * usage 到达时才写计量行，所以 `usageReported: false` 意味着这个模型的调用
@@ -250,7 +268,7 @@ export class ModelProbeService {
   }
 
   private async runChat(
-    provider: { chat: (r: ProviderChatRequest) => Promise<TokenUsage> },
+    provider: { chat: (r: ProviderChatRequest) => Promise<ProviderChatResponse> },
     request: ProviderChatRequest,
   ): Promise<ModelProbeCheck> {
     const startedAt = Date.now();
@@ -263,6 +281,10 @@ export class ModelProbeService {
         mode: "chat",
         ok: true,
         latencyMs: Date.now() - startedAt,
+        // 非流式适配器在正文与工具调用都为空时就抛错了，所以走到这里必有内容。
+        // 仍然如实计算而不是写死 true - 这一列的含义是"观察到的"，不是"推断的"。
+        contentReceived:
+          response.content.length > 0 || (response.toolCalls?.length ?? 0) > 0,
         usageReported: total > 0,
         totalTokens: total,
       };
@@ -282,18 +304,31 @@ export class ModelProbeService {
   ): Promise<ModelProbeCheck> {
     const startedAt = Date.now();
     try {
-      const usage = await withTimeout((signal) =>
-        collectStreamUsage(provider, { ...request, signal }),
+      const outcome = await withTimeout((signal) =>
+        collectStreamOutcome(provider, { ...request, signal }),
       );
-      const total = usage?.totalTokens ?? 0;
+      const total = outcome.usage?.totalTokens ?? 0;
       return {
         mode: "stream",
-        ok: true,
+        ok: outcome.contentReceived,
         latencyMs: Date.now() - startedAt,
+        contentReceived: outcome.contentReceived,
         // 流式没回 usage 不算失败 —— 上游可能就是不支持。但它是一个必须被
         // 看见的信号：这个模型的流式调用不会被计量。
         usageReported: total > 0,
-        totalTokens: usage ? total : null,
+        totalTokens: outcome.usage ? total : null,
+        // 一个没有内容帧的流是坏的，哪怕它 HTTP 200、哪怕它回了 usage。不给
+        // 出错误码就等于让页面显示一个没有理由的红灯。
+        ...(outcome.contentReceived
+          ? {}
+          : {
+              error: {
+                code: "PROBE_STREAM_EMPTY",
+                message:
+                  "stream completed without a single content frame - the model produced no text and no tool call " +
+                  "(a thinking model that only emits reasoning_content looks exactly like this)",
+              },
+            }),
       };
     } catch (error) {
       return failedCheck("stream", Date.now() - startedAt, error);
@@ -359,7 +394,7 @@ function buildProbeRequest(
     apiKey,
     modelCode: model.modelCode,
     messages: [{ role: "user", content: PROBE_PROMPT }],
-    maxTokens: PROBE_MAX_TOKENS,
+    maxTokens: probeMaxTokens(model),
     temperature: 0,
     ...(model.config != null ? { config: model.config } : {}),
     ...(model.providerConfig != null
@@ -369,7 +404,18 @@ function buildProbeRequest(
 }
 
 
-async function collectStreamUsage(
+/**
+ * 模型自己声明的输出上限更小时以它为准：发一个大于上游允许值的 `max_tokens`
+ * 会被直接判 400，那同样是一次假的"接入失败"。
+ */
+function probeMaxTokens(model: AiModelRecord): number {
+  const declared = model.maxOutputTokens;
+  return declared != null && declared > 0
+    ? Math.min(declared, PROBE_MAX_TOKENS)
+    : PROBE_MAX_TOKENS;
+}
+
+async function collectStreamOutcome(
   provider: {
     chatStream: (r: ProviderChatRequest) => AsyncGenerator<{
       type: string;
@@ -377,16 +423,20 @@ async function collectStreamUsage(
     }>;
   },
   request: ProviderChatRequest,
-): Promise<TokenUsage | undefined> {
+): Promise<{ usage: TokenUsage | undefined; contentReceived: boolean }> {
   let usage: TokenUsage | undefined;
+  let contentReceived = false;
 
   for await (const event of provider.chatStream(request)) {
+    if (event.type === "text" || event.type === "tool_call") {
+      contentReceived = true;
+    }
     if (event.type === "done" && event.usage) {
       usage = event.usage;
     }
   }
 
-  return usage;
+  return { usage, contentReceived };
 }
 
 /**
@@ -422,6 +472,7 @@ function failedCheck(
     mode,
     ok: false,
     latencyMs,
+    contentReceived: false,
     usageReported: false,
     totalTokens: null,
     error: {
