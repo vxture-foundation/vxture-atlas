@@ -508,6 +508,13 @@ the product_251 A-4 response shape, which is a three-party contract
 The streaming half additionally needs a new `StreamEvent` variant and a new
 published error/event name.
 
+**Open thread: #18** (label `liaison`, 2026-08-25). Asks the platform line for
+the field position and the stream event name, and asks karda - the only live S2S
+tool-calling consumer - whether they need the combination at all. Recording the
+number here rather than only in the issue is the point: a correction written into
+a document is not the same as one delivered, and the tech-debt entry is where
+someone looks first.
+
 **Recovery:** agree the field position with the platform line and karda, then
 carry it through `ProviderChatResponse` -> `ChatResponse` and as a stream event.
 
