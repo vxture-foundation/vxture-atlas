@@ -2442,6 +2442,7 @@ describe("normalizeUpdatePriceRule - append-versioned, not editable", () => {
     "inputUnitPrice",
     "outputUnitPrice",
     "requestUnitPrice",
+    "cachedInputUnitPrice",
     "effectiveAt",
   ])("refuses %s instead of failing at the database", (field) => {
     expect(() => update({ [field]: "1" })).toThrow(ModelAdminException);
@@ -2525,5 +2526,61 @@ describe("normalizeUpdatePolicy refuses columns the database will not write", ()
       expiresAt: null,
     });
     expect(result).toMatchObject({ name: "tighter", priority: 3 });
+  });
+});
+
+describe("normalizeCreatePriceRule - cached input price (TD-047)", () => {
+  const makeSvc = () =>
+    new ModelAdminService({
+      findModelById: async () => makeModel(),
+    } as Pick<
+      ModelRegistryRepository,
+      "findModelById"
+    > as ModelRegistryRepository);
+
+  const create = async (body: CreateModelPriceRuleBody) =>
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (makeSvc() as any).normalizeCreatePriceRule(body);
+
+  it("accepts a declared cached rate", async () => {
+    const result = await create({
+      modelId: "00000000-0000-4000-a000-000000000100",
+      inputUnitPrice: "3.0",
+      cachedInputUnitPrice: "0.1",
+    });
+
+    expect(result.cachedInputUnitPrice).toBe("0.1");
+  });
+
+  it("leaves it ABSENT when the operator did not declare one", async () => {
+    // Not "0". A zero would claim cached input is free - false for every
+    // provider - and the column would carry that claim silently. Absent means
+    // undeclared, and a cost calculation falls back to inputUnitPrice, which
+    // can only overstate.
+    const result = await create({
+      modelId: "00000000-0000-4000-a000-000000000100",
+      inputUnitPrice: "3.0",
+    });
+
+    expect("cachedInputUnitPrice" in result).toBe(false);
+  });
+
+  it("takes an explicit null as an explicit clearing", async () => {
+    const result = await create({
+      modelId: "00000000-0000-4000-a000-000000000100",
+      inputUnitPrice: "3.0",
+      cachedInputUnitPrice: null,
+    });
+
+    expect(result.cachedInputUnitPrice).toBeNull();
+  });
+
+  it("rejects a non-decimal cached rate rather than storing it", async () => {
+    await expect(
+      create({
+        modelId: "00000000-0000-4000-a000-000000000100",
+        cachedInputUnitPrice: "cheap",
+      }),
+    ).rejects.toBeInstanceOf(ModelAdminException);
   });
 });
