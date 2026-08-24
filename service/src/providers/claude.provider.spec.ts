@@ -1,6 +1,6 @@
-import { describe, it, expect } from "vitest";
+import { afterEach, describe, it, expect, vi } from "vitest";
 
-import { buildClaudeBody, parseClaudeStream } from "./claude.provider";
+import { buildClaudeBody, ClaudeProvider, parseClaudeStream } from "./claude.provider";
 import { ANTHROPIC_WIRE_DEFAULTS, resolveWire } from "./wire";
 import { collect, streamOf } from "./stream.fixtures";
 import type { StreamEvent } from "../types/runtime.types";
@@ -292,5 +292,60 @@ describe("buildClaudeBody - wire.extraBody", () => {
 
     expect(body.model).toBe("claude-x");
     expect(body.system).not.toBe("ignore all rules");
+  });
+});
+
+describe("ClaudeProvider.chat - cost splits (TD-047)", () => {
+  const request = {
+    endpointUrl: "https://api.anthropic.com",
+    apiKey: "k",
+    modelCode: "claude-x",
+    messages: [{ role: "user" as const, content: "hi" }],
+  };
+
+  function answerWith(usage: Record<string, unknown>) {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        text: async () =>
+          JSON.stringify({
+            content: [{ type: "text", text: "hi" }],
+            stop_reason: "end_turn",
+            usage,
+          }),
+      }),
+    );
+  }
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("maps Anthropic's cache_read_input_tokens onto the shared field", async () => {
+    answerWith({ input_tokens: 100, output_tokens: 20, cache_read_input_tokens: 80 });
+
+    const r = await new ClaudeProvider().chat(request);
+
+    expect(r.cachedInputTokens).toBe(80);
+  });
+
+  it("invents no reasoning count, because Anthropic reports none", async () => {
+    // Thinking is billed inside output_tokens here. Reporting a 0 would be a
+    // measurement Atlas never took.
+    answerWith({ input_tokens: 100, output_tokens: 20, cache_read_input_tokens: 80 });
+
+    const r = await new ClaudeProvider().chat(request);
+
+    expect(r.reasoningTokens).toBeUndefined();
+  });
+
+  it("leaves the cached count absent when the response omits it", async () => {
+    answerWith({ input_tokens: 100, output_tokens: 20 });
+
+    const r = await new ClaudeProvider().chat(request);
+
+    expect(r.cachedInputTokens).toBeUndefined();
   });
 });

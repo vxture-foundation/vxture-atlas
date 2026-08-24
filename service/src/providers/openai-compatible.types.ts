@@ -10,6 +10,25 @@ export interface OpenAiToolCall {
   };
 }
 
+/**
+ * The usage object, as every OpenAI-dialect upstream reports it.
+ *
+ * The cost splits arrive under two spellings and Atlas accepts both: OpenAI
+ * nests the cached count in `prompt_tokens_details.cached_tokens`, DeepSeek
+ * ALSO puts it top-level as `prompt_cache_hit_tokens` (verified against the
+ * live API 2026-08-24). `reasoning_tokens` is nested by both.
+ */
+export interface OpenAiUsage {
+  prompt_tokens?: number;
+  completion_tokens?: number;
+  total_tokens?: number;
+  prompt_tokens_details?: { cached_tokens?: number };
+  /** DeepSeek's top-level spelling of the same fact. */
+  prompt_cache_hit_tokens?: number;
+  prompt_cache_miss_tokens?: number;
+  completion_tokens_details?: { reasoning_tokens?: number };
+}
+
 export interface OpenAiCompatibleChatResponse {
   id?: string;
   choices?: Array<{
@@ -27,11 +46,7 @@ export interface OpenAiCompatibleChatResponse {
     };
     finish_reason?: string | null;
   }>;
-  usage?: {
-    prompt_tokens?: number;
-    completion_tokens?: number;
-    total_tokens?: number;
-  };
+  usage?: OpenAiUsage;
   error?: {
     code?: string;
     message?: string;
@@ -61,9 +76,5 @@ export interface OpenAiCompatibleChatStreamChunk {
     };
     finish_reason?: string | null;
   }>;
-  usage?: {
-    prompt_tokens?: number;
-    completion_tokens?: number;
-    total_tokens?: number;
-  };
+  usage?: OpenAiUsage;
 }

@@ -317,6 +317,16 @@ model RequestRecord {
   costUnit               String?  @map("cost_unit") @db.VarChar(16)
   usageEventId           String?  @map("usage_event_id") @db.Uuid
   createdAt              DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  /// TD-047 (incr/01). Input tokens served from the upstream prompt cache and
+  /// billed at the cached rate - 1/30 of the uncached rate on DeepSeek. A
+  /// subset of inputTokens, so the uncached half is the difference.
+  /// NULL means the upstream reported no split, never zero: an unmeasured call
+  /// must not read as a free one.
+  cachedInputTokens      BigInt?  @map("cached_input_tokens")
+  /// TD-047 (incr/01). Completion tokens spent on a reasoning chain. A subset
+  /// of outputTokens, billed at the output rate, kept apart because it is the
+  /// one output cost an operator can switch off (config.wire.extraBody).
+  reasoningTokens        BigInt?  @map("reasoning_tokens")
 
   @@id([id, createdAt])
   @@index([requestId], map: "idx_request_records_request_id")

@@ -62,6 +62,15 @@ export interface RequestLogEntry {
   inputTokens?: number | undefined;
   outputTokens?: number | undefined;
   totalTokens?: number | undefined;
+  /**
+   * TD-047. Subsets of the two above, written only when the upstream reported
+   * them - absent stays NULL in the column, because an unmeasured call must not
+   * read as a free one. `cachedInputTokens` is billed at 1/30 of the uncached
+   * rate on DeepSeek; `reasoningTokens` is billed at the output rate and is the
+   * one output cost an operator can switch off.
+   */
+  cachedInputTokens?: number | undefined;
+  reasoningTokens?: number | undefined;
   latencyMs?: number | undefined;
   usageType?: "normal" | "retry" | "test" | undefined;
   businessId?: string | undefined;

@@ -63,6 +63,13 @@ interface ClaudeChatResponse {
   usage?: {
     input_tokens?: number;
     output_tokens?: number;
+    /**
+     * TD-047. Anthropic's name for the cached-input count. There is no
+     * counterpart for `reasoningTokens` here - Anthropic bills thinking inside
+     * `output_tokens` and reports no separate figure, so that split stays
+     * absent on this adapter rather than being invented.
+     */
+    cache_read_input_tokens?: number;
   };
   stop_reason?: string;
   error?: {
@@ -111,6 +118,7 @@ export class ClaudeProvider extends BaseProvider {
 
     const promptTokens = response.usage?.input_tokens ?? 0;
     const completionTokens = response.usage?.output_tokens ?? 0;
+    const cacheRead = response.usage?.cache_read_input_tokens;
 
     const mappedToolCalls = toolCalls.length > 0 ? toolCalls : undefined;
     const mappedFinishReason = mapClaudeStopReason(response.stop_reason);
@@ -123,6 +131,7 @@ export class ClaudeProvider extends BaseProvider {
       promptTokens,
       completionTokens,
       totalTokens: promptTokens + completionTokens,
+      ...(typeof cacheRead === "number" ? { cachedInputTokens: cacheRead } : {}),
       // Zeros above are placeholders when the upstream sent no usage object;
       // metering records NULL for those instead of a fabricated free request.
       usageReported: response.usage != null,

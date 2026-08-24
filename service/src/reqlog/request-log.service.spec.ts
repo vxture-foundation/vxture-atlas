@@ -232,3 +232,68 @@ describe("RequestLogService.recordError", () => {
     ).resolves.toBeUndefined();
   });
 });
+
+describe("RequestLogService.record - cost splits (TD-047)", () => {
+  let create: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    create = vi.fn().mockResolvedValue({});
+    vi.spyOn(prisma.requestRecord, "create").mockImplementation(create as never);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  const written = () =>
+    (create.mock.calls[0] as [{ data: Record<string, unknown> }])[0].data;
+
+  it("writes both splits as bigint when the upstream reported them", async () => {
+    await new RequestLogService().record({
+      requestId: "req-splits",
+      status: "success",
+      inputTokens: 84,
+      outputTokens: 469,
+      totalTokens: 553,
+      cachedInputTokens: 20,
+      reasoningTokens: 440,
+    });
+
+    expect(written()).toMatchObject({
+      cachedInputTokens: 20n,
+      reasoningTokens: 440n,
+    });
+  });
+
+  it("writes NULL, not 0, when the upstream reported nothing", async () => {
+    // The whole point of the columns. A fabricated 0 says "this call used no
+    // cache and did no thinking", which is a measurement Atlas never took -
+    // and it would make unmeasured traffic read as cheap.
+    await new RequestLogService().record({
+      requestId: "req-nosplits",
+      status: "success",
+      inputTokens: 12,
+      outputTokens: 3,
+      totalTokens: 15,
+    });
+
+    expect(written()).toMatchObject({
+      cachedInputTokens: null,
+      reasoningTokens: null,
+    });
+  });
+
+  it("keeps a reported zero, which is a measurement", async () => {
+    await new RequestLogService().record({
+      requestId: "req-zero",
+      status: "success",
+      cachedInputTokens: 0,
+      reasoningTokens: 0,
+    });
+
+    expect(written()).toMatchObject({
+      cachedInputTokens: 0n,
+      reasoningTokens: 0n,
+    });
+  });
+});

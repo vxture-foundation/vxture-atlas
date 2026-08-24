@@ -36,7 +36,7 @@ because those are the ones still needing a decision.
 | [TD-044](#td-044) | The tool-descriptor `version` field never moves, so its drift signal is dead | 2026-08-18 |
 | [TD-045](#td-045) | `codeql.yml` disabled - code scanning on a private repo needs GitHub Advanced Security | 2026-08-24 |
 | [TD-046](#td-046) | Reasoning-model output (`reasoning_content`) is parsed for diagnostics but never delivered | 2026-08-24 |
-| [TD-047](#td-047) | Cache-hit and reasoning token splits are dropped, so cost cannot be reconstructed | 2026-08-24 |
+| [TD-047](#td-047) | Token splits are recorded but cost is still not computable - no cached-input price, and the splits are not readable through the API | 2026-08-24 |
 
 ## Closed
 
@@ -513,30 +513,40 @@ carry it through `ProviderChatResponse` -> `ChatResponse` and as a stream event.
 
 ## TD-047
 
-**Cache-hit and reasoning token splits are dropped, so cost cannot be
-reconstructed.**
+**Token splits are recorded but cost is still not computable - no cached-input
+price, and the splits are not readable through the API.**
 
-Upstreams report more than three numbers now. DeepSeek returns
-`prompt_cache_hit_tokens` / `prompt_cache_miss_tokens` and
-`completion_tokens_details.reasoning_tokens`; Atlas reads
-`prompt_tokens` / `completion_tokens` / `total_tokens` and discards the rest
-(`openai-compatible.ts` `normalizeOpenAiCompatibleResponse`).
+The recording half is done. `reqlog.request_records` now carries
+`cached_input_tokens` and `reasoning_tokens` (incr/01), both adapters read them
+where the upstream reports them, and absent stays NULL rather than 0 - because
+"the upstream said nothing" and "it cost nothing" are different facts. That half
+was done first on purpose: **a price can be backfilled at any time, a token
+count that was never written cannot.**
 
-The split is not a nicety. **A cached input token costs 1/30 of an uncached
-one** on DeepSeek (0.10 vs 3.00 CNY per million at peak, flash). Two months of
-traffic with identical `input_tokens` can differ by an order of magnitude in
-real spend, and nothing downstream can tell them apart, because Atlas is where
-the distinction was available and it was not written down.
+What remains is turning those numbers into money.
 
-`reqlog.request_records` has `input_tokens` / `output_tokens` / `total_tokens`
-and no room for the split; `model_price_rules` has `input_unit_price` /
-`output_unit_price` and no cached-input price. Both need columns.
+1. **`model_price_rules` has no cached-input price.** It carries
+   `input_unit_price` / `output_unit_price` / `request_unit_price`, so the
+   cached rate - 1/30 of the uncached one on DeepSeek, 0.10 vs 3.00 CNY per
+   million at peak - cannot be expressed at all. The column was deliberately
+   NOT added in the same change: a price column with no write path behind it is
+   a column nothing fills, and its admin surface (create/update input, DTO
+   validation, the column-write guard) is its own piece of work.
 
-This is squarely inside Atlas's own remit rather than a downstream concern:
-Atlas is the sole inference-metering entry point for every vxture product
-(CLAUDE.md, product_240 section 3), so a fact lost here is lost for the whole
-company.
+2. **Nothing reads the splits back out.** `/capability/logs` returns
+   `RequestLogRecord`, which does not include them, so today the only way to see
+   the numbers is SQL against `reqlog`. Adding them changes a published response
+   shape (product_251 A-4), which is a three-party decision rather than a
+   unilateral one.
 
-**Recovery:** DDL for the two token columns and the cached-input price, through
-db-init as the sole structure-change path; then read the fields in the OpenAI
-adapter and thread them into `RequestLogService.record`.
+3. **Peak/off-peak is not modelled.** DeepSeek bills the idle window at 50%
+   (Beijing time, outside Mon-Fri 09:00-12:00 and 14:00-18:00). The window is
+   derivable from `created_at` and needs no column, but it does need a home -
+   provider `config.pricing` is the natural one, and that is data, not DDL.
+
+**Recovery:** the cached-input price column plus its admin surface, then a cost
+rollup that joins the splits against the rule effective at the row's
+`created_at`. Cost stays a rollup, never a column on the request row: prices
+change, and a money value frozen per request cannot be re-derived when they do.
+Atlas meters, it does not bill - the rollup reports a derived estimate for the
+internal cost pool and is separate from the tenant-facing token quota.
