@@ -1168,6 +1168,15 @@ export class ModelRuntimeService {
             inputTokens: usage.promptTokens,
             outputTokens: usage.completionTokens,
             totalTokens: usage.totalTokens,
+            // TD-047. Spread conditionally for the same reason the block above
+            // is: an upstream that reports no split must leave the column NULL,
+            // not 0.
+            ...(usage.cachedInputTokens !== undefined
+              ? { cachedInputTokens: usage.cachedInputTokens }
+              : {}),
+            ...(usage.reasoningTokens !== undefined
+              ? { reasoningTokens: usage.reasoningTokens }
+              : {}),
           }
         : {}),
       latencyMs,

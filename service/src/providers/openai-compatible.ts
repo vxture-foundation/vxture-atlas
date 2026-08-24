@@ -3,6 +3,7 @@ import type {
   OpenAiCompatibleChatResponse,
   OpenAiCompatibleChatStreamChunk,
   OpenAiToolCall,
+  OpenAiUsage,
 } from "./openai-compatible.types";
 import { openSseRequest, readSseMessages } from "./sse";
 import { OPENAI_WIRE_DEFAULTS } from "./wire";
@@ -155,9 +156,35 @@ export function normalizeOpenAiCompatibleResponse(
     completionTokens,
     totalTokens:
       response.usage?.total_tokens ?? promptTokens + completionTokens,
+    ...readCostSplits(response.usage),
     // Zeros above are placeholders when the upstream sent no usage object;
     // metering records NULL for those instead of a fabricated free request.
     usageReported: response.usage != null,
+  };
+}
+
+/**
+ * The cost splits, when the upstream reported them (TD-047).
+ *
+ * Spread into the usage object rather than assigned, so a missing split stays
+ * ABSENT instead of becoming `undefined` or 0. The distinction is the whole
+ * point of the columns: a cached token costs 1/30 of an uncached one, and a
+ * zero written where the upstream said nothing would report unmeasured traffic
+ * as free.
+ */
+function readCostSplits(
+  usage: OpenAiUsage | undefined,
+): { cachedInputTokens?: number; reasoningTokens?: number } {
+  if (!usage) return {};
+
+  // OpenAI nests it; DeepSeek also exposes it top-level. Either is authoritative.
+  const cached =
+    usage.prompt_tokens_details?.cached_tokens ?? usage.prompt_cache_hit_tokens;
+  const reasoning = usage.completion_tokens_details?.reasoning_tokens;
+
+  return {
+    ...(typeof cached === "number" ? { cachedInputTokens: cached } : {}),
+    ...(typeof reasoning === "number" ? { reasoningTokens: reasoning } : {}),
   };
 }
 
@@ -325,6 +352,7 @@ export async function* parseOpenAiCompatibleStream(
           chunk.usage.total_tokens ??
           (chunk.usage.prompt_tokens ?? 0) +
             (chunk.usage.completion_tokens ?? 0),
+        ...readCostSplits(chunk.usage),
       };
     }
 

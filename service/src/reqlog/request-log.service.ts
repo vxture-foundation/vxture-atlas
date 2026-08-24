@@ -107,6 +107,11 @@ export class RequestLogService {
           inputTokens: asBigIntOrNull(entry.inputTokens),
           outputTokens: asBigIntOrNull(entry.outputTokens),
           totalTokens: asBigIntOrNull(entry.totalTokens),
+          // TD-047. asBigIntOrNull already maps "absent" to NULL, which is the
+          // required behaviour: the upstream reporting no split and the split
+          // being zero are different facts, and only the second one is free.
+          cachedInputTokens: asBigIntOrNull(entry.cachedInputTokens),
+          reasoningTokens: asBigIntOrNull(entry.reasoningTokens),
           latencyMs:
             typeof entry.latencyMs === "number"
               ? Math.trunc(entry.latencyMs)

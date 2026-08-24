@@ -180,3 +180,60 @@ describe("parseOpenAiCompatibleStream", () => {
     ]);
   });
 });
+
+describe("parseOpenAiCompatibleStream - cost splits (TD-047)", () => {
+  it("carries the cached and reasoning counts out of the usage frame", async () => {
+    // The streaming half matters more than the non-streaming one: a thinking
+    // model spends most of its output on the reasoning chain, and that is the
+    // cost an operator can actually switch off.
+    const events = await collect(
+      parseOpenAiCompatibleStream(
+        streamOf(
+          textChunk("hi"),
+          frame({
+            choices: [],
+            usage: {
+              prompt_tokens: 84,
+              completion_tokens: 469,
+              total_tokens: 553,
+              prompt_cache_hit_tokens: 20,
+              completion_tokens_details: { reasoning_tokens: 440 },
+            },
+          }),
+          "data: [DONE]\n\n",
+        ),
+      ),
+    );
+
+    expect(events.at(-1)).toEqual<StreamEvent>({
+      type: "done",
+      usage: {
+        promptTokens: 84,
+        completionTokens: 469,
+        totalTokens: 553,
+        cachedInputTokens: 20,
+        reasoningTokens: 440,
+      },
+    });
+  });
+
+  it("omits the splits when the frame does not report them", async () => {
+    const events = await collect(
+      parseOpenAiCompatibleStream(
+        streamOf(
+          textChunk("hi"),
+          frame({
+            choices: [],
+            usage: { prompt_tokens: 1, completion_tokens: 2, total_tokens: 3 },
+          }),
+          "data: [DONE]\n\n",
+        ),
+      ),
+    );
+
+    expect(events.at(-1)).toEqual<StreamEvent>({
+      type: "done",
+      usage: { promptTokens: 1, completionTokens: 2, totalTokens: 3 },
+    });
+  });
+});

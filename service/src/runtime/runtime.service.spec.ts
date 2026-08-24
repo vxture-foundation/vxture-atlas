@@ -1522,4 +1522,78 @@ describe("ModelRuntimeService runtime flow", () => {
       );
     });
   });
+
+  describe("cost splits reach the metering row (TD-047)", () => {
+    it("writes the cached and reasoning counts the adapter reported", async () => {
+      const h = makeRuntime();
+      h.provider.chat.mockResolvedValue({
+        content: "pong",
+        promptTokens: 84,
+        completionTokens: 227,
+        totalTokens: 311,
+        cachedInputTokens: 20,
+        reasoningTokens: 211,
+      });
+
+      await h.service.chat(
+        makeRequest({ modelCode: "primary-model", requestId: "splits-1" }),
+        { workspaceId: "ws-1" } as never,
+      );
+
+      expect(h.requestLog.record).toHaveBeenCalledWith(
+        expect.objectContaining({ cachedInputTokens: 20, reasoningTokens: 211 }),
+      );
+    });
+
+    it("omits them when the upstream reported no splits", async () => {
+      const h = makeRuntime();
+      h.provider.chat.mockResolvedValue({
+        content: "pong",
+        promptTokens: 12,
+        completionTokens: 3,
+        totalTokens: 15,
+      });
+
+      await h.service.chat(
+        makeRequest({ modelCode: "primary-model", requestId: "splits-2" }),
+        { workspaceId: "ws-1" } as never,
+      );
+
+      const row = h.requestLog.record.mock.calls[0]?.[0] as {
+        cachedInputTokens?: number;
+        reasoningTokens?: number;
+      };
+      expect(row.cachedInputTokens).toBeUndefined();
+      expect(row.reasoningTokens).toBeUndefined();
+    });
+
+    it("writes no splits when usage itself was never reported", async () => {
+      // usageReported:false already blanks the token columns; the splits are
+      // subsets of those and must not survive the blanking.
+      const h = makeRuntime();
+      h.provider.chat.mockResolvedValue({
+        content: "pong",
+        promptTokens: 10,
+        completionTokens: 5,
+        totalTokens: 15,
+        cachedInputTokens: 4,
+        reasoningTokens: 2,
+        usageReported: false,
+      });
+
+      await h.service.chat(
+        makeRequest({ modelCode: "primary-model", requestId: "splits-3" }),
+        { workspaceId: "ws-1" } as never,
+      );
+
+      const row = h.requestLog.record.mock.calls[0]?.[0] as {
+        inputTokens?: number;
+        cachedInputTokens?: number;
+        reasoningTokens?: number;
+      };
+      expect(row.inputTokens).toBeUndefined();
+      expect(row.cachedInputTokens).toBeUndefined();
+      expect(row.reasoningTokens).toBeUndefined();
+    });
+  });
 });

@@ -146,6 +146,23 @@ export interface TokenUsage {
   promptTokens: number;
   completionTokens: number;
   totalTokens: number;
+  /**
+   * TD-047. The two numbers that decide what a call actually COST, as opposed
+   * to how large it was.
+   *
+   * `cachedInputTokens` is the part of `promptTokens` the upstream served from
+   * its prompt cache - billed at 1/30 of the uncached rate on DeepSeek, so two
+   * months with identical `promptTokens` can differ by an order of magnitude in
+   * spend. `reasoningTokens` is the part of `completionTokens` spent on a
+   * reasoning chain: billed at the output rate, and the one output cost an
+   * operator can switch off (`config.wire.extraBody`).
+   *
+   * Absent means the upstream did not report it. Never coerce that to 0 -
+   * "unmeasured" and "free" are different facts, and only one of them is good
+   * news.
+   */
+  cachedInputTokens?: number;
+  reasoningTokens?: number;
 }
 
 export interface IModelProvider {

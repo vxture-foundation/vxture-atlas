@@ -265,3 +265,79 @@ describe("normalizeOpenAiCompatibleResponse - why the response was empty", () =>
     );
   });
 });
+
+// ── cost splits (TD-047) ─────────────────────────────────────────────────────
+//
+// These two numbers decide what a call COST, as opposed to how large it was.
+// Atlas is the only place they are available, so a split dropped here is lost
+// for the whole company - and unlike a price, a token count cannot be
+// backfilled.
+
+describe("normalizeOpenAiCompatibleResponse - cost splits", () => {
+  const withUsage = (usage: Record<string, unknown>) => ({
+    choices: [{ message: { content: "hi" } }],
+    usage,
+  });
+
+  it("reads the cached-input count from OpenAI's nested spelling", () => {
+    const r = normalizeOpenAiCompatibleResponse("test", withUsage({
+      prompt_tokens: 84, completion_tokens: 16, total_tokens: 100,
+      prompt_tokens_details: { cached_tokens: 64 },
+    }));
+
+    expect(r.cachedInputTokens).toBe(64);
+  });
+
+  it("reads DeepSeek's top-level spelling of the same fact", () => {
+    // Verified against the live API 2026-08-24: DeepSeek sends both, and a
+    // reader that only knew the nested one would silently meter every DeepSeek
+    // call as fully uncached - 30x the real input cost.
+    const r = normalizeOpenAiCompatibleResponse("test", withUsage({
+      prompt_tokens: 84, completion_tokens: 16, total_tokens: 100,
+      prompt_cache_hit_tokens: 20, prompt_cache_miss_tokens: 64,
+    }));
+
+    expect(r.cachedInputTokens).toBe(20);
+  });
+
+  it("reads the reasoning-token count", () => {
+    const r = normalizeOpenAiCompatibleResponse("test", withUsage({
+      prompt_tokens: 84, completion_tokens: 227, total_tokens: 311,
+      completion_tokens_details: { reasoning_tokens: 211 },
+    }));
+
+    expect(r.reasoningTokens).toBe(211);
+  });
+
+  it("leaves both ABSENT when the upstream reported neither", () => {
+    // Absent, not 0. The column must stay NULL: "the upstream said nothing" and
+    // "it cost nothing" are different facts and only one of them is free.
+    const r = normalizeOpenAiCompatibleResponse("test", withUsage({
+      prompt_tokens: 12, completion_tokens: 3, total_tokens: 15,
+    }));
+
+    expect(r.cachedInputTokens).toBeUndefined();
+    expect(r.reasoningTokens).toBeUndefined();
+    expect("cachedInputTokens" in r).toBe(false);
+  });
+
+  it("keeps a reported zero, which is a measurement", () => {
+    const r = normalizeOpenAiCompatibleResponse("test", withUsage({
+      prompt_tokens: 84, completion_tokens: 16, total_tokens: 100,
+      prompt_cache_hit_tokens: 0,
+      completion_tokens_details: { reasoning_tokens: 0 },
+    }));
+
+    expect(r.cachedInputTokens).toBe(0);
+    expect(r.reasoningTokens).toBe(0);
+  });
+
+  it("reports no splits at all when the upstream sent no usage object", () => {
+    const r = normalizeOpenAiCompatibleResponse("test", {
+      choices: [{ message: { content: "hi" } }],
+    });
+
+    expect(r.usageReported).toBe(false);
+    expect(r.cachedInputTokens).toBeUndefined();
+  });
+});
