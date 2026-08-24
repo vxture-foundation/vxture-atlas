@@ -36,15 +36,27 @@ export function buildOpenAiCompatibleBody(
 ): Record<string, unknown> {
   const maxTokensParam = wire.paramMap["maxTokens"] ?? "max_tokens";
 
+  // `wire.extraBody` 先铺底，适配器管理的键随后覆盖。保留键在写入侧就被拒
+  // （wire.ts RESERVED_BODY_KEYS），这里的顺序是第二道保险，不是第一道。
   const body: Record<string, unknown> = {
+    ...wire.extraBody,
     model: resolveUpstreamModel(request),
     messages: request.messages.map(toWireMessage),
     stream,
   };
 
-  if (wire.supports.temperature) body.temperature = request.temperature;
-  if (wire.supports.topP) body.top_p = request.topP;
-  body[maxTokensParam] = request.maxTokens;
+  // 只在调用方真的给了值时才写。此前是无条件赋值，对线上字节没有区别
+  // （`undefined` 会被 JSON.stringify 丢掉），但它会把 `extraBody` 里配的同名
+  // 默认值抹掉 —— 一个配了却不生效的开关，正是 extraBody 要消除的东西。
+  if (wire.supports.temperature && request.temperature !== undefined) {
+    body.temperature = request.temperature;
+  }
+  if (wire.supports.topP && request.topP !== undefined) {
+    body.top_p = request.topP;
+  }
+  if (request.maxTokens !== undefined) {
+    body[maxTokensParam] = request.maxTokens;
+  }
 
   if (wire.supports.tools && request.tools?.length) {
     body.tools = request.tools.map(toWireTool);
@@ -123,9 +135,8 @@ export function normalizeOpenAiCompatibleResponse(
   const toolCalls = parseOpenAiToolCalls(message?.tool_calls);
 
   if (!content && toolCalls.length === 0) {
-    const providerMessage = response.error?.message ?? "empty model response";
     throw new Error(
-      `${providerName} returned invalid response: ${providerMessage}`,
+      `${providerName} returned invalid response: ${describeEmptyResponse(response)}`,
     );
   }
 
@@ -148,6 +159,47 @@ export function normalizeOpenAiCompatibleResponse(
     // metering records NULL for those instead of a fabricated free request.
     usageReported: response.usage != null,
   };
+}
+
+/**
+ * 为什么这条错误值得一个专门的函数：`empty model response` 这句话把三种成因
+ * 压成了一句什么也没说的话，而运营在管理页面上看到的就是它。最贵的一种是
+ * **思考型模型**（DeepSeek V4 默认开思考且 effort=high，思考链算在
+ * completion 里）—— 输出预算被思考链吃光，`content` 为空、`finish_reason`
+ * 为 `length`，看起来和"上游坏了"一模一样，实际只需要把预算调大或用
+ * `config.wire.extraBody` 关掉思考。
+ *
+ * 这里只负责把成因说清楚，不负责把它变成成功：一次没有正文的应答对调用方
+ * 就是失败，静默地放它过去只会把问题推到更远的地方。
+ */
+function describeEmptyResponse(
+  response: OpenAiCompatibleChatResponse,
+): string {
+  if (response.error?.message) return response.error.message;
+
+  const choice = response.choices?.[0];
+  if (!choice) return "response carried no choices";
+
+  const reasoning = choice.message?.reasoning_content;
+  const reasoningChars = typeof reasoning === "string" ? reasoning.length : 0;
+
+  if (choice.finish_reason === "length") {
+    return reasoningChars > 0
+      ? `output budget exhausted by the reasoning chain before any content was produced ` +
+          `(finish_reason=length, ${reasoningChars} chars of reasoning_content) - raise max_tokens, ` +
+          `or turn the thinking mode off via config.wire.extraBody`
+      : "output budget exhausted before any content was produced (finish_reason=length) - raise max_tokens";
+  }
+
+  if (reasoningChars > 0) {
+    return `model returned ${reasoningChars} chars of reasoning_content and no content`;
+  }
+
+  if (choice.finish_reason === "content_filter") {
+    return "upstream content filter left the response empty (finish_reason=content_filter)";
+  }
+
+  return "empty model response";
 }
 
 function parseOpenAiToolCalls(

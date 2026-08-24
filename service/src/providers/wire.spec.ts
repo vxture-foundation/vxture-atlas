@@ -133,4 +133,34 @@ describe("resolveWire", () => {
       );
     });
   });
+
+  describe("extraBody", () => {
+    it("merges per key across the provider and model layers", () => {
+      const resolved = resolveWire(
+        OPENAI_WIRE_DEFAULTS,
+        { wire: { extraBody: { thinking: { type: "disabled" }, stop: ["x"] } } },
+        { wire: { extraBody: { reasoning_effort: "low" } } },
+      );
+
+      expect(resolved.extraBody).toEqual({
+        thinking: { type: "disabled" },
+        stop: ["x"],
+        reasoning_effort: "low",
+      });
+    });
+
+    it("defaults to empty rather than undefined", () => {
+      expect(resolveWire(OPENAI_WIRE_DEFAULTS, {}).extraBody).toEqual({});
+      expect(ANTHROPIC_WIRE_DEFAULTS.extraBody).toEqual({});
+    });
+
+    it("drops adapter-owned keys at runtime instead of taking the model out of service", () => {
+      const resolved = resolveWire(OPENAI_WIRE_DEFAULTS, {
+        wire: { extraBody: { model: "smuggled", stop: ["ok"] } },
+      });
+
+      expect(resolved.extraBody["model"]).toBeUndefined();
+      expect(resolved.extraBody["stop"]).toEqual(["ok"]);
+    });
+  });
 });

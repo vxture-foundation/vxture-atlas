@@ -16,8 +16,15 @@ import { normalizeProtocol } from "./protocol";
 
 const logger = new Logger("ModelWire");
 
-/** 当前描述符 schema 版本。新增键要发版，所以这个数字变动很慢。 */
-export const WIRE_SCHEMA_VERSION = 1;
+/**
+ * 当前描述符 schema 版本。新增键要发版，所以这个数字变动很慢。
+ *
+ * 2 (2026-08-24) 加入 `extraBody`。**必须跟着加键一起动**：一个只认识 1 的旧
+ * 服务读到带 `extraBody` 的行时，会按"运行时宽松"忽略它并 WARN —— 如果版本号
+ * 没动，那条 WARN 就不会出现，运营看到的是一个配了却静默不生效的开关。版本号
+ * 就是这条静默的唯一防线。
+ */
+export const WIRE_SCHEMA_VERSION = 2;
 
 export type WireAuthStyle = "bearer" | "x-api-key" | "none";
 
@@ -47,6 +54,19 @@ export interface ResolvedWire {
   supports: Readonly<WireSupports>;
   /** 规范参数名 -> 上游线上字段名，仅记录与默认不同的。 */
   paramMap: Readonly<Record<string, string>>;
+  /**
+   * 原样并入请求体的厂商私有开关。
+   *
+   * `paramMap` 只能给**已有**的规范参数改名，塞不进新字段 —— 而厂商开关恰恰
+   * 都是新字段：DeepSeek 的 `thinking: {"type":"disabled"}` 与
+   * `reasoning_effort`、OpenAI 的 `response_format`、各家的 `stop` /
+   * `logprobs` / `user_id`。按设计文档 §3 的判据（参数不同 -> 数据），这些本就
+   * 该是注册表数据，是本 schema 漏了它们，于是"接一家改一次代码"从后门回来了。
+   *
+   * 适配器自己管理的键（`model`/`messages`/`stream`/`stream_options`/`system`）
+   * 不可覆盖：写入时直接拒，见 `RESERVED_BODY_KEYS`。
+   */
+  extraBody: Readonly<Record<string, unknown>>;
 }
 
 const KNOWN_KEYS = new Set([
@@ -57,6 +77,7 @@ const KNOWN_KEYS = new Set([
   "streamUsage",
   "supports",
   "paramMap",
+  "extraBody",
 ]);
 
 const KNOWN_SUPPORTS = new Set<keyof WireSupports>([
@@ -64,6 +85,19 @@ const KNOWN_SUPPORTS = new Set<keyof WireSupports>([
   "toolChoice",
   "topP",
   "temperature",
+]);
+
+/**
+ * 请求体里由适配器负责的键。`extraBody` 覆盖它们没有任何正当用途，而后果是
+ * 静默的：一个把 `model` 写进 extraBody 的行会绕过 `config.upstreamModel`，
+ * 让注册表里的模型名与真正发出去的不是同一个。写入时拒掉，别留到运行时。
+ */
+const RESERVED_BODY_KEYS = new Set([
+  "model",
+  "messages",
+  "stream",
+  "stream_options",
+  "system",
 ]);
 
 const AUTH_STYLES = new Set<WireAuthStyle>(["bearer", "x-api-key", "none"]);
@@ -97,6 +131,7 @@ export const OPENAI_WIRE_DEFAULTS: ResolvedWire = Object.freeze({
     temperature: true,
   }),
   paramMap: Object.freeze({}),
+  extraBody: Object.freeze({}),
 });
 
 /** `anthropic-messages` 的默认怪癖。Anthropic 原生就在流里回 usage。 */
@@ -113,6 +148,7 @@ export const ANTHROPIC_WIRE_DEFAULTS: ResolvedWire = Object.freeze({
     temperature: true,
   }),
   paramMap: Object.freeze({}),
+  extraBody: Object.freeze({}),
 });
 
 /**
@@ -174,7 +210,34 @@ function applyOverlay(
       readEnum(overlay["streamUsage"], STREAM_USAGES) ?? base.streamUsage,
     supports: mergeSupports(base.supports, overlay["supports"]),
     paramMap: mergeStringMap(base.paramMap, overlay["paramMap"], "paramMap"),
+    extraBody: mergeExtraBody(base.extraBody, overlay["extraBody"]),
   };
+}
+
+/**
+ * 逐键浅合并，值不做类型限制（厂商开关本来就有对象值，如
+ * `thinking: {"type":"disabled"}`）。保留的键在运行时**丢弃并告警**而不是
+ * 停摆 —— 与 `KNOWN_KEYS` 的处理一致，真正的拦截在写入侧。
+ */
+function mergeExtraBody(
+  base: Readonly<Record<string, unknown>>,
+  raw: unknown,
+): Readonly<Record<string, unknown>> {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
+    return base;
+  }
+
+  const merged: Record<string, unknown> = { ...base };
+  for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
+    if (RESERVED_BODY_KEYS.has(key)) {
+      logger.warn(
+        `ignoring config.wire.extraBody["${key}"]: reserved for the adapter`,
+      );
+      continue;
+    }
+    merged[key] = value;
+  }
+  return Object.freeze(merged);
 }
 
 function mergeSupports(
@@ -305,8 +368,23 @@ export function validateWire(raw: unknown): string[] {
 
   problems.push(...validateStringMap(wire["headers"], "headers"));
   problems.push(...validateStringMap(wire["paramMap"], "paramMap"));
+  problems.push(...validateExtraBody(wire["extraBody"]));
 
   return problems;
+}
+
+function validateExtraBody(raw: unknown): string[] {
+  if (raw === undefined) return [];
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
+    return ["config.wire.extraBody must be an object"];
+  }
+
+  return Object.keys(raw as Record<string, unknown>)
+    .filter((key) => RESERVED_BODY_KEYS.has(key))
+    .map(
+      (key) =>
+        `config.wire.extraBody.${key} is reserved by the adapter (reserved: ${[...RESERVED_BODY_KEYS].sort().join(", ")})`,
+    );
 }
 
 function validateStringMap(raw: unknown, label: string): string[] {

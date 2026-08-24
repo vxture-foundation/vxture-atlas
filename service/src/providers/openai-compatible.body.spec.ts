@@ -123,3 +123,111 @@ describe("resolveChatCompletionsEndpoint", () => {
     ).toBe("https://api.example/v1/chat");
   });
 });
+
+// ── extraBody ────────────────────────────────────────────────────────────────
+//
+// 存在的理由：厂商开关（DeepSeek 的 thinking / reasoning_effort、各家的
+// response_format / stop / logprobs）都是**新字段**，paramMap 只能改名塞不进去。
+// 没有这一层，"接一家改一次代码"就从后门回来了。
+
+describe("buildOpenAiCompatibleBody - wire.extraBody", () => {
+  it("merges vendor switches into the request body verbatim", () => {
+    const body = buildOpenAiCompatibleBody(
+      request(),
+      false,
+      wireFrom({
+        wire: {
+          extraBody: {
+            thinking: { type: "disabled" },
+            reasoning_effort: "low",
+          },
+        },
+      }),
+    );
+
+    expect(body.thinking).toEqual({ type: "disabled" });
+    expect(body.reasoning_effort).toBe("low");
+  });
+
+  it("lets the model layer override the provider layer", () => {
+    const body = buildOpenAiCompatibleBody(
+      request(),
+      false,
+      wireFrom(
+        { wire: { extraBody: { thinking: { type: "disabled" } } } },
+        { wire: { extraBody: { thinking: { type: "enabled" } } } },
+      ),
+    );
+
+    expect(body.thinking).toEqual({ type: "enabled" });
+  });
+
+  it("cannot hijack the keys the adapter owns", () => {
+    // 一个把 model 写进 extraBody 的行会让注册表里的模型名与真正发出去的不是
+    // 同一个 - 静默地计错量、算错钱。写入侧拒，这里再兜一次底。
+    const body = buildOpenAiCompatibleBody(
+      request({ modelCode: "real-model" }),
+      true,
+      wireFrom({
+        wire: {
+          extraBody: {
+            model: "smuggled",
+            messages: [],
+            stream: false,
+            stream_options: { include_usage: false },
+          },
+        },
+      }),
+    );
+
+    expect(body.model).toBe("real-model");
+    expect(body.messages).toHaveLength(1);
+    expect(body.stream).toBe(true);
+    expect(body.stream_options).toEqual({ include_usage: true });
+  });
+
+  it("keeps an extraBody default when the caller sends no value of its own", () => {
+    // 此前 `body.max_tokens = request.maxTokens` 是无条件赋值，会把配好的默认值
+    // 抹成 undefined - 一个配了却不生效的开关，正是 extraBody 要消除的东西。
+    // exactOptionalPropertyTypes: 缺席与 undefined 是两回事, 这里要的是缺席。
+    const bare: ProviderChatRequest = {
+      endpointUrl: "https://api.example/v1",
+      apiKey: "k",
+      modelCode: "m",
+      messages: [{ role: "user", content: "hi" }],
+    };
+
+    const body = buildOpenAiCompatibleBody(
+      bare,
+      false,
+      wireFrom({
+        wire: { extraBody: { max_tokens: 4096, temperature: 0.7, top_p: 0.8 } },
+      }),
+    );
+
+    expect(body.max_tokens).toBe(4096);
+    expect(body.temperature).toBe(0.7);
+    expect(body.top_p).toBe(0.8);
+  });
+
+  it("still lets an explicit caller value win over the configured default", () => {
+    const body = buildOpenAiCompatibleBody(
+      request({ maxTokens: 32 }),
+      false,
+      wireFrom({ wire: { extraBody: { max_tokens: 4096 } } }),
+    );
+
+    expect(body.max_tokens).toBe(32);
+  });
+
+  it("follows paramMap when the upstream renamed max_tokens", () => {
+    const body = buildOpenAiCompatibleBody(
+      request({ maxTokens: 64 }),
+      false,
+      wireFrom({ wire: { paramMap: { maxTokens: "max_completion_tokens" } } }),
+    );
+
+    expect(body.max_completion_tokens).toBe(64);
+    expect(body.max_tokens).toBeUndefined();
+  });
+});

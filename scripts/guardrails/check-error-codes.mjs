@@ -61,6 +61,14 @@ const CONSUMPTION_DIRS = [
 const FOREIGN_PLANE = [
   join("runtime", "guards", "operator-auth.guard.ts"),
   join("runtime", "guards", "internal-diagnostics.guard.ts"),
+  // `/capability/models/:id/probe` reports per-check failures to the console
+  // in its own payload (`ModelProbeCheck.error.code`), never through the /v1
+  // envelope. It has always emitted codes outside the published vocabulary -
+  // `PROBE_FAILED` and `HTTP_<status>` - and escaped this check only because
+  // they are built by a helper rather than written as a `code:` literal. That
+  // was a hole in the scoping, not a decision; naming the file states the
+  // plane instead of leaving it to a regex.
+  join("runtime", "model-probe.service.ts"),
 ];
 
 const NEST_HTTP_EXCEPTIONS = [
