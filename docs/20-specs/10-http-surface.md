@@ -74,6 +74,29 @@ design: `/v1` is a first-party product plane, and tenant privacy is not a
 boundary between sibling vxture products. `/tenancy/*` supersedes it for
 tenant-scoped reads; retire the query-param form once remaining callers move.
 
+### Reasoning output never merges into `content`
+
+A thinking model returns its chain separately from its answer -
+`message.reasoning_content` on the OpenAI dialect. **Atlas never merges that
+into `content`, and this is a contract clause, not an implementation detail.**
+
+The reason is that the consumer cannot detect the violation. A caller receives
+one string; nothing about a reasoning chain makes it look different from an
+answer. karda's `ask()` writes `res.content` straight into `answer` and attaches
+citations, so a merged chain would be presented to an end user as a
+citation-backed answer - well formed, no error, no warning, nothing to notice
+(karda's input on `#18`).
+
+The same rule already existed for the streaming side, where it is *less* severe:
+a stream consumer can at least see the event type. On the non-streaming body
+there is no such handle, so the clause binds hardest exactly where it is easiest
+to break.
+
+Today Atlas does not deliver reasoning output at all - it is read only to say
+why a response came back empty (TD-046). When it is delivered it lands in its
+own field alongside `content`, never inside it, and absent will mean the upstream
+reported none rather than an empty string.
+
 ### Deprecation: retiring a model with notice (product_251 X-4)
 
 `POST /capability/models/:id/deprecate` marks a model **still resolvable, no
@@ -723,10 +746,16 @@ Vendor price tables are near-universally quoted in USD per single token. Convert
 one into a rule is therefore `price x 1e6`, rounded to 8 decimal places, with
 `currency` set explicitly to `USD`.
 
-**No column exists** for cache-read pricing, per-model input caps, or per-model
-output caps. Vendor tables carry these; Atlas cannot express them. Do not fold
-a cache-read discount into `input_unit_price` - that silently mis-prices every
-uncached call.
+`cached_input_unit_price` (TD-047, `incr/02`) prices the input tokens an upstream
+served from its prompt cache - `reqlog.request_records.cached_input_tokens`
+records how many there were. It is **nullable, and null does not mean free**: it
+means no cached rate was declared, and a cost calculation falls back to
+`input_unit_price`, which overstates rather than understates. Never fold a
+cache-read discount into `input_unit_price` itself - that silently mis-prices
+every uncached call.
+
+**No column exists** for per-model input caps or per-model output caps. Vendor
+tables carry these; Atlas cannot express them.
 
 Atlas **meters, it does not bill** (`docs/30-design/100-model-onboarding-and-protocol-adapters.md`
 §1): nothing on the request path multiplies tokens by these numbers. They exist

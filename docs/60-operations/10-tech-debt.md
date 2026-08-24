@@ -508,12 +508,33 @@ the product_251 A-4 response shape, which is a three-party contract
 The streaming half additionally needs a new `StreamEvent` variant and a new
 published error/event name.
 
-**Open thread: #18** (label `liaison`, 2026-08-25). Asks the platform line for
-the field position and the stream event name, and asks karda - the only live S2S
-tool-calling consumer - whether they need the combination at all. Recording the
-number here rather than only in the issue is the point: a correction written into
-a document is not the same as one delivered, and the tech-debt entry is where
-someone looks first.
+**Open thread: #18** (label `liaison`, 2026-08-25). Recording the number here
+rather than only in the issue is the point: a correction written into a document
+is not the same as one delivered.
+
+Answered by the karda line, with two corrections worth carrying:
+
+1. **The question went to the wrong party.** karda is a tool *provider* -
+   `karda.search` / `karda.ask` are tools OTHERS call, over Runos/MCP. As a
+   caller of Atlas it never sends `tools`, and its `ChatRequest` has no such
+   field and no `tool` role, so the broken combination is not merely unused
+   there, it is unconstructible. The lines that will hit this are the agent
+   lines that call Atlas directly (yucer is already here, #5). **Do not
+   downgrade this on karda's "not affected".**
+2. **karda v3 needs it.** Agentic Retrieval is multi-round tool calling. Zero
+   impact today, a prerequisite later - so: low priority, not closeable.
+
+Settled on the response shape: `message.reasoningContent?: string`, absent when
+the upstream reported none. And a clause that was karda's contribution and is now
+in `docs/20-specs/10-http-surface.md`: **reasoning output never merges into
+`content`**. Their `ask()` writes `content` into `answer` and attaches citations,
+so a merged chain would reach an end user as a citation-backed answer with
+nothing to notice. Atlas already behaves this way; the clause makes it binding
+rather than accidental.
+
+Still open: the field position as product_251 A-4 states it, the stream event
+name (karda has no position - it does not consume streams), and the request-side
+round trip without which the upstream 400 cannot be fixed.
 
 **Recovery:** agree the field position with the platform line and karda, then
 carry it through `ProviderChatResponse` -> `ChatResponse` and as a stream event.
