@@ -367,7 +367,8 @@ CREATE TABLE IF NOT EXISTS model.model_price_rules (
     created_at         timestamptz   NOT NULL DEFAULT now(),
     updated_at         timestamptz   NOT NULL DEFAULT now(),
     CONSTRAINT chk_model_price_rules_billing_mode CHECK (billing_mode IN ('token','request')),
-    deleted_at       timestamptz                              -- soft delete (incr/10); history lives in audit.change_records, not in an unremovable row
+    deleted_at       timestamptz,                             -- soft delete (incr/10); history lives in audit.change_records, not in an unremovable row
+    cached_input_unit_price numeric(18,8)                     -- TD-047 (incr/02): price for input tokens the upstream served from its prompt cache. NULLABLE on purpose - a 0 would claim cached input is free, which is false for every provider and would be applied silently to every existing row. NULL = not declared, so a cost calculation falls back to input_unit_price and can only overstate. Declared last to match where ALTER TABLE puts it
 );
 CREATE INDEX IF NOT EXISTS idx_model_price_rules_model     ON model.model_price_rules (model_id);
 CREATE INDEX IF NOT EXISTS idx_model_price_rules_effective ON model.model_price_rules (effective_at);

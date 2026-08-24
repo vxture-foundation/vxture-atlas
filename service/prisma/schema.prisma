@@ -144,6 +144,13 @@ model ModelPriceRule {
 
   modelDef ModelDefinition @relation(fields: [modelId], references: [id])
   deletedAt       DateTime? @map("deleted_at") @db.Timestamptz(6)
+  /// TD-047 (incr/02). Price per unitTokens for input tokens the upstream
+  /// served from its prompt cache - 1/30 of the uncached rate on DeepSeek.
+  /// NULL means no cached rate was declared, NOT that cached input is free:
+  /// a cost calculation falls back to inputUnitPrice, which overstates rather
+  /// than understates. Like the other value columns it is insert-only; the
+  /// table grants UPDATE on lifecycle columns alone.
+  cachedInputUnitPrice Decimal? @map("cached_input_unit_price") @db.Decimal(18, 8)
   @@index([modelId], map: "idx_model_price_rules_model")
   @@index([effectiveAt], map: "idx_model_price_rules_effective")
   @@index([isActive], map: "idx_model_price_rules_is_active")

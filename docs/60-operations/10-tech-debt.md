@@ -36,7 +36,7 @@ because those are the ones still needing a decision.
 | [TD-044](#td-044) | The tool-descriptor `version` field never moves, so its drift signal is dead | 2026-08-18 |
 | [TD-045](#td-045) | `codeql.yml` disabled - code scanning on a private repo needs GitHub Advanced Security | 2026-08-24 |
 | [TD-046](#td-046) | Reasoning-model output (`reasoning_content`) is parsed for diagnostics but never delivered | 2026-08-24 |
-| [TD-047](#td-047) | Token splits are recorded but cost is still not computable - no cached-input price, and the splits are not readable through the API | 2026-08-24 |
+| [TD-047](#td-047) | Cost inputs are all recorded, but nothing computes cost from them | 2026-08-24 |
 
 ## Closed
 
@@ -513,40 +513,40 @@ carry it through `ProviderChatResponse` -> `ChatResponse` and as a stream event.
 
 ## TD-047
 
-**Token splits are recorded but cost is still not computable - no cached-input
-price, and the splits are not readable through the API.**
+**Cost inputs are all recorded, but nothing computes cost from them.**
 
-The recording half is done. `reqlog.request_records` now carries
-`cached_input_tokens` and `reasoning_tokens` (incr/01), both adapters read them
-where the upstream reports them, and absent stays NULL rather than 0 - because
-"the upstream said nothing" and "it cost nothing" are different facts. That half
-was done first on purpose: **a price can be backfilled at any time, a token
-count that was never written cannot.**
+Both halves of the recording are done. `reqlog.request_records` carries
+`cached_input_tokens` and `reasoning_tokens` (incr/01) and both adapters fill
+them where the upstream reports them; `model_price_rules` carries
+`cached_input_unit_price` (incr/02), accepted on create and refused on update
+like every other value column, because a price rule is versioned by append.
 
-What remains is turning those numbers into money.
+Recording was done first because it is the irreversible half: a price can be
+backfilled at any time, a token count that was never written cannot.
 
-1. **`model_price_rules` has no cached-input price.** It carries
-   `input_unit_price` / `output_unit_price` / `request_unit_price`, so the
-   cached rate - 1/30 of the uncached one on DeepSeek, 0.10 vs 3.00 CNY per
-   million at peak - cannot be expressed at all. The column was deliberately
-   NOT added in the same change: a price column with no write path behind it is
-   a column nothing fills, and its admin surface (create/update input, DTO
-   validation, the column-write guard) is its own piece of work.
+What remains is the arithmetic, and three things it needs.
 
-2. **Nothing reads the splits back out.** `/capability/logs` returns
+1. **No cost rollup exists.** Nothing in the service reads `model_price_rules`
+   at all - the table is pure CRUD today. The rollup must join each request
+   against the rule in force at that row's `created_at`, which is what
+   `effective_at` / `expires_at` are for. Cost stays a rollup and never becomes
+   a column on the request row: prices change, and a money value frozen per
+   request cannot be re-derived when they do.
+
+2. **Peak/off-peak is not modelled.** DeepSeek bills its idle window at 50%
+   (Beijing time, outside Mon-Fri 09:00-12:00 and 14:00-18:00). The window is
+   derivable from `created_at` and needs no column, but it needs a home:
+   provider `config.pricing` is the natural one, and that is data, not DDL. It
+   is deliberately not added yet - with no rollup reading it, it would be a
+   configured switch that does nothing.
+
+3. **Nothing reads the splits back out.** `/capability/logs` returns
    `RequestLogRecord`, which does not include them, so today the only way to see
    the numbers is SQL against `reqlog`. Adding them changes a published response
    shape (product_251 A-4), which is a three-party decision rather than a
    unilateral one.
 
-3. **Peak/off-peak is not modelled.** DeepSeek bills the idle window at 50%
-   (Beijing time, outside Mon-Fri 09:00-12:00 and 14:00-18:00). The window is
-   derivable from `created_at` and needs no column, but it does need a home -
-   provider `config.pricing` is the natural one, and that is data, not DDL.
-
-**Recovery:** the cached-input price column plus its admin surface, then a cost
-rollup that joins the splits against the rule effective at the row's
-`created_at`. Cost stays a rollup, never a column on the request row: prices
-change, and a money value frozen per request cannot be re-derived when they do.
-Atlas meters, it does not bill - the rollup reports a derived estimate for the
-internal cost pool and is separate from the tenant-facing token quota.
+**Recovery:** the rollup, as a read-side query behind `/capability/logs/summary`
+or its own route. Atlas meters, it does not bill - what the rollup reports is a
+derived estimate for the internal cost pool, separate from the tenant-facing
+token quota, and it must be labelled as such wherever it surfaces.

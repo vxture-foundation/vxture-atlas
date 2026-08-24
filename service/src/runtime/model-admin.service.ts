@@ -300,6 +300,12 @@ export interface ModelPriceRuleAdminRecord {
   inputUnitPrice: string;
   outputUnitPrice: string;
   requestUnitPrice: string;
+  /**
+   * TD-047. `null` means no cached rate was declared, NOT that cached input is
+   * free - a cost calculation falls back to `inputUnitPrice`, which overstates
+   * rather than understates.
+   */
+  cachedInputUnitPrice: string | null;
   state: ObjectState;
   effectiveAt: string;
   expiresAt: string | null;
@@ -469,6 +475,7 @@ export type CreateModelPriceRuleBody = {
   inputUnitPrice?: string | number | null;
   outputUnitPrice?: string | number | null;
   requestUnitPrice?: string | number | null;
+  cachedInputUnitPrice?: string | number | null;
   effectiveAt?: string | null;
   expiresAt?: string | null;
   state?: ObjectState;
@@ -1661,6 +1668,21 @@ export class ModelAdminService {
         "requestUnitPrice",
         "0",
       ),
+      // No "0" fallback, unlike the three above: absent must leave the column
+      // NULL. A 0 would claim cached input is free, which is false for every
+      // provider - see incr/02.
+      ...(body.cachedInputUnitPrice === undefined
+        ? {}
+        : {
+            cachedInputUnitPrice:
+              body.cachedInputUnitPrice === null ||
+              body.cachedInputUnitPrice === ""
+                ? null
+                : parseDecimalText(
+                    body.cachedInputUnitPrice,
+                    "cachedInputUnitPrice",
+                  ),
+          }),
       effectiveAt: parseDateOrNow(body.effectiveAt, "effectiveAt"),
       expiresAt: parseDateOrNull(body.expiresAt),
       isActive: body.state === undefined ? true : isActiveState(body.state),
@@ -1701,6 +1723,11 @@ export class ModelAdminService {
       "inputUnitPrice",
       "outputUnitPrice",
       "requestUnitPrice",
+      // TD-047. A value column like the three above: the database grants no
+      // UPDATE on it, so accepting it here would produce `permission denied
+      // for table model_price_rules` as a 500 - exactly the failure this
+      // refusal list was written for.
+      "cachedInputUnitPrice",
       "effectiveAt",
     ] as const;
 
@@ -2114,6 +2141,7 @@ function mapPriceRule(rule: ModelPriceRuleRecord): ModelPriceRuleAdminRecord {
     inputUnitPrice: rule.inputUnitPrice.toString(),
     outputUnitPrice: rule.outputUnitPrice.toString(),
     requestUnitPrice: rule.requestUnitPrice.toString(),
+    cachedInputUnitPrice: rule.cachedInputUnitPrice?.toString() ?? null,
     state: toObjectState(rule.isActive),
     effectiveAt: rule.effectiveAt.toISOString(),
     expiresAt: rule.expiresAt?.toISOString() ?? null,

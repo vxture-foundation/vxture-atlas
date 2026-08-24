@@ -420,6 +420,12 @@ export interface ModelPriceRuleRecord {
   inputUnitPrice: DecimalLike;
   outputUnitPrice: DecimalLike;
   requestUnitPrice: DecimalLike;
+  /**
+   * TD-047. Price for the input tokens the upstream served from its prompt
+   * cache. `null` means no cached rate was declared - not that cached input is
+   * free - so a cost calculation falls back to `inputUnitPrice`.
+   */
+  cachedInputUnitPrice: DecimalLike | null;
   isActive: boolean;
   effectiveAt: Date;
   expiresAt: Date | null;
@@ -680,6 +686,8 @@ export interface CreateModelPriceRuleInput {
   inputUnitPrice?: string;
   outputUnitPrice?: string;
   requestUnitPrice?: string;
+  /** TD-047. Absent leaves the column NULL; see `ModelPriceRuleRecord`. */
+  cachedInputUnitPrice?: string | null;
   effectiveAt?: Date;
   expiresAt?: Date | null;
   isActive?: boolean;
