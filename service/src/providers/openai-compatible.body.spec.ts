@@ -206,8 +206,10 @@ describe("buildOpenAiCompatibleBody - wire.extraBody", () => {
     );
 
     expect(body.max_tokens).toBe(4096);
-    expect(body.temperature).toBe(0.7);
-    expect(body.top_p).toBe(0.8);
+    // toBeCloseTo, not toBe: 浮点数的精确相等比较是 S1244。这里要的是"值原样
+    // 透传",不是"某个特定的二进制表示"。
+    expect(body.temperature).toBeCloseTo(0.7);
+    expect(body.top_p).toBeCloseTo(0.8);
   });
 
   it("still lets an explicit caller value win over the configured default", () => {
