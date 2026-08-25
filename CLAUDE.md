@@ -328,6 +328,29 @@ shared to selected repos, not duplicated per repo.
 override / exact pin for peer-only deps) or record a named `[[PackageOverrides]]`
 exception with a reason - never widen the gate.
 
+## Auditing claims
+
+The recurring defect in this repo is a claim nothing binds: a sentence in a
+doc, a code comment, or a liaison letter that no code, test, or check enforces.
+Two audit rounds have swept for it, and both were exhaustive - every
+`exhaustive` / `never` / `cannot` / "we decided X" pulled out and read against
+the code. That is expensive, and the hit rate is roughly 23 findings a round.
+
+**There is no reliable pre-filter, and do not invent one.** The obvious move is
+to rank claims by importance and chase only the top ones. It does not work
+here, because this defect's symptom is that nothing happens. The canonical
+instance: a liaison letter promised `QUOTA_EXHAUSTED` while the code threw
+`QUOTA_EXCEEDED` from the first day. The consumer implemented against the
+letter, the branch never matched, both repos' CI stayed green, production
+raised zero alerts, and it went unnoticed for months. Any importance ranking
+filters that claim out - a code name inside a letter looks like the least
+consequential line on the page.
+
+So until a pre-filter exists that survives that test, enumeration is the only
+honest method: sweep the whole surface, or say plainly that the sweep was
+partial and name what was left out. **A sampled audit reported as a complete
+one is itself a claim nothing binds.**
+
 ## Docs taxonomy
 
 `docs/` follows the org docs taxonomy for the shared skeleton: top-level decades
