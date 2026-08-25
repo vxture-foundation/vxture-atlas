@@ -172,6 +172,13 @@ Always branch off `origin/main`, never off a stale local branch.
      so it refuses to start unless the tree is clean. Commit or stash first -
      that precondition is what makes the undo exact.
 
+     **Deliberately not a CI job** (ADR-007). Actions bills per job rounded up
+     to the minute, this repo is private on a Free organization, and the
+     measured burn is already near 62% of the monthly allowance. So the audit is
+     held by this rule rather than by tooling - which is the honest position,
+     not a claim that it is enforced. Finding no audit job in `ci.yml` is the
+     decision, not a gap to file.
+
    Then the actual gate - **an isolated local stack, in Docker**:
 
    **Pull the image CI built for this PR - do not rebuild it.** `build.yml`

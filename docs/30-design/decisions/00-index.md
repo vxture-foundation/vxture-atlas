@@ -14,3 +14,5 @@ restating its reasoning.
 | ADR-003 | [Provider-key vault - envelope encryption](ADR-003-provider-key-vault-envelope-encryption.md) | Accepted | 2026-07-26 |
 | ADR-004 | [Reject the Portkey Gateway dependency](ADR-004-reject-portkey-gateway-dependency.md) | Accepted | 2026-08-01 |
 | ADR-005 | [ACR primary, GHCR fallback for worker-02](ADR-005-acr-primary-ghcr-fallback.md) | Accepted | 2026-07-26 |
+| ADR-006 | [The DDL is one create-once baseline; increment history is folded away](ADR-006-clean-rebaseline.md) | Accepted | 2026-08-17 |
+| ADR-007 | [The audit runs before a release, not in CI](ADR-007-audit-runs-before-release-not-in-ci.md) | Accepted | 2026-08-26 |
