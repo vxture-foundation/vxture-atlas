@@ -33,7 +33,7 @@ import { applyEdit } from "../lib/edit.mjs";
 
 export const meta = {
   id: "guardrail-mutation",
-  title: "九条 CI guardrail 逐个变异测试",
+  title: "九条 CI guardrail 逐个变异测试（十条变异）",
   covered: [
     "每条 guardrail 在一个它自称会抓的已知坏输入上，是否真的以非零码退出",
     "变异前的干净基线是否为绿（否则变异后的红不可读）",
@@ -140,6 +140,19 @@ const MUTATIONS = [
       file: ".github/workflows/ci.yml",
       find: "on:\n  pull_request:\n    branches:\n      - main",
       replace: "on:\n  workflow_dispatch:",
+    },
+  },
+  {
+    // Same guardrail, its other half. TD-026 pinned these once by hand; this
+    // asks whether anything would notice them coming unpinned.
+    guardrail: "check-workflows",
+    why: "凭证路径上的第三方 action 从 SHA 退回可变 tag",
+    edit: {
+      file: ".github/workflows/sonar.yml",
+      find:
+        "uses: SonarSource/sonarqube-scan-action@" +
+        "22918119ff8e1ca75a623e15c8296b6ea4fbe28f",
+      replace: "uses: SonarSource/sonarqube-scan-action@v8",
     },
   },
 ];

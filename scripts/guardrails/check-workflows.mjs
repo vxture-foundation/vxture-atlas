@@ -27,12 +27,35 @@
  * triggers is a real decision and now costs one line here; forgetting to make
  * it deliberately is what this catches. A new workflow with no pin also fails -
  * an unpinned file would otherwise re-open the hole for anything added later.
+ *
+ * 2026-08-26: third-party action refs are checked too, for the same reason one
+ * level down. TD-026 closed on 2026-08-16 by PINNING all seven `docker/*` and
+ * Sonar refs to full SHAs - a one-time cleanup with nothing holding it. Adding
+ * `docker/login-action@v4` to a new job would have restored the exact hazard the
+ * cleanup removed, silently, because no check in this repo read a `uses:` line
+ * at all. A mutable tag in a job that holds registry credentials means the code
+ * that runs against those credentials can change without any commit here.
  */
 
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
 const DIR = ".github/workflows";
+const ACTION_DIRS = [".github/actions"];
+
+/**
+ * Owners whose actions may stay on a tag.
+ *
+ * This is the boundary TD-026 actually drew, and it is narrower than the
+ * industry default: OpenSSF Scorecard's Pinned-Dependencies check wants every
+ * ref pinned, `actions/checkout` included. Widening it here would be this
+ * guardrail deciding something the repo has not - so instead the count of
+ * first-party tag refs is printed on every run. A number nobody can avoid
+ * seeing is the honest way to leave a gap open.
+ */
+const TAG_ALLOWED_OWNERS = new Set(["actions", "github"]);
+
+const SHA_REF = /^[0-9a-f]{40}$/;
 const STRICT = process.argv.includes("--strict");
 
 // Each workflow must declare at least one of these triggers; a file that
@@ -163,6 +186,50 @@ function scan(name, text) {
   });
 }
 
+/**
+ * Every `uses:` in one file. Composite actions are included: a third-party
+ * action hidden inside a composite action (.github/actions/NAME/action.yml)
+ * same credentials as one written in a workflow, and scanning only
+ * `.github/workflows` would have missed the tailscale ref entirely.
+ */
+function scanUses(name, text, counters) {
+  text.split(/\r?\n/).forEach((line, i) => {
+    const m = /^\s*(?:-\s*)?uses:\s*(\S+)\s*(?:#\s*(.*?)\s*)?$/.exec(line);
+    if (!m) return;
+    const [, ref, comment] = m;
+    if (ref.startsWith("./") || ref.startsWith(".\\")) return; // in-repo
+
+    const owner = ref.split("/")[0];
+    const at = ref.lastIndexOf("@");
+    const version = at === -1 ? "" : ref.slice(at + 1);
+
+    if (TAG_ALLOWED_OWNERS.has(owner)) {
+      if (!SHA_REF.test(version)) counters.firstPartyOnTag++;
+      return;
+    }
+
+    counters.thirdParty++;
+    if (!SHA_REF.test(version)) {
+      problems.push(
+        `${name}:${i + 1} third-party action on a mutable ref: ${ref}. ` +
+          `Pin it to a full 40-character commit SHA (TD-026). A tag can be ` +
+          `moved by its owner, so the code running next to this job's ` +
+          `credentials would change with no commit in this repo.`,
+      );
+      return;
+    }
+    // A SHA with no version beside it is unreadable to a human and is what
+    // dependabot rewrites, so the comment is load-bearing, not decoration.
+    if (!/^v?\d/.test(comment ?? "")) {
+      problems.push(
+        `${name}:${i + 1} ${ref} is pinned but carries no version comment. ` +
+          `Append \`# vX.Y.Z\`: it is how a reader knows what the SHA is, and ` +
+          `how dependabot raises it.`,
+      );
+    }
+  });
+}
+
 let files;
 try {
   files = readdirSync(DIR).filter((f) => f.endsWith(".yml") || f.endsWith(".yaml"));
@@ -173,8 +240,40 @@ try {
 
 for (const f of files) scan(f, readFileSync(join(DIR, f), "utf8"));
 
+const counters = { thirdParty: 0, firstPartyOnTag: 0 };
+for (const f of files) scanUses(f, readFileSync(join(DIR, f), "utf8"), counters);
+for (const dir of ACTION_DIRS) {
+  let entries = [];
+  try {
+    entries = readdirSync(dir, { withFileTypes: true });
+  } catch {
+    continue;
+  }
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    for (const candidate of ["action.yml", "action.yaml"]) {
+      const full = join(dir, entry.name, candidate);
+      try {
+        scanUses(join(entry.name, candidate), readFileSync(full, "utf8"), counters);
+      } catch {
+        // the other spelling
+      }
+    }
+  }
+}
+
 if (problems.length === 0) {
-  console.log(`[workflows] OK - ${files.length} workflow files parse and declare triggers.`);
+  console.log(
+    `[workflows] OK - ${files.length} workflow files parse, declare their ` +
+      `pinned triggers, and every one of ${counters.thirdParty} third-party ` +
+      "action refs is a SHA with a version comment.",
+  );
+  console.log(
+    `  Not covered, deliberately: ${counters.firstPartyOnTag} first-party ` +
+      "(actions/*, github/*) refs are on tags. TD-026 scoped pinning to the " +
+      "credential path; OpenSSF Scorecard would pin these too, and that is a " +
+      "decision this guardrail does not get to make on its own.",
+  );
   process.exit(0);
 }
 

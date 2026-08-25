@@ -79,7 +79,15 @@ Platform-side, not this repo's write-scope:
 - [ ] `taskProfile` field in the opera grants UI (TD-009)
 - [ ] Published `atlas` plan_version so the quota gate can deny uncovered
       workspaces (TD-016)
-- [ ] Action-ref pinning rule (TD-026, blocked on `vxture-platform`#188)
+- [x] Action-ref pinning, enforced rather than performed - third-party
+      `uses:` refs must be a 40-character SHA carrying a version comment,
+      checked by `check-workflows` including composite actions
+      (2026-08-26). TD-026 closed on 2026-08-16 by pinning the seven refs;
+      until now nothing stopped the eighth from arriving on a tag. This
+      line said "blocked" for ten days after the work it describes had
+      already been done. First-party `actions/*` refs stay on tags on
+      purpose and the count is printed on every run; the org-wide rule is
+      still the platform line's to publish (`vxture-platform`#188).
 
 Housekeeping:
 
