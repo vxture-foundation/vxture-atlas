@@ -16,6 +16,7 @@ import {
 } from "./runtime.errors";
 import { resolveApiKey } from "./resolve-api-key";
 import { errorFrame } from "../types/runtime.types";
+import { V1_REQUEST_CONTRACT } from "./request-contract";
 import type {
   AiModelRecord,
   ChatRequest,
@@ -1698,5 +1699,38 @@ describe("ModelRuntimeService runtime flow", () => {
 
       expect(events[0]).toEqual({ type: "text", delta: "a" });
     });
+  });
+
+  // ── the published request contract names THIS surface ──────────────────────
+  //
+  // check-request-contract.mjs proves every "missing input" code is published
+  // somewhere; it cannot prove the rule was filed under the right path. A rule
+  // on the wrong surface is exactly as useless to a consumer as a missing one,
+  // and chat is where that would bite hardest - it is the only surface that
+  // attributes by tenantId while the other three use workspaceId.
+  describe("/v1/chat matches its published request rules", () => {
+    const RULES = V1_REQUEST_CONTRACT["/v1/chat"] ?? [];
+
+    it("publishes at least one rule for this surface", () => {
+      expect(RULES.length).toBeGreaterThan(0);
+    });
+
+    it.each(
+      RULES.filter((rule) => rule.kind !== "requiredWith").map((rule) => [
+        rule.code,
+        rule.fields,
+      ]),
+    )(
+      "answers %s when the published fields are absent",
+      async (code, fields) => {
+        const h = makeRuntime();
+        const body = makeRequest() as unknown as Record<string, unknown>;
+        for (const field of fields as string[]) delete body[field];
+
+        await expect(
+          h.service.chat(body as never, { workspaceId: "ws-1" } as never),
+        ).rejects.toMatchObject({ response: { code } });
+      },
+    );
   });
 });

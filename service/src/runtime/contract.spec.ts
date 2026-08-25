@@ -1,11 +1,10 @@
-import { createHash } from "node:crypto";
 import { readFileSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
 
 import { describe, it, expect } from "vitest";
 
-import { buildAtlasContract } from "./contract";
+import { buildAtlasContract, contractFingerprint } from "./contract";
 import { ContractController } from "./contract.controller";
 import { MODEL_RUNTIME_ERROR_CODES } from "./runtime.errors";
 
@@ -67,22 +66,36 @@ describe("the fingerprint is derived, not written", () => {
     );
   });
 
-  it("changes when the vocabulary changes", () => {
-    // Recomputed here from a deliberately altered table rather than by mutating
-    // the real one: the point is that the digest is a function of content, and
-    // a test that could only assert "it is a string" would pass just as well
-    // against a hard-coded constant.
+  it("is a function of its inputs, not a constant", () => {
+    // Fed two different contents through the SAME implementation rather than
+    // recomputing the digest here: a test that reimplements the hashing rule is
+    // a second copy of it, which is the disease this whole issue is about.
     const real = buildAtlasContract();
-    const material = real.errorCodes
-      .map((e) => `${e.code}:${e.retryable ? "1" : "0"}`)
-      .join("\n");
-    const mutated = `${material}\nA_CODE_THAT_DOES_NOT_EXIST:0`;
 
-    const digestOf = (input: string): string =>
-      createHash("sha256").update(input).digest("hex").slice(0, 12);
+    const oneCodeFewer = contractFingerprint(
+      real.errorCodes.slice(1),
+      real.requests,
+    );
+    const noRequestRules = contractFingerprint(real.errorCodes, {});
 
-    expect(real.fingerprint).toBe(`c1-${digestOf(material)}`);
-    expect(digestOf(mutated)).not.toBe(digestOf(material));
+    expect(oneCodeFewer).not.toBe(real.fingerprint);
+    expect(noRequestRules).not.toBe(real.fingerprint);
+  });
+
+  it("moves when a required field is added", () => {
+    // The `taskId` case, replayed. That change reached one consumer as seven
+    // point releases of 400s (TD-044) because nothing they could poll moved.
+    const real = buildAtlasContract();
+
+    const withNewRequirement = contractFingerprint(real.errorCodes, {
+      ...real.requests,
+      "/v1/chat": [
+        ...(real.requests["/v1/chat"] ?? []),
+        { kind: "always", fields: ["somethingNew"], code: "TASK_ID_REQUIRED" },
+      ],
+    });
+
+    expect(withNewRequirement).not.toBe(real.fingerprint);
   });
 
   it("carries a scheme tag a consumer can tell apart from a content change", () => {
