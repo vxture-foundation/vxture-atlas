@@ -106,25 +106,54 @@ inspect it from the host (`curl` against the published port, `docker logs`,
 
 ## Tag to environment
 
-- `beta-YYYYMMDD.N` -> beta stack, no approval gate. Dormant (TD-001).
-- `vX.Y.Z` -> production, gated by a required reviewer on the `production`
-  GitHub Environment.
+- `beta-YYYYMMDD.N` -> beta stack. Dormant (TD-001).
+- `vX.Y.Z` -> production.
 
 Merging to `main` deploys nothing. `dev-*` and `varda-*` tags are
 platform-repo-only.
 
+**There is no approval gate on production today, and this file used to say
+there was.** The `production` GitHub Environment exists with **zero protection
+rules** - verified 2026-08-25 against
+`GET /repos/{owner}/{repo}/environments/production`, which returns
+`protection_rules: []`. Same root cause as the missing branch protection
+(CLAUDE.md): a Free-plan org on a private repo cannot configure them. A required
+reviewer is the design intent for when the plan allows it, not a description of
+what happens when you dispatch a deploy.
+
+So: **dispatching a deploy changes production immediately, and nothing pauses
+to ask.** Treat the dispatch itself as the decision.
+
 ## Workflows
 
-`build.yml` / `deploy.yml` / `rollback.yml` / `db-init.yml` plus the
-`tailnet-ssh-connect` composite action, following the org CD reference pattern
-(vxture-arda). `deploy.yml` delivers the compose file and runs
-`bash deploy/deploy.sh` on worker-02. Every deploy publishes an immutable
+`release.yml` / `build.yml` / `deploy.yml` / `rollback.yml` / `db-init.yml` plus
+the `tailnet-ssh-connect` composite action, following the org CD reference
+pattern (vxture-arda). `deploy.yml` delivers the compose file and runs
+`bash deploy/deploy.sh` on worker-02.
+
+**`release.yml` does not stop at the tag - it dispatches `deploy.yml`.** Cutting
+a release therefore ships it, in one action, with no second confirmation. This
+file previously listed the four workflows without `release.yml` and without the
+chain, and the omission has already cost something: a release cut on 2026-08-24
+was sequenced as "tag, then db-init, then deploy" on the strength of it, so the
+new binary served for 32 seconds against a schema that lacked the columns it
+writes. Every `reqlog` INSERT in that window failed whole and was swallowed into
+a warning - the calls succeeded and left no record.
+
+**The order is therefore: db-init FIRST, then release.** Not between. Every deploy publishes an immutable
 `sha-<short>` image tag; `deploy.sh`'s `cmd_all` prunes unreferenced images
 afterwards so the host disk does not accumulate them.
 
 DB structure changes run only through `db-init.yml` (`confirm=yes` +
-`expected_sha` + production approval) against `deploy/database/ddl/`. The
-routine deploy chain never runs migrations or seeds.
+`expected_sha`) against `deploy/database/ddl/`. It declares
+`environment: production` like the deploy does, and gets the same non-gate for
+the same reason. The routine deploy chain never runs migrations or seeds.
+
+**Run it before `release.yml`, not after.** An additive column is harmless to
+apply early and harmless to apply twice (db-init re-runs on every deploy, so
+every increment is idempotent by rule); a binary that writes a column the
+database does not have yet loses the whole row, silently, while the request it
+describes succeeds.
 
 ## Secrets
 
