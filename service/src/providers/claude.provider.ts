@@ -90,6 +90,9 @@ export class ClaudeProvider extends BaseProvider {
       request.signal,
     );
 
+    // 只取 text:`thinking` 块在这里被丢掉,同 TD-046。非流式这一路和流式那一路
+    // 是同一个洞的两个出口 —— 修的时候两处都要动,只补一处会让多轮在其中一种
+    // 传输上继续 400。
     const content = (response.content ?? [])
       .filter((block) => block.type === "text")
       .map((block) => block.text)
@@ -307,7 +310,11 @@ export async function* parseClaudeStream(
             block.partialJson += delta.partial_json;
           }
         }
-        // thinking_delta / signature_delta 等块类型对上层不可见，忽略。
+        // thinking_delta / signature_delta 丢弃 —— **这是 TD-046,不是一个中性的
+        // 取舍**。Anthropic 的规则和 DeepSeek 的一模一样:带 tools 的多轮里,
+        // assistant 轮次必须原样回传 thinking 块(含 signature),否则 400。
+        // 丢在这里 = 那个回传永远拼不出来,而失败发生在调用方那侧,Atlas 看不见。
+        // `signature` 尤其不能重建:改写过的签名和丢掉是同一个 400。
         break;
       }
 
