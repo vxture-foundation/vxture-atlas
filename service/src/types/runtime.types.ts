@@ -115,7 +115,31 @@ export interface ChatResponse {
 export type StreamEvent =
   | { type: "text"; delta: string }
   | { type: "tool_call"; toolCall: ToolCall }
-  | { type: "done"; usage?: TokenUsage; finishReason?: FinishReason }
+  | {
+      type: "done";
+      usage?: TokenUsage;
+      finishReason?: FinishReason;
+      /**
+       * Which model actually answered.
+       *
+       * Routing by `taskProfile` or `endpointCode` means the caller did NOT
+       * name a model - that is the point of it, and it is why an operator can
+       * repoint a task profile without the product shipping code. The cost is
+       * that the product would otherwise have no way to notice it had been
+       * repointed: same request, different model, no error, no version change.
+       * The non-streaming surfaces have always echoed the resolved code
+       * (`ChatResponse` / `EmbedResponse` / `RerankResponse` / `ParseResponse`);
+       * a stream had nowhere to say it, so it did not.
+       *
+       * Optional on this type because an ADAPTER cannot fill it - it knows the
+       * vendor's `upstreamModel`, not the registry code. `runtime.service`
+       * enriches the frame before it leaves, so **on `/v1/chat` it is always
+       * present**, and that guarantee is held by a test rather than by this
+       * sentence. It reports what actually served, so after a failover it
+       * carries the FALLBACK's code, not the one that was tried first.
+       */
+      modelCode?: string;
+    }
   /**
    * Same envelope as the HTTP error body, only carried on a different
    * transport (product_251 X-1: the position follows the transport, the

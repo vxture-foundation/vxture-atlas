@@ -379,6 +379,29 @@ entitlement is checked against the resolved model. Reasoning:
 `404 ENDPOINT_NOT_ROUTABLE` when the code names nothing live - a deactivated
 endpoint and a nonexistent one are deliberately indistinguishable.
 
+**Which model answered is always reported back, on every surface.** Routing by
+`endpointCode` or `taskProfile` means the caller did not name a model - that is
+the point of it, and it is why an operator can repoint a task profile and the
+product ships nothing. The cost of that decoupling is that the product cannot
+otherwise notice it was repointed: same request, different model, no error, no
+version change, and the symptom is "the same prompt worked yesterday".
+
+So the resolved `modelCode` comes back in the response - `ChatResponse`,
+`EmbedResponse`, `RerankResponse`, `ParseResponse`, and on a stream the final
+`done` frame. **That echo IS the repoint signal**: compare it with what you saw
+last time. It reports what actually served, so after a failover it names the
+fallback rather than the model that was tried first.
+
+Paired with `behaviorVersion` it answers the two separate questions a consumer
+has: the echo says *which model I am talking to*, `behaviorVersion` says
+*whether that model has moved underneath its code*. Neither substitutes for the
+other - a repoint changes the first and not the second.
+
+Whether any of this is surfaced to an end user is the consumer's decision. That
+it reaches the consumer is not: karda already treats the `/v1/embed` echo as
+vector-space identity and refuses to store vectors without it, and every other
+routed capability owes the same fact for the same reason.
+
 ## Capability plane - operator/registry surface
 
 Carries two operator jobs behind one prefix and one guard: **configuration**

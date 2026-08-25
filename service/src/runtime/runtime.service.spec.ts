@@ -1257,7 +1257,9 @@ describe("ModelRuntimeService runtime flow", () => {
 
       expect(events).toEqual([
         { type: "text", delta: "hello" },
-        { type: "done" },
+        // `modelCode` rides on every done frame now - see the "who answered"
+        // block below for why it is not optional in practice.
+        { type: "done", modelCode: "primary-model" },
       ]);
       expect(h.requestLog.record).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -1594,6 +1596,107 @@ describe("ModelRuntimeService runtime flow", () => {
       expect(row.inputTokens).toBeUndefined();
       expect(row.cachedInputTokens).toBeUndefined();
       expect(row.reasoningTokens).toBeUndefined();
+    });
+  });
+
+  // ── who answered ───────────────────────────────────────────────────────
+  //
+  // Routing by taskProfile/endpointCode means the caller did not name a model.
+  // That is the point of it - an operator repoints a task profile and the
+  // product ships nothing. The cost is that the product cannot otherwise notice
+  // it was repointed: same request, different model, no error, no version
+  // change. Every non-streaming surface has always echoed the resolved code; a
+  // stream had nowhere to say it.
+  describe("chatStream reports which model answered", () => {
+    async function collect(
+      gen: AsyncGenerator<StreamEvent>,
+    ): Promise<StreamEvent[]> {
+      const events: StreamEvent[] = [];
+      for await (const event of gen) events.push(event);
+      return events;
+    }
+
+    it("puts the resolved model code on the done frame", async () => {
+      const h = makeRuntime();
+      h.provider.chatStream.mockImplementation(async function* () {
+        yield { type: "text", delta: "hi" };
+        yield { type: "done", usage: { promptTokens: 1, completionTokens: 2, totalTokens: 3 } };
+      });
+
+      const events = await collect(
+        h.service.chatStream(
+          makeRequest({ modelCode: "primary-model", requestId: "who-1" }),
+        ),
+      );
+
+      expect(events.at(-1)).toMatchObject({
+        type: "done",
+        modelCode: "primary-model",
+      });
+    });
+
+    it("always sets it, even when the adapter reported no usage", async () => {
+      // The type marks it optional because an ADAPTER cannot fill it - it knows
+      // the vendor's upstream name, not the registry code. This test is what
+      // makes "always present on /v1" a guarantee rather than a sentence in a
+      // doc comment.
+      const h = makeRuntime();
+      h.provider.chatStream.mockImplementation(async function* () {
+        yield { type: "done" };
+      });
+
+      const events = await collect(
+        h.service.chatStream(
+          makeRequest({ modelCode: "primary-model", requestId: "who-2" }),
+        ),
+      );
+
+      const done = events.at(-1) as { modelCode?: string };
+      expect(done.modelCode).toBe("primary-model");
+    });
+
+    it("reports the FALLBACK after a failover, not the model that was tried first", async () => {
+      // The whole value of the field: it says what actually served. Reporting
+      // the requested model here would be worse than reporting nothing - the
+      // consumer would compare it against last time, see no change, and
+      // conclude nothing moved on the run where everything moved.
+      const h = makeRuntime();
+      h.provider.chatStream.mockImplementation(async function* () {
+        yield { type: "error", code: "UPSTREAM_ERROR", message: "boom" };
+      });
+      h.fallbackProvider.chatStream.mockImplementation(async function* () {
+        yield { type: "text", delta: "from fallback" };
+        yield { type: "done" };
+      });
+
+      const events = await collect(
+        h.service.chatStream(
+          makeRequest({ modelCode: "primary-model", requestId: "who-3" }),
+        ),
+      );
+
+      expect(events.at(-1)).toMatchObject({
+        type: "done",
+        modelCode: "fallback-model",
+      });
+    });
+
+    it("leaves every other frame untouched", async () => {
+      // Additive means additive: a text frame that grew a field would break
+      // consumers that compare frames structurally.
+      const h = makeRuntime();
+      h.provider.chatStream.mockImplementation(async function* () {
+        yield { type: "text", delta: "a" };
+        yield { type: "done" };
+      });
+
+      const events = await collect(
+        h.service.chatStream(
+          makeRequest({ modelCode: "primary-model", requestId: "who-4" }),
+        ),
+      );
+
+      expect(events[0]).toEqual({ type: "text", delta: "a" });
     });
   });
 });
