@@ -99,4 +99,43 @@ describe("summarizeRequestCost query", () => {
       expect(sql).toContain(`p.${column}::text`);
     }
   });
+
+  it("buckets by UTC hour-of-week and leaves the window definition out of SQL", async () => {
+    const { sql } = await run();
+
+    // The bucket is in SQL because only SQL can derive it from created_at.
+    expect(sql).toContain("EXTRACT(isodow FROM r.created_at AT TIME ZONE 'UTC')");
+    expect(sql).toContain("EXTRACT(hour   FROM r.created_at AT TIME ZONE 'UTC')");
+    expect(sql).toContain("(pv.config -> 'pricing')::text");
+
+    // The RULE is not: which hours count as peak is provider configuration.
+    // A window hard-coded here would mean every provider shares one schedule
+    // and changing it means editing a query string.
+    //
+    // Comments are stripped first, deliberately. The claim being made is about
+    // EXECUTABLE sql - a comment explaining why the bucket exists is wanted,
+    // and an assertion that forbids the word outright fails on its own
+    // documentation, which is how a good check gets weakened into a bad one.
+    const executable = sql
+      .split("\n")
+      .map((line) => line.replace(/--.*$/u, ""))
+      .join("\n");
+
+    expect(executable).not.toMatch(/peak/iu);
+    expect(executable).not.toMatch(/CASE\s+WHEN/iu);
+    // No comparison of the bucket against an hour literal - that would be
+    // the window, inlined.
+    expect(executable).not.toMatch(
+      /EXTRACT\(hour[^)]*\)[^,]*(BETWEEN|IN\s*\(|[<>=])/iu,
+    );
+  });
+
+  it("joins the provider on the code the row recorded", async () => {
+    // Not through the model: a model repointed later must not re-price traffic
+    // an older provider actually served. LEFT so a deleted provider does not
+    // remove its traffic from the total.
+    const { sql } = await run();
+    expect(sql).toContain("LEFT JOIN model.model_providers pv");
+    expect(sql).toContain("pv.provider_code = r.provider_code");
+  });
 });

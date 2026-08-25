@@ -36,7 +36,7 @@ because those are the ones still needing a decision.
 | [TD-044](#td-044) | The tool-descriptor `version` field never moves, so its drift signal is dead | 2026-08-18 |
 | [TD-045](#td-045) | `codeql.yml` disabled - code scanning on a private repo needs GitHub Advanced Security | 2026-08-24 |
 | [TD-046](#td-046) | Both protocol adapters drop reasoning output, which makes multi-round tool calling structurally impossible on either | 2026-08-24 |
-| [TD-047](#td-047) | Cost is computed, but peak/off-peak is unmodelled and the splits are unreadable outside SQL | 2026-08-24 |
+| [TD-047](#td-047) | Cost and its off-peak window are modelled; the splits are still unreadable outside SQL, and no provider carries a policy row yet | 2026-08-24 |
 
 ## Closed
 
@@ -565,8 +565,8 @@ same 400 as one that was dropped.
 
 ## TD-047
 
-**Cost is computed, but peak/off-peak is unmodelled and the splits are
-unreadable outside SQL.**
+**Cost and its off-peak window are modelled; the splits are still unreadable
+outside SQL, and no provider carries a policy row yet.**
 
 **2026-08-26, item 1 of three closed:** `GET /capability/logs/cost` exists.
 Token quantities are grouped by `(modelCode, providerCode, priceRuleId)` in SQL
@@ -602,7 +602,30 @@ What remains is the arithmetic, and three things it needs.
    rollup and never becomes a column on the request row, because prices change
    and a money value frozen per request cannot be re-derived when they do.
 
-2. **Peak/off-peak is not modelled.** DeepSeek bills its idle window at 50%
+2. ~~**Peak/off-peak is not modelled.**~~ **Code closed 2026-08-26; the data
+   action is not.** The window is verified rather than assumed - DeepSeek's own
+   page states it in UTC ("Peak hours are 01:00 - 04:00 and 06:00 - 10:00 UTC,
+   Monday through Friday (all other hours are off-peak)"), which is the same set
+   of instants as the Beijing phrasing below, and is what is stored because a
+   timezone conversion is a place to be wrong that the UTC form does not have.
+   35 peak hours of 168 means roughly **79% of the week is discounted**, so this
+   was never a rounding correction.
+
+   The window lives in `config.pricing.offPeak` on the provider row and is
+   applied in `pricing-window.ts`; SQL only buckets requests by UTC hour-of-week
+   (bounded at 168 groups per rule) so that which hours count as peak stays
+   configuration rather than a query edit.
+
+   **What remains is operational, and until it happens the number is still
+   wrong in the same direction:** no provider row carries a policy yet, so
+   every request is priced at peak. The response says so in
+   `coverage.requestsWithoutPricingWindow` rather than presenting the total as
+   exact. `DEEPSEEK_OFF_PEAK` in `pricing-window.ts` is the exact policy to
+   copy, so the operator is not re-deriving it from prose.
+
+   The original text, kept because it is what the code now implements:
+
+   DeepSeek bills its idle window at 50%
    (Beijing time, outside Mon-Fri 09:00-12:00 and 14:00-18:00). The window is
    derivable from `created_at` and needs no column, but it needs a home:
    provider `config.pricing` is the natural one, and that is data, not DDL. It
@@ -617,7 +640,8 @@ What remains is the arithmetic, and three things it needs.
    shape (product_251 A-4), which is a three-party decision rather than a
    unilateral one.
 
-**Recovery:** peak/off-peak in provider `config.pricing`, read by the rollup;
+**Recovery:** a `config.pricing.offPeak` row on each provider that discounts
+(the code to read it is in place as of 2026-08-26);
 and a three-party decision on whether `/capability/logs` starts returning the
 splits (product_251 A-4 governs that shape). The route chosen for the rollup was
 its own (`/capability/logs/cost`) rather than extra fields on

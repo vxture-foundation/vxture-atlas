@@ -30,6 +30,13 @@
  * number has already lost the argument.
  */
 
+import {
+  isPeak,
+  parseOffPeakPolicy,
+  type OffPeakPolicy,
+  type PriceComponent,
+} from "./pricing-window";
+
 /** Decimal places in `numeric(18,8)`, and therefore in every scaled integer. */
 const SCALE = 8n;
 const SCALE_FACTOR = 10n ** SCALE;
@@ -47,6 +54,12 @@ export interface CostGroupRow {
   requestUnitPrice: string | null;
   /** `null` means "no cached rate declared", never "cached input is free". */
   cachedInputUnitPrice: string | null;
+  /** ISO weekday of the bucket in UTC, 1 = Monday .. 7 = Sunday. */
+  isoDow: number | null;
+  /** Hour of the bucket in UTC, 0-23. */
+  hourUtc: number | null;
+  /** `config.pricing` off the provider row, as JSON text. */
+  providerPricing: string | null;
   requests: bigint;
   requestsMissingInput: bigint;
   requestsMissingOutput: bigint;
@@ -73,6 +86,16 @@ export interface CostRollupItem {
   estimatedCost: string | null;
   /** True when the cached half fell back to `inputUnitPrice`. */
   cachedPriceFellBack: boolean;
+  /** Requests served inside the provider's declared peak windows. */
+  peakRequests: number;
+  /** Everything else - on DeepSeek, about 79% of the week. */
+  offPeakRequests: number;
+  /**
+   * False when the provider has declared no off-peak policy. The number is then
+   * priced entirely at peak rates, which OVERSTATES it - and says so here
+   * rather than reading as an exact figure.
+   */
+  offPeakPolicyApplied: boolean;
 }
 
 export interface CostRollupResult {
@@ -84,6 +107,12 @@ export interface CostRollupResult {
     requestsWithoutPriceRule: number;
     requestsMissingInputTokens: number;
     requestsMissingOutputTokens: number;
+    /**
+     * Requests whose provider declares no off-peak policy. They are billed at
+     * peak rates here; on a provider that actually discounts, that is an
+     * overstatement waiting for a config row, not a correct total.
+     */
+    requestsWithoutPricingWindow: number;
   };
 }
 
@@ -123,14 +152,30 @@ function priceTokens(tokens: bigint, scaledPrice: bigint, unitTokens: bigint): b
   return (tokens * scaledPrice) / unitTokens;
 }
 
+/** `price * multiplier`, both scaled, truncating. */
+function discounted(scaledPrice: bigint, multiplier: bigint): bigint {
+  return (scaledPrice * multiplier) / SCALE_FACTOR;
+}
+
+/**
+ * Rows arrive one per (model, provider, rule, UTC hour-of-week) bucket, because
+ * the discount is a property of WHEN a request ran and a sum cannot be split
+ * after the fact. They are re-aggregated here to the same item shape callers
+ * already had, with the peak/off-peak split reported alongside.
+ */
 export function computeCostRollup(rows: readonly CostGroupRow[]): CostRollupResult {
-  const items: CostRollupItem[] = [];
   const byCurrency = new Map<string, bigint>();
+  const items = new Map<string, CostRollupItem>();
+  const costs = new Map<string, bigint>();
+  // Parsed once per distinct config text: a malformed policy must throw once,
+  // not once per hour bucket.
+  const policies = new Map<string, OffPeakPolicy | null>();
 
   let requests = 0n;
   let withoutRule = 0n;
   let missingInput = 0n;
   let missingOutput = 0n;
+  let withoutWindow = 0n;
 
   for (const row of rows) {
     requests += row.requests;
@@ -144,18 +189,71 @@ export function computeCostRollup(rows: readonly CostGroupRow[]): CostRollupResu
       row.cachedInputTokens > row.inputTokens ? row.inputTokens : row.cachedInputTokens;
     const uncached = row.inputTokens - cached;
 
-    const base = {
-      modelCode: row.modelCode,
-      providerCode: row.providerCode,
-      priceRuleId: row.priceRuleId,
-      currency: row.currency,
-      requests: Number(row.requests),
-      inputTokens: Number(row.inputTokens),
-      cachedInputTokens: Number(cached),
-      uncachedInputTokens: Number(uncached),
-      outputTokens: Number(row.outputTokens),
-      reasoningTokens: Number(row.reasoningTokens),
-    };
+    const key = JSON.stringify([
+      row.modelCode,
+      row.providerCode,
+      row.priceRuleId,
+      row.currency,
+    ]);
+
+    const cachedPriceFellBack =
+      row.priceRuleId !== null && row.cachedInputUnitPrice === null;
+
+    let item = items.get(key);
+    if (!item) {
+      item = {
+        modelCode: row.modelCode,
+        providerCode: row.providerCode,
+        priceRuleId: row.priceRuleId,
+        currency: row.currency,
+        requests: 0,
+        inputTokens: 0,
+        cachedInputTokens: 0,
+        uncachedInputTokens: 0,
+        outputTokens: 0,
+        reasoningTokens: 0,
+        estimatedCost: null,
+        cachedPriceFellBack,
+        peakRequests: 0,
+        offPeakRequests: 0,
+        offPeakPolicyApplied: false,
+      };
+      items.set(key, item);
+    }
+
+    item.requests += Number(row.requests);
+    item.inputTokens += Number(row.inputTokens);
+    item.cachedInputTokens += Number(cached);
+    item.uncachedInputTokens += Number(uncached);
+    item.outputTokens += Number(row.outputTokens);
+    item.reasoningTokens += Number(row.reasoningTokens);
+
+    const policyKey = row.providerPricing ?? "";
+    if (!policies.has(policyKey)) {
+      policies.set(
+        policyKey,
+        row.providerPricing === null
+          ? null
+          : parseOffPeakPolicy(JSON.parse(row.providerPricing) as unknown),
+      );
+    }
+    const policy = policies.get(policyKey) ?? null;
+
+    // A bucket with no hour is a row we cannot place in the week; it is treated
+    // as undiscounted AND counted as uncovered, never silently discounted.
+    const placeable = row.isoDow !== null && row.hourUtc !== null;
+    const peak =
+      policy === null || !placeable
+        ? true
+        : isPeak(policy, row.isoDow as number, row.hourUtc as number);
+
+    if (policy !== null && placeable) {
+      item.offPeakPolicyApplied = true;
+    } else {
+      withoutWindow += row.requests;
+    }
+    if (peak) item.peakRequests += Number(row.requests);
+    else item.offPeakRequests += Number(row.requests);
 
     if (
       row.priceRuleId === null ||
@@ -168,31 +266,46 @@ export function computeCostRollup(rows: readonly CostGroupRow[]): CostRollupResu
       // Unpriced traffic is a fact to report, not an empty group to drop. A
       // zero here would read as "these requests cost nothing".
       withoutRule += row.requests;
-      items.push({ ...base, estimatedCost: null, cachedPriceFellBack: false });
       continue;
     }
 
+    const discount = !peak && policy !== null ? toScaled(policy.multiplier) : null;
+    const rate = (component: PriceComponent, price: string): bigint => {
+      const scaled = toScaled(price);
+      return discount !== null && policy !== null && policy.appliesTo.includes(component)
+        ? discounted(scaled, discount)
+        : scaled;
+    };
+
     const unitTokens = BigInt(row.unitTokens);
-    const inputPrice = toScaled(row.inputUnitPrice);
-    const cachedPriceFellBack = row.cachedInputUnitPrice === null;
+    const inputPrice = rate("input", row.inputUnitPrice);
+    // The fallback happens BEFORE the discount: an undeclared cached rate means
+    // "charge it as uncached", and an uncached rate is discounted off-peak like
+    // any other. Discounting a fallback is not double-counting - it is the same
+    // rate the provider would have charged.
     const cachedPrice = cachedPriceFellBack
       ? inputPrice
-      : toScaled(row.cachedInputUnitPrice as string);
+      : rate("cachedInput", row.cachedInputUnitPrice as string);
 
     const cost =
-      row.requests * toScaled(row.requestUnitPrice) +
+      row.requests * rate("request", row.requestUnitPrice) +
       priceTokens(uncached, inputPrice, unitTokens) +
       priceTokens(cached, cachedPrice, unitTokens) +
       // `outputTokens` already includes `reasoningTokens`, which are billed at
       // this same rate. Adding the reasoning term here would charge them twice.
-      priceTokens(row.outputTokens, toScaled(row.outputUnitPrice), unitTokens);
+      priceTokens(row.outputTokens, rate("output", row.outputUnitPrice), unitTokens);
 
     byCurrency.set(row.currency, (byCurrency.get(row.currency) ?? 0n) + cost);
-    items.push({ ...base, estimatedCost: render(cost), cachedPriceFellBack });
+    costs.set(key, (costs.get(key) ?? 0n) + cost);
+  }
+
+  for (const [key, item] of items) {
+    const cost = costs.get(key);
+    if (cost !== undefined) item.estimatedCost = render(cost);
   }
 
   return {
-    items,
+    items: [...items.values()],
     totalsByCurrency: [...byCurrency.entries()]
       .sort((a, b) => a[0].localeCompare(b[0]))
       .map(([currency, scaled]) => ({ currency, estimatedCost: render(scaled) })),
@@ -201,6 +314,7 @@ export function computeCostRollup(rows: readonly CostGroupRow[]): CostRollupResu
       requestsWithoutPriceRule: Number(withoutRule),
       requestsMissingInputTokens: Number(missingInput),
       requestsMissingOutputTokens: Number(missingOutput),
+      requestsWithoutPricingWindow: Number(withoutWindow),
     },
   };
 }
@@ -226,4 +340,9 @@ export const COST_ROLLUP_BASIS = {
   unpriced:
     "Requests with no rule in force are counted in coverage.requestsWithoutPriceRule and contribute " +
     "no cost, rather than contributing zero.",
+  offPeak:
+    "Requests are bucketed by UTC hour-of-week and priced at the provider's off-peak multiplier when " +
+    "they fall outside its declared peak windows - on DeepSeek that is roughly 79% of the week. A " +
+    "provider with no declared policy is priced entirely at peak rates, which OVERSTATES it; those " +
+    "requests are counted in coverage.requestsWithoutPricingWindow rather than presented as exact.",
 } as const;

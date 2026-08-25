@@ -1435,6 +1435,9 @@ export class ModelRegistryRepository {
       modelCode: string | null;
       providerCode: string | null;
       priceRuleId: string | null;
+      isoDow: number | null;
+      hourUtc: number | null;
+      providerPricing: string | null;
       currency: string | null;
       unitTokens: number | null;
       inputUnitPrice: string | null;
@@ -1459,6 +1462,9 @@ export class ModelRegistryRepository {
         r.model_code                                       AS "modelCode",
         r.provider_code                                    AS "providerCode",
         p.id::text                                         AS "priceRuleId",
+        EXTRACT(isodow FROM r.created_at AT TIME ZONE 'UTC')::int  AS "isoDow",
+        EXTRACT(hour   FROM r.created_at AT TIME ZONE 'UTC')::int  AS "hourUtc",
+        (pv.config -> 'pricing')::text                     AS "providerPricing",
         p.currency                                         AS "currency",
         p.unit_tokens                                      AS "unitTokens",
         p.input_unit_price::text                           AS "inputUnitPrice",
@@ -1475,6 +1481,12 @@ export class ModelRegistryRepository {
       FROM reqlog.request_records r
       LEFT JOIN model.models m
         ON m.model_code = r.model_code
+      -- Joined on the code the ROW recorded, not through the model: if a model
+      -- was repointed afterwards, what served this request is what should price
+      -- it. LEFT so a provider that has since been deleted does not take its
+      -- traffic out of the total.
+      LEFT JOIN model.model_providers pv
+        ON pv.provider_code = r.provider_code
       LEFT JOIN LATERAL (
         SELECT pr.id, pr.currency, pr.unit_tokens, pr.input_unit_price,
                pr.output_unit_price, pr.request_unit_price,
@@ -1494,7 +1506,16 @@ export class ModelRegistryRepository {
         AND ($4::varchar IS NULL OR r.provider_code = $4)
       GROUP BY r.model_code, r.provider_code, p.id, p.currency, p.unit_tokens,
                p.input_unit_price, p.output_unit_price, p.request_unit_price,
-               p.cached_input_unit_price
+               p.cached_input_unit_price,
+               -- The off-peak discount is a property of WHEN a request ran, and
+               -- a sum cannot be split after the fact. Bucketing by UTC
+               -- hour-of-week is bounded at 168 groups per rule and keeps the
+               -- WINDOW DEFINITION out of SQL: which hours count as peak is
+               -- provider configuration, applied in pricing-window.ts where a
+               -- change costs a config row rather than a query edit.
+               EXTRACT(isodow FROM r.created_at AT TIME ZONE 'UTC'),
+               EXTRACT(hour   FROM r.created_at AT TIME ZONE 'UTC'),
+               (pv.config -> 'pricing')::text
       ORDER BY "requests" DESC
       `,
       params.from,

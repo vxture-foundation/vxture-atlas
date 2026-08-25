@@ -17,6 +17,11 @@ function group(over: Partial<CostGroupRow> = {}): CostGroupRow {
     outputUnitPrice: "12.00000000",
     requestUnitPrice: "0.00000000",
     cachedInputUnitPrice: "0.10000000",
+    // No policy by default, so the pre-off-peak expectations in this file keep
+    // meaning what they meant: undiscounted.
+    isoDow: 1,
+    hourUtc: 12,
+    providerPricing: null,
     requests: 1n,
     requestsMissingInput: 0n,
     requestsMissingOutput: 0n,
@@ -27,6 +32,158 @@ function group(over: Partial<CostGroupRow> = {}): CostGroupRow {
     ...over,
   };
 }
+
+const DEEPSEEK_PRICING = JSON.stringify({
+  offPeak: {
+    timezone: "UTC",
+    multiplier: "0.50000000",
+    appliesTo: ["input", "cachedInput", "output", "request"],
+    peakWindows: [
+      { days: [1, 2, 3, 4, 5], fromHour: 1, toHour: 4 },
+      { days: [1, 2, 3, 4, 5], fromHour: 6, toHour: 10 },
+    ],
+  },
+});
+
+describe("computeCostRollup, off-peak", () => {
+  it("charges peak hours in full and off-peak hours at the multiplier", () => {
+    // Same tokens, two hours: Monday 02:00 UTC is inside 01:00-04:00, Monday
+    // 05:00 is the midday gap. 1M uncached input at 3.00/M.
+    const peak = computeCostRollup([
+      group({
+        inputTokens: 1_000_000n,
+        isoDow: 1,
+        hourUtc: 2,
+        providerPricing: DEEPSEEK_PRICING,
+      }),
+    ]);
+    const offPeak = computeCostRollup([
+      group({
+        inputTokens: 1_000_000n,
+        isoDow: 1,
+        hourUtc: 5,
+        providerPricing: DEEPSEEK_PRICING,
+      }),
+    ]);
+
+    expect(peak.items[0]?.estimatedCost).toBe("3.00000000");
+    expect(offPeak.items[0]?.estimatedCost).toBe("1.50000000");
+    expect(peak.items[0]?.peakRequests).toBe(1);
+    expect(offPeak.items[0]?.offPeakRequests).toBe(1);
+  });
+
+  it("re-aggregates hour buckets into one item, keeping the split", () => {
+    // The repository returns one row per hour bucket; a caller wants one item.
+    const { items, totalsByCurrency } = computeCostRollup([
+      group({ inputTokens: 1_000_000n, isoDow: 1, hourUtc: 2, providerPricing: DEEPSEEK_PRICING }),
+      group({ inputTokens: 1_000_000n, isoDow: 6, hourUtc: 2, providerPricing: DEEPSEEK_PRICING }),
+    ]);
+
+    expect(items).toHaveLength(1);
+    expect(items[0]?.inputTokens).toBe(2_000_000);
+    expect(items[0]?.peakRequests).toBe(1);
+    expect(items[0]?.offPeakRequests).toBe(1);
+    // 3.00 at peak + 1.50 on Saturday.
+    expect(totalsByCurrency).toEqual([{ currency: "CNY", estimatedCost: "4.50000000" }]);
+  });
+
+  it("discounts only the components the policy names", () => {
+    const outputOnly = JSON.stringify({
+      offPeak: {
+        timezone: "UTC",
+        multiplier: "0.50000000",
+        appliesTo: ["output"],
+        peakWindows: [{ days: [1, 2, 3, 4, 5], fromHour: 1, toHour: 4 }],
+      },
+    });
+    // Saturday: off-peak. 1M input at 3.00 stays 3.00; 100k output at 12.00/M
+    // is 1.20 and halves to 0.60.
+    const { items } = computeCostRollup([
+      group({
+        inputTokens: 1_000_000n,
+        outputTokens: 100_000n,
+        isoDow: 6,
+        hourUtc: 2,
+        providerPricing: outputOnly,
+      }),
+    ]);
+    expect(items[0]?.estimatedCost).toBe("3.60000000");
+  });
+
+  it("prices a provider with no declared policy at peak rates, and says it did", () => {
+    // Not an error and not a discount - an overstatement waiting for a config
+    // row, which the coverage field is what makes visible.
+    const { items, coverage } = computeCostRollup([
+      group({ requests: 4n, inputTokens: 1_000_000n, isoDow: 6, hourUtc: 2 }),
+    ]);
+    expect(items[0]?.estimatedCost).toBe("3.00000000");
+    expect(items[0]?.offPeakPolicyApplied).toBe(false);
+    expect(items[0]?.peakRequests).toBe(4);
+    expect(coverage.requestsWithoutPricingWindow).toBe(4);
+  });
+
+  it("discounts an undeclared cached rate after it falls back, not instead of", () => {
+    // Fallback says "charge the cached half as uncached"; off-peak then applies
+    // to that rate like any other. 1M input, 400k of it cached, all at 3.00,
+    // halved on a Saturday.
+    const { items } = computeCostRollup([
+      group({
+        inputTokens: 1_000_000n,
+        cachedInputTokens: 400_000n,
+        cachedInputUnitPrice: null,
+        isoDow: 6,
+        hourUtc: 2,
+        providerPricing: DEEPSEEK_PRICING,
+      }),
+    ]);
+    expect(items[0]?.cachedPriceFellBack).toBe(true);
+    expect(items[0]?.estimatedCost).toBe("1.50000000");
+  });
+
+  it("prices a real week, as postgres bucketed it", () => {
+    // Three rows, straight out of `summarizeRequestCost` on a throwaway
+    // postgres:18 (2026-08-26) with the DeepSeek policy on the provider row:
+    //
+    //   dow1/h02  Monday 02:30 UTC - inside the 01:00-04:00 peak window
+    //   dow1/h05  Monday 05:30 UTC - the gap between the two peak windows
+    //   dow6/h02  Saturday         - weekends are entirely off-peak
+    //
+    // Postgres derived those buckets; nothing in this file assumes them. Each
+    // row is 1M uncached input at 3.00/M, so the week costs 3.00 + 1.50 + 1.50.
+    const fromPostgres: CostGroupRow[] = [
+      [1, 2],
+      [1, 5],
+      [6, 2],
+    ].map(([isoDow, hourUtc]) =>
+      group({
+        inputTokens: 1_000_000n,
+        isoDow: isoDow as number,
+        hourUtc: hourUtc as number,
+        providerPricing: DEEPSEEK_PRICING,
+      }),
+    );
+
+    const { items, totalsByCurrency, coverage } = computeCostRollup(fromPostgres);
+
+    expect(totalsByCurrency).toEqual([{ currency: "CNY", estimatedCost: "6.00000000" }]);
+    expect(items[0]?.peakRequests).toBe(1);
+    expect(items[0]?.offPeakRequests).toBe(2);
+    expect(items[0]?.offPeakPolicyApplied).toBe(true);
+    expect(coverage.requestsWithoutPricingWindow).toBe(0);
+    // Priced entirely at peak this would have been 9.00 - the third that is
+    // being over-estimated today, on a provider that has no policy row yet.
+    expect(totalsByCurrency[0]?.estimatedCost).not.toBe("9.00000000");
+  });
+
+  it("lets a malformed policy throw rather than pricing everything at full rate", () => {
+    // Silently ignoring it would bill a whole provider at peak while the
+    // operator believes a discount is configured.
+    const broken = JSON.stringify({ offPeak: { timezone: "Asia/Shanghai" } });
+    expect(() =>
+      computeCostRollup([group({ isoDow: 6, hourUtc: 2, providerPricing: broken })]),
+    ).toThrow(/timezone must be "UTC"/u);
+  });
+});
 
 describe("computeCostRollup", () => {
   it("prices the uncached half at the full rate and the cached half at the cached rate", () => {
@@ -141,6 +298,7 @@ describe("computeCostRollup", () => {
       requestsWithoutPriceRule: 0,
       requestsMissingInputTokens: 3,
       requestsMissingOutputTokens: 4,
+      requestsWithoutPricingWindow: 10,
     });
   });
 
@@ -181,6 +339,9 @@ describe("computeCostRollup", () => {
         outputUnitPrice: "12.00000000",
         requestUnitPrice: "0.00000000",
         cachedInputUnitPrice: "0.10000000",
+        isoDow: 1,
+        hourUtc: 12,
+        providerPricing: null,
         requests: 2n,
         requestsMissingInput: 1n,
         requestsMissingOutput: 1n,
@@ -199,6 +360,9 @@ describe("computeCostRollup", () => {
         outputUnitPrice: null,
         requestUnitPrice: null,
         cachedInputUnitPrice: null,
+        isoDow: 1,
+        hourUtc: 12,
+        providerPricing: null,
         requests: 1n,
         requestsMissingInput: 0n,
         requestsMissingOutput: 0n,
@@ -222,6 +386,7 @@ describe("computeCostRollup", () => {
       requestsWithoutPriceRule: 1,
       requestsMissingInputTokens: 1,
       requestsMissingOutputTokens: 1,
+      requestsWithoutPricingWindow: 3,
     });
   });
 
