@@ -68,8 +68,11 @@ Gateway capabilities ([ADR-004](../30-design/decisions/ADR-004-reject-portkey-ga
       declared but deliberately unenforced)
 - [ ] OpenAI-shaped entry (`/v1/chat/completions`) sharing one pipeline with
       `/v1/chat`; tenant identity from the token, never the body
-- [ ] Cost calculation from `model_price_rules` (quantities only - Atlas
-      meters, it does not bill)
+- [x] Cost calculation from `model_price_rules` - `GET /capability/logs/cost`
+      (TD-047 part 1, 2026-08-26). Quantities only; Atlas meters, it does not
+      bill. Peak/off-peak pricing and exposing the splits on `/capability/logs`
+      remain open on TD-047 - the second needs a home in provider config, the
+      third changes a published shape and is a three-party decision
 - [ ] Unify `request_records` failover grain across chat and S2S surfaces
       (TD-037)
 

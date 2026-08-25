@@ -19,6 +19,19 @@ function makeController() {
       overall: {},
       items: [],
     }),
+    summarizeCost: vi.fn().mockResolvedValue({
+      from: "",
+      to: "",
+      basis: {},
+      items: [],
+      totalsByCurrency: [],
+      coverage: {
+        requests: 0,
+        requestsWithoutPriceRule: 0,
+        requestsMissingInputTokens: 0,
+        requestsMissingOutputTokens: 0,
+      },
+    }),
   };
   return {
     controller: new ObservabilityController(observability as never),
@@ -148,5 +161,44 @@ describe("ObservabilityController unknown filters", () => {
     // `limit` is legal on /logs and meaningless on /logs/summary.
     expect(() => controller.summarize({ limit: "25" })).toThrow();
     expect(observability.summarize).not.toHaveBeenCalled();
+  });
+});
+
+describe("ObservabilityController.summarizeCost", () => {
+  it("passes through the filters it accepts", async () => {
+    const { controller, observability } = makeController();
+
+    await controller.summarizeCost(
+      { window: "7d", modelCode: "m", providerCode: "p" },
+      "7d",
+      "m",
+      "p",
+    );
+
+    expect(observability.summarizeCost).toHaveBeenCalledWith({
+      window: "7d",
+      modelCode: "m",
+      providerCode: "p",
+    });
+  });
+
+  it("refuses endpointCode instead of quietly ignoring it", async () => {
+    // Cost attaches to models. Accepting an endpoint filter and dropping it
+    // would answer a per-endpoint question with a whole-model number, and look
+    // like an answer.
+    const { controller, observability } = makeController();
+
+    expect(() =>
+      controller.summarizeCost({ endpointCode: "chat-default" }),
+    ).toThrow();
+    expect(observability.summarizeCost).not.toHaveBeenCalled();
+  });
+
+  it("sends nothing when nothing was asked for", async () => {
+    const { controller, observability } = makeController();
+
+    await controller.summarizeCost({});
+
+    expect(observability.summarizeCost).toHaveBeenCalledWith({});
   });
 });

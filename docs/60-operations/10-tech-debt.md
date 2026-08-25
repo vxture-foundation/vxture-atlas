@@ -36,7 +36,7 @@ because those are the ones still needing a decision.
 | [TD-044](#td-044) | The tool-descriptor `version` field never moves, so its drift signal is dead | 2026-08-18 |
 | [TD-045](#td-045) | `codeql.yml` disabled - code scanning on a private repo needs GitHub Advanced Security | 2026-08-24 |
 | [TD-046](#td-046) | Both protocol adapters drop reasoning output, which makes multi-round tool calling structurally impossible on either | 2026-08-24 |
-| [TD-047](#td-047) | Cost inputs are all recorded, but nothing computes cost from them | 2026-08-24 |
+| [TD-047](#td-047) | Cost is computed, but peak/off-peak is unmodelled and the splits are unreadable outside SQL | 2026-08-24 |
 
 ## Closed
 
@@ -565,7 +565,26 @@ same 400 as one that was dropped.
 
 ## TD-047
 
-**Cost inputs are all recorded, but nothing computes cost from them.**
+**Cost is computed, but peak/off-peak is unmodelled and the splits are
+unreadable outside SQL.**
+
+**2026-08-26, item 1 of three closed:** `GET /capability/logs/cost` exists.
+Token quantities are grouped by `(modelCode, providerCode, priceRuleId)` in SQL
+- the temporal join, "the rule whose `effective_at`/`expires_at` window contains
+this row's `created_at`", is the part SQL does better than anything else - and
+the arithmetic runs in `computeCostRollup`, deliberately outside it. Money maths
+inside a `$queryRawUnsafe` string is money maths no test in this repo can reach,
+because vitest mocks Prisma, and this arithmetic has three ways to be quietly
+wrong: reasoning tokens double-charged (they are a subset of output, already
+priced), the cached half priced at the uncached rate, and an undeclared cached
+rate read as free. All three are assertions now, and the first two are pinned
+mutations in `scripts/audit`. Cost stayed a rollup and did not become a column,
+per the note below. `is_active` is deliberately not part of rule selection: it
+is a present-tense switch, and letting it decide history would make last month's
+number move today.
+
+The two items below remain, and the original text is kept because both are still
+exactly as described.
 
 Both halves of the recording are done. `reqlog.request_records` carries
 `cached_input_tokens` and `reasoning_tokens` (incr/01) and both adapters fill
@@ -578,19 +597,19 @@ backfilled at any time, a token count that was never written cannot.
 
 What remains is the arithmetic, and three things it needs.
 
-1. **No cost rollup exists.** Nothing in the service reads `model_price_rules`
-   at all - the table is pure CRUD today. The rollup must join each request
-   against the rule in force at that row's `created_at`, which is what
-   `effective_at` / `expires_at` are for. Cost stays a rollup and never becomes
-   a column on the request row: prices change, and a money value frozen per
-   request cannot be re-derived when they do.
+1. ~~**No cost rollup exists.**~~ **Closed 2026-08-26** - see above. The
+   principle it rested on still holds and is worth keeping visible: cost stays a
+   rollup and never becomes a column on the request row, because prices change
+   and a money value frozen per request cannot be re-derived when they do.
 
 2. **Peak/off-peak is not modelled.** DeepSeek bills its idle window at 50%
    (Beijing time, outside Mon-Fri 09:00-12:00 and 14:00-18:00). The window is
    derivable from `created_at` and needs no column, but it needs a home:
    provider `config.pricing` is the natural one, and that is data, not DDL. It
-   is deliberately not added yet - with no rollup reading it, it would be a
-   configured switch that does nothing.
+   was deliberately not added while nothing read it - a configured switch that
+   does nothing is the shape this repo keeps banning. **That reason expired on
+   2026-08-26**: there is now a rollup to read it, so this is next, and until it
+   lands every off-peak request is being estimated at twice its real rate.
 
 3. **Nothing reads the splits back out.** `/capability/logs` returns
    `RequestLogRecord`, which does not include them, so today the only way to see
@@ -598,7 +617,15 @@ What remains is the arithmetic, and three things it needs.
    shape (product_251 A-4), which is a three-party decision rather than a
    unilateral one.
 
-**Recovery:** the rollup, as a read-side query behind `/capability/logs/summary`
-or its own route. Atlas meters, it does not bill - what the rollup reports is a
-derived estimate for the internal cost pool, separate from the tenant-facing
-token quota, and it must be labelled as such wherever it surfaces.
+**Recovery:** peak/off-peak in provider `config.pricing`, read by the rollup;
+and a three-party decision on whether `/capability/logs` starts returning the
+splits (product_251 A-4 governs that shape). The route chosen for the rollup was
+its own (`/capability/logs/cost`) rather than extra fields on
+`/capability/logs/summary`, for the same A-4 reason: adding a route is
+unilateral, changing a published shape is not.
+
+Atlas meters, it does not bill - what the rollup reports is a derived estimate
+for the internal cost pool, separate from the tenant-facing token quota. It is
+labelled as such in the response itself (`basis`), not only here: a reader who
+does not know reasoning tokens are excluded from the sum will reconcile against
+the provider's invoice and conclude the meter is broken.

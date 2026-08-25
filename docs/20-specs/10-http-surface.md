@@ -39,7 +39,7 @@ The code identifies the surface that refused:
 | --- | --- |
 | `/v1/models`, `/v1/endpoints` | `UNKNOWN_FILTER` (runtime envelope, `retryable:false`) |
 | `/capability/*` under the model-admin controller | `CAPABILITY_UNKNOWN_FILTER` |
-| `/capability/logs`, `/capability/logs/summary` | `OBSERVABILITY_UNKNOWN_FILTER` |
+| `/capability/logs`, `/capability/logs/summary`, `/capability/logs/cost` | `OBSERVABILITY_UNKNOWN_FILTER` |
 | `/capability/audit-logs` | `AUDIT_UNKNOWN_FILTER` |
 | `/capability/provider-keys` | `PROVIDER_KEY_UNKNOWN_FILTER` |
 | `/tenancy/usage` | `TENANCY_UNKNOWN_FILTER` |
@@ -562,6 +562,7 @@ nobody opened is not a deferral, it is a drop.
 | GET | `/capability/logs` | Request/error log search over `reqlog.request_records`/`error_records` (`tenantId`/`modelCode`/`providerCode`/`endpointCode`/`status`/`requestId`/`taskId`/`from`/`to`/`cursor`/`limit` filters). Cursor pagination - see below |
 | GET | `/capability/audit-logs` | Operator change trail (product_250 M-5). Filters: `objectType`/`objectId`/`actorId`/`action`/`outcome`/`from`/`to`/`cursor`/`limit`. Cursor pagination, same shape as `/capability/logs`. **Read-only by construction** - see "The change trail is append-only" below |
 | GET | `/capability/logs/summary` | Aggregated QPS/error-rate/latency (avg + p95) and `totalTokens`, overall and grouped by `modelCode`/`providerCode`/`endpointCode`, over a `window` (`1h`/`24h`/`7d`, default `24h`). Filters: `modelCode`/`providerCode`/`endpointCode`. A group with `endpointCode: null` is real - see the note on the endpoint axis above - and is reported rather than dropped, so the groups still add up to `overall`. `overall.totalTokens` is `0`: it comes from a separate aggregate that carries no token sum, and re-deriving it by summing the groups would create a second source of truth for one number |
+| GET | `/capability/logs/cost` | **Estimated cost for the internal pool (TD-047). Atlas meters, it does not bill** - this is not an invoice and not the tenant-facing token quota. Token quantities grouped by `(modelCode, providerCode, priceRuleId)` over a `window` (`1h`/`24h`/`7d`, default `24h`), each priced with the rule whose `effectiveAt`/`expiresAt` window contains the request's `createdAt`. Filters: `modelCode`/`providerCode` - no `endpointCode`, because prices attach to models and a per-endpoint cost is not a number the price table can produce. Three things the response states rather than assumes, carried in `basis`: `reasoningTokens` are **reported and never added** (they are a subset of `outputTokens`, already charged at the output rate); an undeclared `cachedInputUnitPrice` falls back to `inputUnitPrice`, which overstates rather than understates; and requests with no rule in force are counted in `coverage.requestsWithoutPriceRule` and contribute **no** cost rather than zero. Money is a decimal string, never a JSON number, and `totalsByCurrency` is a list - summing across currencies would invent a figure. `isActive` is deliberately not part of rule selection: it is a present-tense switch, and letting it decide history would make last month's number change today |
 
 ### Authorization is moving to (product, endpoint)
 
@@ -783,7 +784,7 @@ about**, not what kind of resource it is:
 |------|-------|------|
 | Nothing resolved | bare JSON array | `providers`, `models`, `model-routes`, `provider-keys`, `api-keys`, `product-endpoint-grants` |
 | Cursor | `{items, nextCursor}` | `/capability/logs`, `/capability/audit-logs` |
-| Resolved window or axis | `{from, to, dimension?, items, ...}` | `/capability/logs/summary`, `/capability/usage-summaries` |
+| Resolved window or axis | `{from, to, dimension?, items, ...}` | `/capability/logs/summary`, `/capability/logs/cost`, `/capability/usage-summaries` |
 
 Three rules that are easy to get wrong:
 
