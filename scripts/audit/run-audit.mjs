@@ -30,8 +30,14 @@ import { dirname, resolve } from "node:path";
 import * as guardrailMutation from "./dimensions/guardrail-mutation.mjs";
 import * as assertionFreeTests from "./dimensions/assertion-free-tests.mjs";
 import * as platformClaims from "./dimensions/platform-claims.mjs";
+import * as serviceMutation from "./dimensions/service-mutation.mjs";
 
-const DIMENSIONS = [guardrailMutation, assertionFreeTests, platformClaims];
+const DIMENSIONS = [
+  guardrailMutation,
+  serviceMutation,
+  assertionFreeTests,
+  platformClaims,
+];
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const args = process.argv.slice(2);

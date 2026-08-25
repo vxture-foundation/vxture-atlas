@@ -21,6 +21,11 @@
  *                         find it. Two false-positive classes (it.each data
  *                         tables, `/re/.test(x)`) were found this way, both
  *                         after they had already been reported as findings.
+ *   service-mutation      proven by construction, same as above, with one
+ *                         extra rule earned the hard way: vitest exits 1 when
+ *                         tests fail, and the first version of that runner
+ *                         crashed with 0xC0000005 and had the crash counted as
+ *                         a red. Any non-1 exit is now a crash, not a defence.
  *   platform-claims       NOT PROVEN, and not provable from here. Turning one
  *                         of its probes red needs a repository whose settings
  *                         actually differ, and pointing it at someone else's
@@ -85,6 +90,11 @@ results.push({
   dimension: "guardrail-mutation",
   pass: true,
   detail: "proven by construction - every line it prints is a planted-defect verdict",
+});
+results.push({
+  dimension: "service-mutation",
+  pass: true,
+  detail: "proven by construction - each line is a planted-defect verdict, and a non-1 exit is reported as a crash rather than a red",
 });
 results.push({
   dimension: "platform-claims",
