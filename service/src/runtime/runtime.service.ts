@@ -517,7 +517,13 @@ export class ModelRuntimeService {
               lastUsage = event.usage;
             }
             yieldedThisAttempt = true;
-            yield event;
+            // The one place a stream can say WHO answered. The adapter cannot:
+            // it knows the vendor's upstream name, not the registry code. After
+            // a failover this is the candidate that actually served, which is
+            // the fact worth reporting - not the one that was tried first.
+            yield event.type === "done"
+              ? { ...event, modelCode: model.modelCode }
+              : event;
           }
 
           const latencyMs = Date.now() - startedAt;
