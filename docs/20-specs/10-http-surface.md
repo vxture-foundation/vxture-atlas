@@ -420,6 +420,23 @@ so it cannot be forgotten the way a hand-maintained version can - TD-044 is the
 receipt for that failure mode, where a version field that does not track change
 tells a polling consumer "nothing moved" through a field that cannot move.
 
+The same document carries `requests`: per surface, which fields are required
+and the code that refuses a request without them. **It is not generated from the
+TypeScript interfaces, on purpose.** `ChatRequest.taskId` is declared optional
+there and is rejected by every surface at runtime, so a generated schema would
+publish the opposite of the truth - the same class of statement as the letter
+that promised `QUOTA_EXHAUSTED`.
+
+Read it before assuming the four surfaces are alike: **`/v1/chat` attributes by
+`tenantId`, and the three S2S capabilities attribute by `workspaceId`.** A
+caller that assumes one shape across all four gets a 400 on three of them.
+
+Two things hold it to the runtime, in opposite directions. Every published rule
+is exercised by a test that omits the field on that surface and asserts the
+declared code comes back; and `check-request-contract.mjs` requires every
+`*_REQUIRED` code in the vocabulary to be published by some surface, so a new
+requirement cannot be enforced without also being announced.
+
 `retryable` is published as a fact. What to do with it - back off, fail the
 task, surface it - is the consumer's decision; Atlas does not model retry
 policy on anyone's behalf.

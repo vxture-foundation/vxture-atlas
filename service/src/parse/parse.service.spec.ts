@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
 
 import { ParseService } from "./parse.service";
+import { V1_REQUEST_CONTRACT } from "../runtime/request-contract";
 import { ProviderCapabilityNotImplementedError } from "../providers/base.provider";
 import type { AiModelRecord } from "../types/runtime.types";
 
@@ -356,5 +357,42 @@ describe("ParseService.parse", () => {
     expect(entitlements.consume).toHaveBeenCalledWith(
       expect.objectContaining({ workspaceId: "ws-body" }),
     );
+  });
+});
+
+// ── the published request contract names THIS surface ─────────────────────────
+//
+// `check-request-contract.mjs` proves every "missing input" code is published
+// somewhere. It cannot prove the rule was filed under the right path, and a rule
+// on the wrong surface is exactly as useless to a consumer as a missing one.
+// This is that half.
+describe("/v1/parse matches its published request rules", () => {
+  const RULES = V1_REQUEST_CONTRACT["/v1/parse"] ?? [];
+
+  const complete = (): Record<string, unknown> => ({
+    taskId: "task-fixture",
+    workspaceId: "ws-1",
+    modelCode: "m",
+    task: "ocr",
+    pages: PAGES,
+  });
+
+  it("publishes at least one rule for this surface", () => {
+    expect(RULES.length).toBeGreaterThan(0);
+  });
+
+  it.each(
+    RULES.filter((rule) => rule.kind !== "requiredWith").map((rule) => [
+      rule.code,
+      rule.fields,
+    ]),
+  )("answers %s when the published fields are absent", async (code, fields) => {
+    const { service } = makeService(makeModel());
+    const body = complete();
+    for (const field of fields as string[]) delete body[field];
+
+    await expect(service.parse(body as never, AUTH)).rejects.toMatchObject({
+      response: { code },
+    });
   });
 });

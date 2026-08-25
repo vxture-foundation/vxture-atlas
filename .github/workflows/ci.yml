@@ -118,6 +118,12 @@ jobs:
       - name: Error envelope guardrail (product_251 X-1)
         run: node scripts/guardrails/check-error-codes.mjs --strict
 
+      # #21: consumers pin the request rules, so a requirement that is enforced
+      # and not published is the taskId failure (TD-044) with a different field
+      # name. X-1 makes the vocabulary the census this checks against.
+      - name: Request-contract guardrail (published rules == enforced ones)
+        run: node scripts/guardrails/check-request-contract.mjs --strict
+
       # A list endpoint that silently drops an unrecognised filter answers a
       # different question than the caller asked, with HTTP 200 and a
       # well-formed body. There is no signal for that on either side, so it has
