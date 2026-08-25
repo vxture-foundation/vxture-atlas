@@ -45,7 +45,7 @@ export const meta = {
   id: "service-mutation",
   title: "服务不变量的变异测试（钉住的一组）",
   covered: [
-    "七条承重不变量：探针输出预算、流式空交付判绿、成本拆分的“未上报不是 0”、wire.extraBody 保留键、推理 token 不重复计价、未声明缓存单价的回退方向、契约指纹随必填规则移动",
+    "九条承重不变量：探针输出预算、流式空交付判绿、成本拆分的“未上报不是 0”、wire.extraBody 保留键、推理 token 不重复计价、未声明缓存单价的回退方向、高峰窗口的半开边界、无策略供应商按全价、契约指纹随必填规则移动",
     "每条变异点名它应当被哪个 spec 抓住，只跑那个 spec —— 抓不住时区分“套件没红”与“红在别处”",
     "变异前后各校验一次工作树干净，确保 git checkout 是精确回滚",
     "每个 spec 的干净基线只跑一次并复用；vitest 退出码 1 才算测试失败，其余非零一律记为崩溃、不算“挡住了”",
@@ -119,10 +119,15 @@ const MUTATIONS = [
     spec: "src/observability/cost-rollup.spec.ts",
     edit: {
       file: "service/src/observability/cost-rollup.ts",
-      find: "      priceTokens(row.outputTokens, toScaled(row.outputUnitPrice), unitTokens);",
+      // The needle moved when off-peak pricing introduced `rate()`. The
+      // harness reported that as `unreadable`, not as a pass - a mutation
+      // whose needle stops matching tests nothing, and reads exactly like
+      // one that was defended.
+      find:
+        '      priceTokens(row.outputTokens, rate("output", row.outputUnitPrice), unitTokens);',
       replace:
-        "      priceTokens(row.outputTokens, toScaled(row.outputUnitPrice), unitTokens) +\n" +
-        "      priceTokens(row.reasoningTokens, toScaled(row.outputUnitPrice), unitTokens);",
+        '      priceTokens(row.outputTokens, rate("output", row.outputUnitPrice), unitTokens) +\n' +
+        '      priceTokens(row.reasoningTokens, rate("output", row.outputUnitPrice), unitTokens);',
     },
   },
   {
@@ -135,6 +140,30 @@ const MUTATIONS = [
       file: "service/src/observability/cost-rollup.ts",
       find: "    const cachedPrice = cachedPriceFellBack\n      ? inputPrice",
       replace: "    const cachedPrice = cachedPriceFellBack\n      ? 0n",
+    },
+  },
+  {
+    invariant: "高峰窗口是半开区间，边界不多吃一小时",
+    why:
+      "供应商写的是 01:00-04:00，即 04:00 已经不是高峰。把 < 写成 <=，" +
+      "每天多算一小时全价 —— 一个方向明确、幅度很小、永远不会有人来投诉的偏差。",
+    spec: "src/observability/pricing-window.spec.ts",
+    edit: {
+      file: "service/src/observability/pricing-window.ts",
+      find: "hour >= w.fromHour && hour < w.toHour",
+      replace: "hour >= w.fromHour && hour <= w.toHour",
+    },
+  },
+  {
+    invariant: "没有声明策略的供应商按全价计，不按折扣计",
+    why:
+      "把默认从“高峰”翻成“低谷”，会给每一个还没配策略的供应商凭空打五折，" +
+      "而账面看起来完全正常 —— 只是少了一半。",
+    spec: "src/observability/cost-rollup.spec.ts",
+    edit: {
+      file: "service/src/observability/cost-rollup.ts",
+      find: "      policy === null || !placeable\n        ? true",
+      replace: "      policy === null || !placeable\n        ? false",
     },
   },
   {
