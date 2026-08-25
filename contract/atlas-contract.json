@@ -1,0 +1,173 @@
+{
+  "fingerprint": "c1-725041d74262",
+  "errorCodes": [
+    {
+      "code": "APPLICATION_ID_REQUIRED",
+      "retryable": false
+    },
+    {
+      "code": "APPLICATION_TYPE_INVALID",
+      "retryable": false
+    },
+    {
+      "code": "APPLICATION_TYPE_REQUIRED",
+      "retryable": false
+    },
+    {
+      "code": "AUTH_ISSUER_NOT_CONFIGURED",
+      "retryable": false
+    },
+    {
+      "code": "CANDIDATE_POOL_TOO_LARGE",
+      "retryable": false
+    },
+    {
+      "code": "CHAT_MESSAGES_INVALID",
+      "retryable": false
+    },
+    {
+      "code": "CHAT_MESSAGES_REQUIRED",
+      "retryable": false
+    },
+    {
+      "code": "CLIENT_ABORTED",
+      "retryable": false
+    },
+    {
+      "code": "EMBED_TEXTS_INVALID",
+      "retryable": false
+    },
+    {
+      "code": "EMBED_TEXTS_REQUIRED",
+      "retryable": false
+    },
+    {
+      "code": "ENDPOINT_NOT_ROUTABLE",
+      "retryable": false
+    },
+    {
+      "code": "INVALID_APPLICATION_ID",
+      "retryable": false
+    },
+    {
+      "code": "INVALID_TENANT_ID",
+      "retryable": false
+    },
+    {
+      "code": "INVALID_WINDOW",
+      "retryable": false
+    },
+    {
+      "code": "MODEL_NOT_IMPLEMENTED",
+      "retryable": false
+    },
+    {
+      "code": "MODEL_NOT_ROUTABLE",
+      "retryable": false
+    },
+    {
+      "code": "MODEL_RUNTIME_STREAM_FAILED",
+      "retryable": true
+    },
+    {
+      "code": "NOT_ENTITLED",
+      "retryable": false
+    },
+    {
+      "code": "PARSE_PAGES_INVALID",
+      "retryable": false
+    },
+    {
+      "code": "PARSE_PAGES_REQUIRED",
+      "retryable": false
+    },
+    {
+      "code": "PARSE_TASK_INVALID",
+      "retryable": false
+    },
+    {
+      "code": "PROVIDER_UNAVAILABLE",
+      "retryable": true
+    },
+    {
+      "code": "QUOTA_EXCEEDED",
+      "retryable": false
+    },
+    {
+      "code": "RATE_LIMITED",
+      "retryable": true
+    },
+    {
+      "code": "RERANK_CANDIDATES_INVALID",
+      "retryable": false
+    },
+    {
+      "code": "RERANK_CANDIDATES_REQUIRED",
+      "retryable": false
+    },
+    {
+      "code": "RERANK_QUERY_REQUIRED",
+      "retryable": false
+    },
+    {
+      "code": "S2S_TOKEN_INVALID",
+      "retryable": false
+    },
+    {
+      "code": "S2S_TOKEN_INVALID_MODE",
+      "retryable": false
+    },
+    {
+      "code": "S2S_TOKEN_MISSING",
+      "retryable": false
+    },
+    {
+      "code": "S2S_TOKEN_MISSING_ACT",
+      "retryable": false
+    },
+    {
+      "code": "S2S_TOKEN_WRONG_SCOPE",
+      "retryable": false
+    },
+    {
+      "code": "TARGET_SELECTOR_REQUIRED",
+      "retryable": false
+    },
+    {
+      "code": "TASK_ID_REQUIRED",
+      "retryable": false
+    },
+    {
+      "code": "TASK_PROFILE_NOT_ROUTABLE",
+      "retryable": false
+    },
+    {
+      "code": "TENANCY_SCOPE_INVALID",
+      "retryable": false
+    },
+    {
+      "code": "TENANCY_SCOPE_UNAVAILABLE",
+      "retryable": false
+    },
+    {
+      "code": "TENANT_ID_REQUIRED",
+      "retryable": false
+    },
+    {
+      "code": "UNKNOWN_FILTER",
+      "retryable": false
+    },
+    {
+      "code": "UPSTREAM_FRAME_UNPARSEABLE",
+      "retryable": true
+    },
+    {
+      "code": "USAGE_TYPE_INVALID",
+      "retryable": false
+    },
+    {
+      "code": "WORKSPACE_ID_REQUIRED",
+      "retryable": false
+    }
+  ]
+}

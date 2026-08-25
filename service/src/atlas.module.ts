@@ -38,6 +38,7 @@ import { ProviderKeyRepository } from "./provider-keys/provider-key.repository";
 import { GatewayApiKeyController } from "./gateway-api-keys/gateway-api-key.controller";
 import { GatewayApiKeyService } from "./gateway-api-keys/gateway-api-key.service";
 import { GatewayApiKeyRepository } from "./gateway-api-keys/gateway-api-key.repository";
+import { ContractController } from "./runtime/contract.controller";
 import { DiscoveryController } from "./discovery/discovery.controller";
 import { MetricsRegistry, metricsRegistry } from "./runtime/metrics.registry";
 import { ObservabilityController } from "./observability/observability.controller";
@@ -58,6 +59,7 @@ import { AuditMiddleware } from "./audit/audit.middleware";
     ProvisioningWebhookController,
     ProviderKeyController,
     GatewayApiKeyController,
+    ContractController,
     DiscoveryController,
     TenancyController,
     ObservabilityController,

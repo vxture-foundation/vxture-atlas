@@ -79,8 +79,12 @@ const NON_BEHAVIORAL_CONFIG_KEYS = new Set(["keyReference", "apiKeyEnvVar"]);
  * is correct there - it orders a list a human reads, where "alphabetical" should
  * mean what the reader expects. This orders bytes going into a hash. Different
  * job, opposite answer.
+ *
+ * Exported because `runtime/contract.ts` hashes a vocabulary and needs the same
+ * property for the same reason. Two copies of this decision would eventually
+ * disagree, and the symptom would be a fingerprint that differs by machine.
  */
-const byCodeUnit = (a: string, b: string): number =>
+export const byCodeUnit = (a: string, b: string): number =>
   a < b ? -1 : a > b ? 1 : 0;
 
 /** Deterministic JSON: object keys sorted at every depth, so two configs that

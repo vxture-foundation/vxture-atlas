@@ -402,6 +402,34 @@ it reaches the consumer is not: karda already treats the `/v1/embed` echo as
 vector-space identity and refuses to store vectors without it, and every other
 routed capability owes the same fact for the same reason.
 
+### The error vocabulary is published, not described
+
+`GET /.well-known/vxture-contract` (`S2sAuthGuard`, the same guard a consumer's
+`/v1` calls already pass) returns every code `/v1` can put in an error envelope,
+each with its `retryable` class, plus an opaque `fingerprint`.
+
+The same document is committed at `contract/atlas-contract.json` for vendoring
+and pinning. **The two answer different questions**: the file says what `main`
+declared, the endpoint says what the instance you are calling declares. A
+consumer pinning only the file re-creates version skew, which is the failure
+this exists to remove.
+
+Diff the `fingerprint` against the last value you saw. Equal means the
+vocabulary is byte-identical. It is derived from the content and stored nowhere,
+so it cannot be forgotten the way a hand-maintained version can - TD-044 is the
+receipt for that failure mode, where a version field that does not track change
+tells a polling consumer "nothing moved" through a field that cannot move.
+
+`retryable` is published as a fact. What to do with it - back off, fail the
+task, surface it - is the consumer's decision; Atlas does not model retry
+policy on anyone's behalf.
+
+Why this exists at all: four consumers each hand-copied the same table out of a
+liaison letter. One of those copies said `QUOTA_EXHAUSTED` where the code has
+always thrown `QUOTA_EXCEEDED`, the branch never fired, both sides' CI stayed
+green, and it took months to surface - because the symptom of a dead branch is
+that nothing happens (`vxture-atlas#21`).
+
 ## Capability plane - operator/registry surface
 
 Carries two operator jobs behind one prefix and one guard: **configuration**
