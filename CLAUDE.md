@@ -146,7 +146,31 @@ Always branch off `origin/main`, never off a stale local branch.
      (vitest does NOT type-check, so a green suite says nothing about a
      signature change)
    - `pnpm lint`
-   - `node scripts/guardrails/check-*.mjs --strict` (six of them)
+   - `node scripts/guardrails/check-*.mjs --strict` (nine of them - the count
+     said six until 2026-08-25, which is the shape this repo keeps producing)
+   - `pnpm audit:run` - **required, and not a bigger version of the line
+     above.** The guardrails check the code; this checks the guardrails, the
+     tests, and what the platform actually reports. It re-plants a known defect
+     in front of every guardrail and every pinned service invariant and
+     requires each one to go red. A check that has never been seen red does not
+     exist yet: "clean" and "not running" print the same line. About 30
+     seconds.
+
+     Its first run earned the step. `check-workflows` claimed the files "keep
+     the triggers they claim" and checked only that SOME recognised trigger was
+     present, so `ci.yml` could have lost `pull_request:` and PR CI would have
+     stopped running - silently, on a repo where branch protection is
+     unavailable and nothing else would have noticed.
+
+     Read what it prints, not the count. Every dimension reports what it did
+     NOT look at, and a zero only means something beside that list. A finding
+     marked `unreadable` is neither a pass nor a defect: the probe could not
+     reach its subject, and filing that as either is how a crashed test run
+     becomes a green check.
+
+     `service-mutation` edits tracked files in place and undoes them with git,
+     so it refuses to start unless the tree is clean. Commit or stash first -
+     that precondition is what makes the undo exact.
 
    Then the actual gate - **an isolated local stack, in Docker**:
 
@@ -213,7 +237,10 @@ Always branch off `origin/main`, never off a stale local branch.
 5. CI runs on the PR. Squash-merge once green; the branch is auto-deleted on
    merge. This does not deploy anything.
 6. When ready to release, cut a tag from the commit you want deployed and push it.
-   Deploying to ANY environment - dev included - follows step 3 first.
+   Deploying to ANY environment - dev included - follows step 3 first, and that
+   now includes `pnpm audit:run`. A release is the moment the checks matter
+   most and the moment nobody re-verifies them, which is why the step lives on
+   this path rather than in a document nobody opens before a deploy.
 
 Squash merge only (merge commits and rebase merges are disabled at the repo
 settings level - `allow_merge_commit`/`allow_rebase_merge` are `false`,
