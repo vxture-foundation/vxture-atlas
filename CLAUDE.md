@@ -328,6 +328,43 @@ shared to selected repos, not duplicated per repo.
 override / exact pin for peer-only deps) or record a named `[[PackageOverrides]]`
 exception with a reason - never widen the gate.
 
+## Auditing claims
+
+The recurring defect in this repo is a claim nothing binds: a sentence in a
+doc, a code comment, or a liaison letter that no code, test, or check enforces.
+Two audit rounds have swept for it, and both were exhaustive - every
+`exhaustive` / `never` / `cannot` / "we decided X" pulled out and read against
+the code. That is expensive, and the hit rate is roughly 23 findings a round.
+
+**Do not pre-filter by how important a claim looks.** The obvious move is to
+rank claims by consequence and chase only the top ones. It does not work here,
+because this defect's symptom is that nothing happens. The canonical instance:
+a liaison letter promised `QUOTA_EXHAUSTED` while the code threw
+`QUOTA_EXCEEDED` from the first day. The consumer implemented against the
+letter, the branch never matched, both repos' CI stayed green, production
+raised zero alerts, and it went unnoticed for months. A consequence ranking
+filters that claim out - a code name inside a letter looks like the least
+consequential line on the page.
+
+Audit practice outside software has the other half of this, and it is worth
+naming because we do not have it yet. Financial audit does pre-filter, by
+materiality (ISA 320) and sampling (ISA 530), but it pairs the quantitative
+threshold with a **qualitative materiality** bypass: some misstatements are
+material whatever their size. `QUOTA_EXHAUSTED` is exactly that shape -
+quantitatively trivial, qualitatively decisive. So the industry answer is not
+"never pre-filter"; it is "pre-filter, plus a criterion for what bypasses the
+filter". **We have no such criterion, so we do not get the filter either.**
+
+Until that criterion exists, enumeration is the only honest method: sweep the
+whole surface, or say plainly that the sweep was partial and name what was left
+out. **A sampled audit reported as a complete one is itself a claim nothing
+binds** - and a swept dimension that reports zero findings without stating what
+it covered is the same thing one level down (ISO 19011 requires an audit report
+to state its scope limitations for this reason; a round-2 dimension named
+"release/deploy consistency" reported zero while the deployment doc carried two
+false claims, and the cost was a skipped db-init and 32 seconds of lost
+metering).
+
 ## Docs taxonomy
 
 `docs/` follows the org docs taxonomy for the shared skeleton: top-level decades
