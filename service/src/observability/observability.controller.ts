@@ -4,6 +4,7 @@ import { OperatorAuthGuard } from "../runtime/guards/operator-auth.guard";
 import {
   ObservabilityService,
   type LogSearchResult,
+  type LogCostResult,
   type LogSummaryResult,
 } from "./observability.service";
 import { rejectUnknownFilters } from "../http-query";
@@ -39,6 +40,10 @@ const SUMMARY_FILTERS = [
   "providerCode",
   "endpointCode",
 ] as const;
+
+// No `endpointCode`: cost is priced per model, and an endpoint filter would
+// invite a per-endpoint cost number the price table cannot actually produce.
+const COST_FILTERS = ["window", "modelCode", "providerCode"] as const;
 
 @Controller("capability")
 @UseGuards(OperatorAuthGuard)
@@ -93,6 +98,22 @@ export class ObservabilityController {
       ...(modelCode !== undefined ? { modelCode } : {}),
       ...(providerCode !== undefined ? { providerCode } : {}),
       ...(endpointCode !== undefined ? { endpointCode } : {}),
+    });
+  }
+
+  /** TD-047. Estimated cost for the internal pool; Atlas meters, it does not bill. */
+  @Get("logs/cost")
+  summarizeCost(
+    @Query() all: Record<string, string>,
+    @Query("window") window?: string,
+    @Query("modelCode") modelCode?: string,
+    @Query("providerCode") providerCode?: string,
+  ): Promise<LogCostResult> {
+    rejectUnknownFilters(all, COST_FILTERS, "OBSERVABILITY_UNKNOWN_FILTER");
+    return this.observability.summarizeCost({
+      ...(window !== undefined ? { window } : {}),
+      ...(modelCode !== undefined ? { modelCode } : {}),
+      ...(providerCode !== undefined ? { providerCode } : {}),
     });
   }
 }

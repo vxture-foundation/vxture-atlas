@@ -45,7 +45,7 @@ export const meta = {
   id: "service-mutation",
   title: "服务不变量的变异测试（钉住的一组）",
   covered: [
-    "五条承重不变量：探针输出预算、流式空交付判绿、成本拆分的“未上报不是 0”、wire.extraBody 保留键、契约指纹随必填规则移动",
+    "七条承重不变量：探针输出预算、流式空交付判绿、成本拆分的“未上报不是 0”、wire.extraBody 保留键、推理 token 不重复计价、未声明缓存单价的回退方向、契约指纹随必填规则移动",
     "每条变异点名它应当被哪个 spec 抓住，只跑那个 spec —— 抓不住时区分“套件没红”与“红在别处”",
     "变异前后各校验一次工作树干净，确保 git checkout 是精确回滚",
     "每个 spec 的干净基线只跑一次并复用；vitest 退出码 1 才算测试失败，其余非零一律记为崩溃、不算“挡住了”",
@@ -109,6 +109,32 @@ const MUTATIONS = [
       file: "service/src/providers/wire.ts",
       find: "    if (RESERVED_BODY_KEYS.has(key)) {",
       replace: "    if (false) {",
+    },
+  },
+  {
+    invariant: "推理 token 不参与成本求和",
+    why:
+      "reasoningTokens 是 outputTokens 的子集，已经按输出价计过一次。" +
+      "把它再加一遍，就是给每一个思考型模型的成本重复计价 —— 而结果看上去完全合理，只是更大。",
+    spec: "src/observability/cost-rollup.spec.ts",
+    edit: {
+      file: "service/src/observability/cost-rollup.ts",
+      find: "      priceTokens(row.outputTokens, toScaled(row.outputUnitPrice), unitTokens);",
+      replace:
+        "      priceTokens(row.outputTokens, toScaled(row.outputUnitPrice), unitTokens) +\n" +
+        "      priceTokens(row.reasoningTokens, toScaled(row.outputUnitPrice), unitTokens);",
+    },
+  },
+  {
+    invariant: "未声明的缓存单价回退到未命中价，而不是当成免费",
+    why:
+      "NULL 是“没声明”，不是“免费”。当成 0 会让缓存那半凭空消失，" +
+      "在 DeepSeek 上把那部分成本低估 30 倍 —— 低估比高估更危险，它不会有人来投诉。",
+    spec: "src/observability/cost-rollup.spec.ts",
+    edit: {
+      file: "service/src/observability/cost-rollup.ts",
+      find: "    const cachedPrice = cachedPriceFellBack\n      ? inputPrice",
+      replace: "    const cachedPrice = cachedPriceFellBack\n      ? 0n",
     },
   },
   {

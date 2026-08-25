@@ -41,6 +41,7 @@ function makeRepo(overrides: Record<string, unknown> = {}) {
       overall: { requests: 0n, errors: 0n, avgLatencyMs: null, p95LatencyMs: null },
       byGroup: [],
     }),
+    summarizeRequestCost: vi.fn().mockResolvedValue([]),
     ...overrides,
   };
 }
@@ -390,5 +391,92 @@ describe("ObservabilityService taskId filter", () => {
         modelCode: "gpt-4o",
       }),
     );
+  });
+});
+
+/**
+ * The cost route's own layer. The arithmetic has its own file and its own
+ * tests; what is checked here is the wiring nothing else covers - the window,
+ * the filters, and the fact that `basis` travels with the numbers.
+ */
+describe("ObservabilityService.summarizeCost", () => {
+  it("rejects an unknown window before touching the repository", async () => {
+    const repo = makeRepo();
+    const svc = new ObservabilityService(repo as never);
+
+    await expect(svc.summarizeCost({ window: "3d" })).rejects.toBeInstanceOf(
+      BadRequestException,
+    );
+    expect(repo.summarizeRequestCost).not.toHaveBeenCalled();
+  });
+
+  it("defaults to 24h and passes a real window down", async () => {
+    const repo = makeRepo();
+    const svc = new ObservabilityService(repo as never);
+
+    await svc.summarizeCost({});
+
+    const call = repo.summarizeRequestCost.mock.calls[0]?.[0];
+    expect(call.to.getTime() - call.from.getTime()).toBe(24 * 60 * 60 * 1000);
+  });
+
+  it("forwards only the filters it was given", async () => {
+    const repo = makeRepo();
+    const svc = new ObservabilityService(repo as never);
+
+    await svc.summarizeCost({ modelCode: "deepseek-v4-flash" });
+
+    const call = repo.summarizeRequestCost.mock.calls[0]?.[0];
+    expect(call.modelCode).toBe("deepseek-v4-flash");
+    // Not `providerCode: undefined` - an explicit undefined would reach the
+    // query as a bound parameter and is not the same thing as absent.
+    expect("providerCode" in call).toBe(false);
+  });
+
+  it("carries `basis` with the numbers, not in a document somewhere", async () => {
+    // Without it, a reader reconciles against the provider's invoice, finds a
+    // difference, and concludes the meter is broken.
+    const repo = makeRepo();
+    const svc = new ObservabilityService(repo as never);
+
+    const result = await svc.summarizeCost({});
+
+    expect(result.basis.reasoningTokens).toMatch(/never added/iu);
+    expect(result.basis.meters).toMatch(/does not bill/iu);
+    expect(result.from).toBeTypeOf("string");
+    expect(result.to).toBeTypeOf("string");
+  });
+
+  it("returns the rollup of what the repository handed back", async () => {
+    const repo = makeRepo({
+      summarizeRequestCost: vi.fn().mockResolvedValue([
+        {
+          modelCode: "m",
+          providerCode: "p",
+          priceRuleId: "r",
+          currency: "CNY",
+          unitTokens: 1_000_000,
+          inputUnitPrice: "3.00000000",
+          outputUnitPrice: "12.00000000",
+          requestUnitPrice: "0.00000000",
+          cachedInputUnitPrice: "0.10000000",
+          requests: 1n,
+          requestsMissingInput: 0n,
+          requestsMissingOutput: 0n,
+          inputTokens: 1_000_000n,
+          cachedInputTokens: 0n,
+          outputTokens: 0n,
+          reasoningTokens: 0n,
+        },
+      ]),
+    });
+    const svc = new ObservabilityService(repo as never);
+
+    const result = await svc.summarizeCost({ providerCode: "p" });
+
+    expect(result.totalsByCurrency).toEqual([
+      { currency: "CNY", estimatedCost: "3.00000000" },
+    ]);
+    expect(result.coverage.requests).toBe(1);
   });
 });

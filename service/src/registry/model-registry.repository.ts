@@ -1397,6 +1397,114 @@ export class ModelRegistryRepository {
   }
 
   /**
+   * TD-047. Token quantities grouped by the price rule that was in force when
+   * each request was written - the temporal join, and deliberately nothing else.
+   *
+   * The arithmetic is NOT here, and that is a decision rather than an omission.
+   * Money maths inside a `$queryRawUnsafe` string is money maths no test in this
+   * repo can reach, because vitest mocks Prisma: a fully green suite would say
+   * nothing about it. What SQL is uniquely good at - "the rule whose window
+   * contains this row's created_at" - stays; the multiplication moves to
+   * `computeCostRollup`, where each of its three failure modes is an assertion.
+   *
+   * Three choices worth naming, because each has a defensible opposite:
+   *
+   *   - `is_active` is NOT part of rule selection. It is a present-tense switch
+   *     on a table versioned by append, and letting it decide history would make
+   *     last month's cost change when someone flips it today. The temporal truth
+   *     is `effective_at` / `expires_at`; `deleted_at` is honoured because a
+   *     soft-deleted rule is retracted, not merely retired.
+   *   - `m.deleted_at` is NOT filtered. The request happened and the price
+   *     applied; deleting the model afterwards must not erase what it cost.
+   *   - a row with no rule in force comes back with `priceRuleId: null` and its
+   *     own group. That is not an empty result to drop - it is the count of
+   *     traffic nobody has priced, and the caller has to report it rather than
+   *     let it read as free.
+   *
+   * Probe traffic (`usage_type='test'`) is excluded for the same reason
+   * `summarizeRequestLogs` excludes it: synthetic connectivity checks are not
+   * usage anyone ran. `IS DISTINCT FROM` so rows predating the column still count.
+   */
+  async summarizeRequestCost(params: {
+    from: Date;
+    to: Date;
+    modelCode?: string;
+    providerCode?: string;
+  }): Promise<
+    Array<{
+      modelCode: string | null;
+      providerCode: string | null;
+      priceRuleId: string | null;
+      currency: string | null;
+      unitTokens: number | null;
+      inputUnitPrice: string | null;
+      outputUnitPrice: string | null;
+      requestUnitPrice: string | null;
+      cachedInputUnitPrice: string | null;
+      requests: bigint;
+      requestsMissingInput: bigint;
+      requestsMissingOutput: bigint;
+      inputTokens: bigint;
+      cachedInputTokens: bigint;
+      outputTokens: bigint;
+      reasoningTokens: bigint;
+    }>
+  > {
+    const modelCode = params.modelCode ?? null;
+    const providerCode = params.providerCode ?? null;
+
+    return prisma.$queryRawUnsafe(
+      `
+      SELECT
+        r.model_code                                       AS "modelCode",
+        r.provider_code                                    AS "providerCode",
+        p.id::text                                         AS "priceRuleId",
+        p.currency                                         AS "currency",
+        p.unit_tokens                                      AS "unitTokens",
+        p.input_unit_price::text                           AS "inputUnitPrice",
+        p.output_unit_price::text                          AS "outputUnitPrice",
+        p.request_unit_price::text                         AS "requestUnitPrice",
+        p.cached_input_unit_price::text                    AS "cachedInputUnitPrice",
+        count(*)                                           AS "requests",
+        count(*) FILTER (WHERE r.input_tokens IS NULL)     AS "requestsMissingInput",
+        count(*) FILTER (WHERE r.output_tokens IS NULL)    AS "requestsMissingOutput",
+        coalesce(sum(r.input_tokens), 0)                   AS "inputTokens",
+        coalesce(sum(r.cached_input_tokens), 0)            AS "cachedInputTokens",
+        coalesce(sum(r.output_tokens), 0)                  AS "outputTokens",
+        coalesce(sum(r.reasoning_tokens), 0)               AS "reasoningTokens"
+      FROM reqlog.request_records r
+      LEFT JOIN model.models m
+        ON m.model_code = r.model_code
+      LEFT JOIN LATERAL (
+        SELECT pr.id, pr.currency, pr.unit_tokens, pr.input_unit_price,
+               pr.output_unit_price, pr.request_unit_price,
+               pr.cached_input_unit_price
+        FROM model.model_price_rules pr
+        WHERE pr.model_id = m.id
+          AND pr.billing_mode = 'token'
+          AND pr.deleted_at IS NULL
+          AND pr.effective_at <= r.created_at
+          AND (pr.expires_at IS NULL OR pr.expires_at > r.created_at)
+        ORDER BY pr.effective_at DESC, pr.created_at DESC
+        LIMIT 1
+      ) p ON TRUE
+      WHERE r.created_at >= $1 AND r.created_at < $2
+        AND (r.usage_type IS DISTINCT FROM 'test')
+        AND ($3::varchar IS NULL OR r.model_code = $3)
+        AND ($4::varchar IS NULL OR r.provider_code = $4)
+      GROUP BY r.model_code, r.provider_code, p.id, p.currency, p.unit_tokens,
+               p.input_unit_price, p.output_unit_price, p.request_unit_price,
+               p.cached_input_unit_price
+      ORDER BY "requests" DESC
+      `,
+      params.from,
+      params.to,
+      modelCode,
+      providerCode,
+    );
+  }
+
+  /**
    * Operator-facing, cross-tenant usage rollup - aggregated from
    * `reqlog.request_records`, grouped by (tenant, month, application). The
    * same table `aggregateReqlogUsage` reads for the tenant-scoped version.

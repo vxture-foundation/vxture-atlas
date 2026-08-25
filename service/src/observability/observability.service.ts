@@ -5,6 +5,11 @@ import type {
   ErrorLogRecord,
   RequestLogRecord,
 } from "../reqlog/request-log.types";
+import {
+  COST_ROLLUP_BASIS,
+  computeCostRollup,
+  type CostRollupResult,
+} from "./cost-rollup";
 
 const DEFAULT_LIMIT = 50;
 const MAX_LIMIT = 200;
@@ -16,6 +21,19 @@ const WINDOW_MS: Record<string, number> = {
   "24h": 24 * 60 * 60 * 1000,
   "7d": 7 * 24 * 60 * 60 * 1000,
 };
+
+export interface LogCostQuery {
+  window?: string;
+  modelCode?: string;
+  providerCode?: string;
+}
+
+export interface LogCostResult extends CostRollupResult {
+  from: string;
+  to: string;
+  /** Travels with the numbers; see COST_ROLLUP_BASIS. */
+  basis: typeof COST_ROLLUP_BASIS;
+}
 
 export interface LogSearchQuery {
   tenantId?: string;
@@ -254,6 +272,46 @@ export class ObservabilityService {
         endpointCode: group.endpointCode,
         ...toSummaryNumbers(group),
       })),
+    };
+  }
+
+  /**
+   * TD-047. What the traffic in a window cost, as an estimate for the internal
+   * pool - never an invoice, and never the tenant-facing quota.
+   *
+   * Its own route rather than extra fields on `logs/summary`, deliberately:
+   * `logs/summary` is a published response shape, and product_251 A-4 makes
+   * changing one a three-party conversation. Adding a route is unilateral, and
+   * a cost estimate wants its own `basis` beside it anyway - a reader who does
+   * not know reasoning tokens are excluded from the sum will reconcile against
+   * the provider's invoice and conclude the meter is broken.
+   */
+  async summarizeCost(query: LogCostQuery): Promise<LogCostResult> {
+    const windowKey = query.window ?? "24h";
+    const windowMs = WINDOW_MS[windowKey];
+    if (!windowMs) {
+      throw new BadRequestException({
+        code: "OBSERVABILITY_INVALID_WINDOW",
+        message: `window must be one of ${Object.keys(WINDOW_MS).join(", ")}`,
+        field: "window",
+      });
+    }
+
+    const to = new Date();
+    const from = new Date(to.getTime() - windowMs);
+
+    const rows = await this.repository.summarizeRequestCost({
+      from,
+      to,
+      ...(query.modelCode ? { modelCode: query.modelCode } : {}),
+      ...(query.providerCode ? { providerCode: query.providerCode } : {}),
+    });
+
+    return {
+      from: from.toISOString(),
+      to: to.toISOString(),
+      basis: COST_ROLLUP_BASIS,
+      ...computeCostRollup(rows),
     };
   }
 }
