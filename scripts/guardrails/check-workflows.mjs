@@ -14,6 +14,19 @@
  * Zero dependencies - a deliberately small YAML subset parser is not used here.
  * Instead we shell out to nothing and rely on a structural scan that catches the
  * failure classes that actually occur in these files.
+ *
+ * 2026-08-25: the sentence above USED to be the whole story, and the header's
+ * promise ("must keep the triggers they claim") was not one of the things it
+ * did. The only trigger check was "at least one recognised trigger appears",
+ * which a mutation run demonstrated: swap ci.yml's `pull_request:` for
+ * `workflow_dispatch:` and the guardrail stayed green - PR CI would simply stop
+ * running, on a repo where nothing else enforces the required checks either
+ * (branch protection is unavailable on this plan). Nothing would have said so.
+ *
+ * So the trigger set is now PINNED per file, below. Changing a workflow's
+ * triggers is a real decision and now costs one line here; forgetting to make
+ * it deliberately is what this catches. A new workflow with no pin also fails -
+ * an unpinned file would otherwise re-open the hole for anything added later.
  */
 
 import { readdirSync, readFileSync } from "node:fs";
@@ -25,6 +38,49 @@ const STRICT = process.argv.includes("--strict");
 // Each workflow must declare at least one of these triggers; a file that
 // declares none is either broken or dead.
 const TRIGGERS = ["push", "pull_request", "workflow_dispatch", "workflow_call", "schedule"];
+
+/**
+ * The trigger set each workflow is supposed to have. Sorted, compared exactly.
+ *
+ * This is a pin, not a description: it is here so that a trigger change fails
+ * the build until someone edits this line on purpose. Removing an entry to make
+ * a red go away is the one edit that defeats the check.
+ */
+const PINNED_TRIGGERS = new Map([
+  ["build.yml", ["pull_request", "workflow_call", "workflow_dispatch"]],
+  ["ci.yml", ["pull_request", "push"]],
+  ["codeql.yml", ["pull_request", "push", "schedule"]],
+  ["db-init.yml", ["workflow_dispatch"]],
+  ["deploy.yml", ["workflow_dispatch"]],
+  ["direct-push-audit.yml", ["push"]],
+  ["logs.yml", ["workflow_dispatch"]],
+  ["mirror-image.yml", ["workflow_dispatch"]],
+  ["release.yml", ["workflow_dispatch"]],
+  ["rollback.yml", ["workflow_dispatch"]],
+  ["secret-scan.yml", ["pull_request", "push"]],
+  ["set-env-var.yml", ["workflow_dispatch"]],
+  ["sonar.yml", ["pull_request", "push"]],
+]);
+
+/**
+ * Triggers declared by one workflow, as a sorted list. Handles the three shapes
+ * these files use: a block, `on: push`, and `on: [push, pull_request]`.
+ */
+function declaredTriggers(lines) {
+  const onIdx = lines.findIndex((l) => /^on:/.test(l));
+  if (onIdx === -1) return [];
+  const found = new Set();
+  const inline = lines[onIdx].slice(3).trim();
+  if (inline) {
+    for (const t of TRIGGERS) if (new RegExp(`(^|[\\[,\\s])${t}([\\],\\s]|$)`).test(inline)) found.add(t);
+  }
+  for (let i = onIdx + 1; i < lines.length; i++) {
+    if (/^[A-Za-z_"']/.test(lines[i])) break;
+    const m = /^ {2}([a-z_]+):/.exec(lines[i]);
+    if (m && TRIGGERS.includes(m[1])) found.add(m[1]);
+  }
+  return [...found].sort();
+}
 
 const problems = [];
 
@@ -57,6 +113,25 @@ function scan(name, text) {
     if (!TRIGGERS.some((t) => new RegExp(`(^|\\s)${t}\\s*:`, "m").test(hay) || hay.includes(t))) {
       problems.push(`${name}: 'on:' block declares no recognised trigger`);
     }
+  }
+
+  // 3b. ...and it must be the trigger set this workflow is pinned to. "At least
+  // one trigger" is satisfied by the WRONG one, which is how a workflow stops
+  // running while still looking configured.
+  const pinned = PINNED_TRIGGERS.get(name);
+  const actual = declaredTriggers(lines);
+  if (!pinned) {
+    problems.push(
+      `${name}: no pinned trigger set. Add it to PINNED_TRIGGERS (currently ` +
+        `declares: ${actual.join(", ") || "none"}) so a later change to it has ` +
+        `to be deliberate.`,
+    );
+  } else if (pinned.join(",") !== actual.join(",")) {
+    problems.push(
+      `${name}: triggers drifted. pinned [${pinned.join(", ")}] but declares ` +
+        `[${actual.join(", ") || "none"}]. If the change is intended, edit ` +
+        `PINNED_TRIGGERS in this file in the same commit.`,
+    );
   }
 
   // 4. Block scalars (`run: |`) must stay indented. This is the precise shape of

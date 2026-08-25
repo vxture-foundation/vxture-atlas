@@ -16,6 +16,8 @@
     "lint:workflows": "node scripts/guardrails/check-workflows.mjs --strict",
     "lint:error-codes": "node scripts/guardrails/check-error-codes.mjs --strict",
     "lint:query-filters": "node scripts/guardrails/check-query-filters.mjs --strict",
-    "lint:liaison-archive": "node scripts/guardrails/check-liaison-archive.mjs --strict"
+    "lint:liaison-archive": "node scripts/guardrails/check-liaison-archive.mjs --strict",
+    "audit:run": "node scripts/audit/run-audit.mjs",
+    "audit:selftest": "node scripts/audit/selftest.mjs"
   }
 }
