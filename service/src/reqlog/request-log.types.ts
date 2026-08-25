@@ -72,6 +72,13 @@ export interface RequestLogEntry {
   cachedInputTokens?: number | undefined;
   reasoningTokens?: number | undefined;
   latencyMs?: number | undefined;
+  /**
+   * TD-037. Zero-based position of this attempt within one logical request.
+   * Rows of one failover chain share `requestId` and differ by this. Absent
+   * means the caller did not run a chain - it is not the same as 0, which
+   * asserts "this was the first of several".
+   */
+  attemptIndex?: number | undefined;
   usageType?: "normal" | "retry" | "test" | undefined;
   businessId?: string | undefined;
 
@@ -137,6 +144,7 @@ export interface RequestLogRecord {
   outputTokens: bigint | null;
   totalTokens: bigint | null;
   latencyMs: number | null;
+  attemptIndex: number | null;
   usageType: string | null;
   costUnit: string | null;
   createdAt: Date;

@@ -73,8 +73,10 @@ Gateway capabilities ([ADR-004](../30-design/decisions/ADR-004-reject-portkey-ga
       bill. Peak/off-peak pricing and exposing the splits on `/capability/logs`
       remain open on TD-047 - the second needs a home in provider config, the
       third changes a published shape and is a three-party decision
-- [ ] Unify `request_records` failover grain across chat and S2S surfaces
-      (TD-037)
+- [x] Unify `request_records` failover grain across chat and S2S surfaces -
+      one row per attempt on both, `attempt_index` carries the ordinal
+      (TD-037, 2026-08-26). Failed attempts are visible; the tokens they burned
+      still are not, because the throw path carries no usage
 
 Platform-side, not this repo's write-scope:
 

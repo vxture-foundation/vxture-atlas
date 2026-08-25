@@ -26,6 +26,7 @@ function makeRow(overrides: Partial<RequestLogRecord> = {}): RequestLogRecord {
     outputTokens: 5n,
     totalTokens: 15n,
     latencyMs: 200,
+    attemptIndex: null,
     usageType: "normal",
     costUnit: null,
     createdAt: new Date("2026-08-01T00:00:00Z"),

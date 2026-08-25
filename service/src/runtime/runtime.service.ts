@@ -34,9 +34,56 @@ import type {
   AiModelRecord,
   ChatRequest,
   ChatResponse,
+  ProviderChatRequest,
   StreamEvent,
   TokenUsage,
 } from "../types/runtime.types";
+
+/**
+ * TD-049. What every step of one chat request needs to know about it.
+ *
+ * `chat()` and `chatStream()` used to pass these five names as a fresh object
+ * literal into each helper. That is how a dimension gets added to six of eight
+ * call sites: nothing type-checks the omission, the log line simply comes out
+ * thinner on one path than the other, and the path with fewer tests is the one
+ * that keeps the old shape.
+ */
+/**
+ * TD-049. Who the caller is, in the shape `reqlog` records it.
+ *
+ * `recordUsage` and `recordFailure` assembled these seven fields identically.
+ * They are the dimensions every per-tenant report groups by, so a field added
+ * to one writer and not the other makes a slice of traffic vanish from those
+ * reports while the totals stay right - which is the failure `tenant_id`
+ * already produced once.
+ */
+function callerDimensions(
+  request: ChatRequest,
+  applicationScope: ReturnType<typeof resolveApplicationScope>,
+  auth: S2sAuthContext | undefined,
+): Record<string, unknown> {
+  return {
+    ...(auth?.workspaceId !== undefined ? { workspaceId: auth.workspaceId } : {}),
+    ...(auth?.userId !== undefined ? { userId: auth.userId } : {}),
+    tenantId: auth?.tenantId ?? request.tenantId,
+    applicationId: applicationScope.applicationId,
+    applicationType: applicationScope.applicationType,
+    agentId: applicationScope.agentId,
+    ...(request.featureId !== undefined ? { featureId: request.featureId } : {}),
+  };
+}
+
+interface ChatAttemptContext {
+  request: ChatRequest;
+  requestId: string;
+  applicationScope: ReturnType<typeof resolveApplicationScope>;
+  auth?: S2sAuthContext | undefined;
+  routed: {
+    endpointCode: string | null;
+    fallbackModelCodes: string[] | null;
+  };
+  modelCode: string;
+}
 
 @Injectable()
 export class ModelRuntimeService {
@@ -70,138 +117,35 @@ export class ModelRuntimeService {
     request: ChatRequest,
     auth?: S2sAuthContext,
   ): Promise<ChatResponse> {
-    // Routing joins validation inside the wrapper, not because it is
-    // validation but because it fails in the same blind spot: `resolveRoute`
-    // throws ENDPOINT_NOT_ROUTABLE / TASK_PROFILE_NOT_ROUTABLE before the
-    // in-flight gauge and before the first log line, so those refusals were
-    // as invisible as the ones this counter was added for. They are also the
-    // ones an operator is most likely to be asked about - they are what a
-    // caller sees the moment an endpoint is deactivated.
-    const routed = await countingRejections(auth, request.requestId, async () => {
-      this.validateChatRequest(request);
-      return this.resolveRoute(request);
-    });
-    const modelCode = routed.modelCode;
-
-    const requestId = request.requestId?.trim() || randomUUID();
-    const applicationScope = resolveApplicationScope(request);
-    this.incrementInflightRequest();
-    this.logRuntimeEvent("model_runtime_request_start", {
-      request,
-      requestId,
-      applicationScope,
-      modelCode,
-      status: "started",
-      fallbackAttempt: 0,
-    });
+    const ctx = await this.beginChatRequest(request, auth, "model_runtime_request_start");
+    const { routed, modelCode, requestId } = ctx;
 
     try {
-      let models: AiModelRecord[];
-      try {
-        models = await this.resolveCandidateModels(
-          modelCode,
-          routed.fallbackModelCodes,
-        );
-      } catch (error) {
-        this.logRuntimeEvent("model_runtime_request_failed", {
-          request,
-          requestId,
-          applicationScope,
-          modelCode,
-          status: "provider_error",
-          errorCode: readRuntimeErrorCode(error),
-          fallbackAttempt: 0,
-        });
-        throw this.enrichRuntimeError(error, requestId, {
-          modelCode,
-        });
-      }
+      const models = await this.resolveCandidatesOrFail(
+        ctx,
+        "model_runtime_request_failed",
+      );
       let lastProviderError: ModelRuntimeException | undefined;
 
       for (const [fallbackAttempt, model] of models.entries()) {
-        // 熔断跳过：已知在挂就别再付一次超时代价，直接试下一个 candidate -
-        // 除非这已经是最后一个，那种情况下"跳过"只会把一个本可重试的请求
-        // 变成必然失败，所以最后一个 candidate 无论如何都要真的试一次。
-        if (
-          fallbackAttempt < models.length - 1 &&
-          this.circuitBreaker.isTripped(model.modelCode)
-        ) {
-          this.logRuntimeEvent("model_runtime_circuit_open", {
-            request,
-            requestId,
-            applicationScope,
-            modelCode: model.modelCode,
-            providerCode: model.provider,
-            status: "circuit_open",
-            fallbackAttempt,
-          });
-          continue;
-        }
+        if (this.skipTripped(ctx, model, fallbackAttempt, models.length)) continue;
 
-        try {
-          await this.quota.assertAllowed(model, request, auth);
-        } catch (error) {
-          this.logRuntimeEvent("model_runtime_request_failed", {
-            request,
-            requestId,
-            applicationScope,
-            modelCode: model.modelCode,
-            providerCode: model.provider,
-            status: runtimeStatusFromError(error),
-            errorCode: readRuntimeErrorCode(error),
-            fallbackAttempt,
-          });
-          await this.recordFailure(
-            request,
-            requestId,
-            model.modelCode,
-            model.provider,
-            error,
-            undefined,
-            auth,
-            routed.endpointCode,
-          );
-          throw this.enrichRuntimeError(error, requestId, {
-            modelCode: model.modelCode,
-            provider: model.provider,
-          });
-        }
+        await this.assertQuotaOrRecordRefusal(
+          ctx,
+          model,
+          fallbackAttempt,
+          "model_runtime_request_failed",
+        );
 
         const startedAt = Date.now();
 
         try {
           const provider = this.router.resolve(model);
           const apiKey = await resolveApiKey({ resolveManagedKey: this.resolveManagedKey }, model, requestId);
-          this.logRuntimeEvent("model_runtime_provider_start", {
-            request,
-            requestId,
-            applicationScope,
-            modelCode: model.modelCode,
-            providerCode: model.provider,
-            status: "started",
-            fallbackAttempt,
-          });
-          const providerResponse = await provider.chat({
-            endpointUrl: model.endpointUrl,
-            apiKey,
-            modelCode: model.modelCode,
-            messages: request.messages,
-            ...(request.temperature !== undefined
-              ? { temperature: request.temperature }
-              : {}),
-            ...(request.maxTokens !== undefined
-              ? { maxTokens: request.maxTokens }
-              : {}),
-            ...(request.topP !== undefined ? { topP: request.topP } : {}),
-            ...(request.tools !== undefined ? { tools: request.tools } : {}),
-            ...(request.toolChoice !== undefined
-              ? { toolChoice: request.toolChoice }
-              : {}),
-            ...(model.config != null ? { config: model.config } : {}),
-            ...(model.providerConfig != null
-              ? { providerConfig: model.providerConfig }
-              : {}),
-          });
+          this.logAttempt(ctx, model, fallbackAttempt, "model_runtime_provider_start", "started");
+          const providerResponse = await provider.chat(
+            this.buildUpstreamRequest(model, request, apiKey),
+          );
           const latencyMs = Date.now() - startedAt;
           this.circuitBreaker.recordSuccess(model.modelCode);
 
@@ -213,19 +157,17 @@ export class ModelRuntimeService {
             latencyMs,
             auth,
             routed.endpointCode,
+            fallbackAttempt,
           );
 
-          this.logRuntimeEvent("model_runtime_request_success", {
-            request,
-            requestId,
-            applicationScope,
-            modelCode: model.modelCode,
-            providerCode: model.provider,
-            status: "success",
-            latencyMs,
+          this.logAttempt(
+            ctx,
+            model,
             fallbackAttempt,
-            totalTokens: providerResponse.totalTokens,
-          });
+            "model_runtime_request_success",
+            "success",
+            { latencyMs, totalTokens: providerResponse.totalTokens },
+          );
 
           return {
             id: requestId,
@@ -248,23 +190,14 @@ export class ModelRuntimeService {
               : {}),
           };
         } catch (error) {
-          lastProviderError = this.toProviderUnavailableError(
-            error,
+          lastProviderError = await this.failCandidate(
+            ctx,
             model,
-            requestId,
-          );
-          this.circuitBreaker.recordFailure(model.modelCode);
-          this.logRuntimeEvent("model_runtime_provider_failed", {
-            request,
-            requestId,
-            applicationScope,
-            modelCode: model.modelCode,
-            providerCode: model.provider,
-            status: "provider_error",
-            latencyMs: Date.now() - startedAt,
-            errorCode: lastProviderError.code,
             fallbackAttempt,
-          });
+            error,
+            startedAt,
+            "model_runtime_provider_failed",
+          );
         } finally {
           // 无论这个 candidate 有没有配限流策略、有没有真的 acquire 过,
           // release 都是安全的空操作 - 见 ModelRateLimiterService.releaseConcurrency。
@@ -274,26 +207,22 @@ export class ModelRuntimeService {
         }
       }
 
-      this.logRuntimeEvent("model_runtime_request_failed", {
-        request,
-        requestId,
-        applicationScope,
-        modelCode,
-        status: "provider_error",
-        errorCode: lastProviderError?.code ?? "PROVIDER_UNAVAILABLE",
-        fallbackAttempt: models.length,
-      });
+      this.logChainExhausted(ctx, "model_runtime_request_failed", models.length, lastProviderError);
 
-      await this.recordFailure(
-        request,
-        requestId,
-        modelCode,
-        models[models.length - 1]?.provider,
-        lastProviderError,
-        undefined,
-        auth,
-        routed.endpointCode,
-      );
+      // TD-037. No terminal row here, and that is the change rather than an
+      // omission. Every exit from the loop above records its own attempt: a
+      // candidate either succeeds, is refused by the gate, or fails and is
+      // caught - and `resolveCandidateModels` always returns at least the
+      // primary, so the loop always runs at least once. A row written here
+      // would therefore be an N+1th record of a failure already counted N
+      // times, landing in exactly the rollups this change exists to make
+      // comparable.
+      //
+      // The guard that used to stand here was a branch nothing could enter,
+      // which is worse than no branch: it reads as a safety net while being
+      // dead code. What replaces it is a test - "writes N rows when every
+      // candidate fails, not N+1" - which fails loudly if the invariant this
+      // relies on ever stops holding.
 
       throw (
         lastProviderError ??
@@ -320,52 +249,14 @@ export class ModelRuntimeService {
     auth?: S2sAuthContext,
     signal?: AbortSignal,
   ): AsyncGenerator<StreamEvent> {
-    // Routing joins validation inside the wrapper, not because it is
-    // validation but because it fails in the same blind spot: `resolveRoute`
-    // throws ENDPOINT_NOT_ROUTABLE / TASK_PROFILE_NOT_ROUTABLE before the
-    // in-flight gauge and before the first log line, so those refusals were
-    // as invisible as the ones this counter was added for. They are also the
-    // ones an operator is most likely to be asked about - they are what a
-    // caller sees the moment an endpoint is deactivated.
-    const routed = await countingRejections(auth, request.requestId, async () => {
-      this.validateChatRequest(request);
-      return this.resolveRoute(request);
-    });
-    const modelCode = routed.modelCode;
-
-    const requestId = request.requestId?.trim() || randomUUID();
-    const applicationScope = resolveApplicationScope(request);
-    this.incrementInflightRequest();
-    this.logRuntimeEvent("model_runtime_stream_start", {
-      request,
-      requestId,
-      applicationScope,
-      modelCode,
-      status: "started",
-      fallbackAttempt: 0,
-    });
+    const ctx = await this.beginChatRequest(request, auth, "model_runtime_stream_start");
+    const { routed, modelCode, requestId } = ctx;
 
     try {
-      let candidateModels: AiModelRecord[];
-      try {
-        candidateModels = await this.resolveCandidateModels(
-          modelCode,
-          routed.fallbackModelCodes,
-        );
-      } catch (error) {
-        this.logRuntimeEvent("model_runtime_stream_failed", {
-          request,
-          requestId,
-          applicationScope,
-          modelCode,
-          status: "provider_error",
-          errorCode: readRuntimeErrorCode(error),
-          fallbackAttempt: 0,
-        });
-        throw this.enrichRuntimeError(error, requestId, {
-          modelCode,
-        });
-      }
+      const candidateModels = await this.resolveCandidatesOrFail(
+        ctx,
+        "model_runtime_stream_failed",
+      );
 
       const models = candidateModels.filter((model) => model.supportsStreaming);
 
@@ -373,7 +264,7 @@ export class ModelRuntimeService {
         this.logRuntimeEvent("model_runtime_stream_failed", {
           request,
           requestId,
-          applicationScope,
+          applicationScope: ctx.applicationScope,
           modelCode,
           status: "provider_error",
           errorCode: "MODEL_NOT_ROUTABLE",
@@ -396,51 +287,14 @@ export class ModelRuntimeService {
         // nothing was in flight, so there is nothing to record.
         if (signal?.aborted) return;
 
-        // 熔断跳过：语义同 chat()，见那边的注释。
-        if (
-          fallbackAttempt < models.length - 1 &&
-          this.circuitBreaker.isTripped(model.modelCode)
-        ) {
-          this.logRuntimeEvent("model_runtime_circuit_open", {
-            request,
-            requestId,
-            applicationScope,
-            modelCode: model.modelCode,
-            providerCode: model.provider,
-            status: "circuit_open",
-            fallbackAttempt,
-          });
-          continue;
-        }
+        if (this.skipTripped(ctx, model, fallbackAttempt, models.length)) continue;
 
-        try {
-          await this.quota.assertAllowed(model, request, auth);
-        } catch (error) {
-          this.logRuntimeEvent("model_runtime_stream_failed", {
-            request,
-            requestId,
-            applicationScope,
-            modelCode: model.modelCode,
-            providerCode: model.provider,
-            status: runtimeStatusFromError(error),
-            errorCode: readRuntimeErrorCode(error),
-            fallbackAttempt,
-          });
-          await this.recordFailure(
-            request,
-            requestId,
-            model.modelCode,
-            model.provider,
-            error,
-            undefined,
-            auth,
-            routed.endpointCode,
-          );
-          throw this.enrichRuntimeError(error, requestId, {
-            modelCode: model.modelCode,
-            provider: model.provider,
-          });
-        }
+        await this.assertQuotaOrRecordRefusal(
+          ctx,
+          model,
+          fallbackAttempt,
+          "model_runtime_stream_failed",
+        );
 
         const startedAt = Date.now();
         lastUsage = undefined;
@@ -453,37 +307,10 @@ export class ModelRuntimeService {
         try {
           const provider = this.router.resolve(model);
           const apiKey = await resolveApiKey({ resolveManagedKey: this.resolveManagedKey }, model, requestId);
-          this.logRuntimeEvent("model_runtime_provider_stream_start", {
-            request,
-            requestId,
-            applicationScope,
-            modelCode: model.modelCode,
-            providerCode: model.provider,
-            status: "started",
-            fallbackAttempt,
-          });
-          for await (const event of provider.chatStream({
-            endpointUrl: model.endpointUrl,
-            apiKey,
-            modelCode: model.modelCode,
-            messages: request.messages,
-            ...(request.temperature !== undefined
-              ? { temperature: request.temperature }
-              : {}),
-            ...(request.maxTokens !== undefined
-              ? { maxTokens: request.maxTokens }
-              : {}),
-            ...(request.topP !== undefined ? { topP: request.topP } : {}),
-            ...(request.tools !== undefined ? { tools: request.tools } : {}),
-            ...(request.toolChoice !== undefined
-              ? { toolChoice: request.toolChoice }
-              : {}),
-            ...(model.config != null ? { config: model.config } : {}),
-            ...(model.providerConfig != null
-              ? { providerConfig: model.providerConfig }
-              : {}),
-            ...(signal !== undefined ? { signal } : {}),
-          })) {
+          this.logAttempt(ctx, model, fallbackAttempt, "model_runtime_provider_stream_start", "started");
+          for await (const event of provider.chatStream(
+            this.buildUpstreamRequest(model, request, apiKey, signal),
+          )) {
             if (event.type === "error") {
               // Adapters emit a RECOVERABLE `UPSTREAM_FRAME_UNPARSEABLE` frame
               // for a single malformed SSE chunk and keep the stream (and its
@@ -540,17 +367,14 @@ export class ModelRuntimeService {
               },
             );
             this.circuitBreaker.recordFailure(model.modelCode);
-            this.logRuntimeEvent("model_runtime_provider_stream_failed", {
-              request,
-              requestId,
-              applicationScope,
-              modelCode: model.modelCode,
-              providerCode: model.provider,
-              status: "provider_error",
-              latencyMs,
-              errorCode: streamError.code,
+            this.logAttempt(
+              ctx,
+              model,
               fallbackAttempt,
-            });
+              "model_runtime_provider_stream_failed",
+              "provider_error",
+              { latencyMs, errorCode: streamError.code },
+            );
             await this.recordFailure(
               request,
               requestId,
@@ -560,6 +384,7 @@ export class ModelRuntimeService {
               latencyMs,
               auth,
               routed.endpointCode,
+              fallbackAttempt,
             );
             return;
           }
@@ -578,20 +403,21 @@ export class ModelRuntimeService {
             latencyMs,
             auth,
             routed.endpointCode,
-          );
-          this.logRuntimeEvent("model_runtime_stream_success", {
-            request,
-            requestId,
-            applicationScope,
-            modelCode: model.modelCode,
-            providerCode: model.provider,
-            status: "success",
-            latencyMs,
             fallbackAttempt,
-            ...(lastUsage !== undefined
-              ? { totalTokens: lastUsage.totalTokens }
-              : {}),
-          });
+          );
+          this.logAttempt(
+            ctx,
+            model,
+            fallbackAttempt,
+            "model_runtime_stream_success",
+            "success",
+            {
+              latencyMs,
+              ...(lastUsage !== undefined
+                ? { totalTokens: lastUsage.totalTokens }
+                : {}),
+            },
+          );
 
           return;
         } catch (error) {
@@ -611,17 +437,17 @@ export class ModelRuntimeService {
                 provider: model.provider,
               },
             );
-            this.logRuntimeEvent("model_runtime_stream_failed", {
-              request,
-              requestId,
-              applicationScope,
-              modelCode: model.modelCode,
-              providerCode: model.provider,
-              status: "client_aborted",
-              latencyMs: Date.now() - startedAt,
-              errorCode: abortError.code,
+            this.logAttempt(
+              ctx,
+              model,
               fallbackAttempt,
-            });
+              "model_runtime_stream_failed",
+              "client_aborted",
+              {
+                latencyMs: Date.now() - startedAt,
+                errorCode: abortError.code,
+              },
+            );
             await this.recordFailure(
               request,
               requestId,
@@ -631,28 +457,21 @@ export class ModelRuntimeService {
               Date.now() - startedAt,
               auth,
               routed.endpointCode,
+              fallbackAttempt,
             );
             return;
           }
-          lastProviderError = this.toProviderUnavailableError(
-            error,
+          lastProviderError = await this.failCandidate(
+            ctx,
             model,
-            requestId,
-          );
-          this.circuitBreaker.recordFailure(model.modelCode);
-          this.logRuntimeEvent("model_runtime_provider_stream_failed", {
-            request,
-            requestId,
-            applicationScope,
-            modelCode: model.modelCode,
-            providerCode: model.provider,
-            status: "provider_error",
-            latencyMs: Date.now() - startedAt,
-            errorCode: lastProviderError.code,
             fallbackAttempt,
-          });
+            error,
+            startedAt,
+            "model_runtime_provider_stream_failed",
+          );
           // Partial output already reached the client - do not let a fallback
-          // stream a second answer into the same response.
+          // stream a second answer into the same response. The comment sat
+          // above the wrong statement until TD-049 moved it here.
           if (yieldedThisAttempt) break;
         } finally {
           this.rateLimiter.releaseConcurrency(
@@ -661,26 +480,10 @@ export class ModelRuntimeService {
         }
       }
 
-      this.logRuntimeEvent("model_runtime_stream_failed", {
-        request,
-        requestId,
-        applicationScope,
-        modelCode,
-        status: "provider_error",
-        errorCode: lastProviderError?.code ?? "PROVIDER_UNAVAILABLE",
-        fallbackAttempt: models.length,
-      });
+      this.logChainExhausted(ctx, "model_runtime_stream_failed", models.length, lastProviderError);
 
-      await this.recordFailure(
-        request,
-        requestId,
-        modelCode,
-        models[models.length - 1]?.provider,
-        lastProviderError,
-        undefined,
-        auth,
-        routed.endpointCode,
-      );
+      // TD-037. No terminal row here either; see chat() for why one would
+      // be an N+1th record of a failure already counted N times.
 
       throw (
         lastProviderError ??
@@ -1054,6 +857,325 @@ export class ModelRuntimeService {
    * no token counts (none were billed), plus a row in `reqlog.error_records`
    * carrying the provider/protocol detail.
    */
+  /**
+   * TD-037. One reqlog row for one attempt that failed.
+   *
+   * The chat surface used to write a single row per logical request, so a
+   * candidate that failed on the way to a success was invisible to reqlog
+   * entirely - it existed in logs and in a Prometheus counter, and nowhere
+   * durable. That is why chat error rates could not be derived from reqlog the
+   * way the S2S surface's already could, and why nothing counted across the two
+   * was comparable.
+   *
+   * Every attempt recording itself is also why the terminal failure path is now
+   * guarded: with these rows in place, a row written after the loop would be an
+   * N+1th record of a failure already counted N times, and the double count
+   * would land in exactly the rollups this change exists to make comparable.
+   *
+   * Extracted rather than repeated in both loops. The first version of this
+   * change pasted the same fourteen lines into the streaming and non-streaming
+   * paths, and SonarCloud's duplication gate is what said so - a fair call: two
+   * copies of a rule about not double-counting is two places for it to drift.
+   */
+  /**
+   * TD-049. The request body handed to an upstream adapter, defined once.
+   *
+   * `chat()` and `chatStream()` built this object independently and identically
+   * apart from `signal`. That is not a tidiness problem: adding a pass-through
+   * parameter meant editing two places, and forgetting the second one produces
+   * a parameter that works on non-streaming calls and is silently dropped on
+   * streaming ones. Nothing type-checks that away and no test would have caught
+   * it - the request simply goes upstream without the field, and the answer
+   * still looks like an answer.
+   *
+   * `signal` is the one real difference: a non-streaming call has nothing to
+   * abort partway.
+   */
+  /**
+   * TD-049. Everything both chat surfaces do before their first candidate.
+   *
+   * `chat()` and `chatStream()` carried byte-identical copies of this, differing
+   * only in the name of the event they log. That is the shape TD-049 is about:
+   * a fix applied to one loop and not the other looks fixed from every angle
+   * except the failing path, and the streaming half is the one that gets
+   * forgotten because it is the one with fewer tests.
+   *
+   * The ordering here is load-bearing and unchanged: the in-flight gauge is
+   * incremented AFTER routing, because `resolveRoute` throws in the blind spot
+   * this counter exists to light up, and the caller owns the matching decrement
+   * in its `finally`.
+   */
+  private async beginChatRequest(
+    request: ChatRequest,
+    auth: S2sAuthContext | undefined,
+    startEvent: string,
+  ): Promise<ChatAttemptContext> {
+    // Routing joins validation inside the wrapper, not because it is
+    // validation but because it fails in the same blind spot: `resolveRoute`
+    // throws ENDPOINT_NOT_ROUTABLE / TASK_PROFILE_NOT_ROUTABLE before the
+    // in-flight gauge and before the first log line, so those refusals were
+    // as invisible as the ones this counter was added for. They are also the
+    // ones an operator is most likely to be asked about - they are what a
+    // caller sees the moment an endpoint is deactivated.
+    const routed = await countingRejections(auth, request.requestId, async () => {
+      this.validateChatRequest(request);
+      return this.resolveRoute(request);
+    });
+    const modelCode = routed.modelCode;
+
+    const requestId = request.requestId?.trim() || randomUUID();
+    const applicationScope = resolveApplicationScope(request);
+    this.incrementInflightRequest();
+    this.logRuntimeEvent(startEvent, {
+      request,
+      requestId,
+      applicationScope,
+      modelCode,
+      status: "started",
+      fallbackAttempt: 0,
+    });
+
+    // TD-049. Returns the context itself rather than its parts. A caller
+    // that reassembles them is a caller that can assemble them differently.
+    return { request, requestId, applicationScope, auth, routed, modelCode };
+  }
+
+  /**
+   * TD-049. The candidate chain, or a logged and enriched refusal.
+   *
+   * Same duplication as `beginChatRequest`, same reason for collapsing it: the
+   * two copies differed only by an event name.
+   */
+  private async resolveCandidatesOrFail(
+    ctx: ChatAttemptContext,
+    failedEvent: string,
+  ): Promise<AiModelRecord[]> {
+    try {
+      return await this.resolveCandidateModels(
+        ctx.modelCode,
+        ctx.routed.fallbackModelCodes,
+      );
+    } catch (error) {
+      this.logRuntimeEvent(failedEvent, {
+        request: ctx.request,
+        requestId: ctx.requestId,
+        applicationScope: ctx.applicationScope,
+        modelCode: ctx.modelCode,
+        status: "provider_error",
+        errorCode: readRuntimeErrorCode(error),
+        fallbackAttempt: 0,
+      });
+      throw this.enrichRuntimeError(error, ctx.requestId, {
+        modelCode: ctx.modelCode,
+      });
+    }
+  }
+
+  /**
+   * TD-049. Skip a candidate whose breaker is open - unless it is the last one.
+   *
+   * A skip on the final candidate turns a request that could still have been
+   * served into one that certainly is not, so the last candidate is always
+   * really attempted. Both surfaces had this rule written out; the streaming
+   * copy carried the comment "same as chat(), see there", which is a duplicate
+   * announcing itself.
+   */
+  private skipTripped(
+    ctx: ChatAttemptContext,
+    model: AiModelRecord,
+    fallbackAttempt: number,
+    candidateCount: number,
+  ): boolean {
+    if (
+      fallbackAttempt >= candidateCount - 1 ||
+      !this.circuitBreaker.isTripped(model.modelCode)
+    ) {
+      return false;
+    }
+    this.logRuntimeEvent("model_runtime_circuit_open", {
+      request: ctx.request,
+      requestId: ctx.requestId,
+      applicationScope: ctx.applicationScope,
+      modelCode: model.modelCode,
+      providerCode: model.provider,
+      status: "circuit_open",
+      fallbackAttempt,
+    });
+    return true;
+  }
+
+  /**
+   * TD-049. The quota gate, and the row a refusal leaves behind.
+   *
+   * A gate refusal is the caller's answer, but it is still a served request:
+   * it has to be visible in reqlog, or "quota exhausted" shows up as flat
+   * traffic with no errors - the invisible failure reqlog exists to prevent.
+   * Throws the enriched error; the caller does not continue the chain, because
+   * a quota refusal applies to the request, not to the candidate.
+   */
+  private async assertQuotaOrRecordRefusal(
+    ctx: ChatAttemptContext,
+    model: AiModelRecord,
+    fallbackAttempt: number,
+    failedEvent: string,
+  ): Promise<void> {
+    try {
+      await this.quota.assertAllowed(model, ctx.request, ctx.auth);
+    } catch (error) {
+      this.logRuntimeEvent(failedEvent, {
+        request: ctx.request,
+        requestId: ctx.requestId,
+        applicationScope: ctx.applicationScope,
+        modelCode: model.modelCode,
+        providerCode: model.provider,
+        status: runtimeStatusFromError(error),
+        errorCode: readRuntimeErrorCode(error),
+        fallbackAttempt,
+      });
+      await this.recordAttemptFailure(ctx, model, fallbackAttempt, { error });
+      throw this.enrichRuntimeError(error, ctx.requestId, {
+        modelCode: model.modelCode,
+        provider: model.provider,
+      });
+    }
+  }
+
+  /**
+   * TD-049. One attempt, one log line, one shape.
+   *
+   * Six sites wrote this object out by hand. A dimension added to five of them
+   * produces logs that answer an operator's question on one path and not the
+   * other, and nothing fails.
+   */
+  /**
+   * TD-049. One candidate failed: normalise, trip the breaker, log, record.
+   *
+   * Both loops did these four things in this order, and the order matters -
+   * the row is written with the normalised error so `error_records.error_code`
+   * carries the runtime vocabulary rather than whatever the adapter threw.
+   * Returns the normalised error so the caller can keep it as the chain's last,
+   * which is what the exhaustion path reports.
+   */
+  private async failCandidate(
+    ctx: ChatAttemptContext,
+    model: AiModelRecord,
+    fallbackAttempt: number,
+    error: unknown,
+    startedAt: number,
+    event: string,
+  ): Promise<ModelRuntimeException> {
+    const normalised = this.toProviderUnavailableError(error, model, ctx.requestId);
+    this.circuitBreaker.recordFailure(model.modelCode);
+    const latencyMs = Date.now() - startedAt;
+    this.logAttempt(ctx, model, fallbackAttempt, event, "provider_error", {
+      latencyMs,
+      errorCode: normalised.code,
+    });
+    await this.recordAttemptFailure(ctx, model, fallbackAttempt, {
+      error: normalised,
+      latencyMs,
+    });
+    return normalised;
+  }
+
+  /**
+   * TD-049. The chain ran out of candidates.
+   *
+   * No reqlog row here - every attempt wrote its own. This is the one line that
+   * says the REQUEST failed rather than a candidate, and `fallbackAttempt` is
+   * the count of candidates rather than an index, which is deliberate: there is
+   * no attempt number left to name.
+   */
+  private logChainExhausted(
+    ctx: ChatAttemptContext,
+    event: string,
+    candidateCount: number,
+    lastError: ModelRuntimeException | undefined,
+  ): void {
+    this.logRuntimeEvent(event, {
+      request: ctx.request,
+      requestId: ctx.requestId,
+      applicationScope: ctx.applicationScope,
+      modelCode: ctx.modelCode,
+      status: "provider_error",
+      errorCode: lastError?.code ?? "PROVIDER_UNAVAILABLE",
+      fallbackAttempt: candidateCount,
+    });
+  }
+
+  private logAttempt(
+    ctx: ChatAttemptContext,
+    model: AiModelRecord,
+    fallbackAttempt: number,
+    event: string,
+    status: string,
+    extra: Record<string, unknown> = {},
+  ): void {
+    this.logRuntimeEvent(event, {
+      request: ctx.request,
+      requestId: ctx.requestId,
+      applicationScope: ctx.applicationScope,
+      modelCode: model.modelCode,
+      providerCode: model.provider,
+      status,
+      fallbackAttempt,
+      ...extra,
+    });
+  }
+
+  private buildUpstreamRequest(
+    model: AiModelRecord,
+    request: ChatRequest,
+    apiKey: string,
+    signal?: AbortSignal,
+  ): ProviderChatRequest {
+    return {
+      endpointUrl: model.endpointUrl,
+      apiKey,
+      modelCode: model.modelCode,
+      messages: request.messages,
+      ...(request.temperature !== undefined
+        ? { temperature: request.temperature }
+        : {}),
+      ...(request.maxTokens !== undefined
+        ? { maxTokens: request.maxTokens }
+        : {}),
+      ...(request.topP !== undefined ? { topP: request.topP } : {}),
+      ...(request.tools !== undefined ? { tools: request.tools } : {}),
+      ...(request.toolChoice !== undefined
+        ? { toolChoice: request.toolChoice }
+        : {}),
+      ...(model.config != null ? { config: model.config } : {}),
+      ...(model.providerConfig != null
+        ? { providerConfig: model.providerConfig }
+        : {}),
+      ...(signal !== undefined ? { signal } : {}),
+    };
+  }
+
+  private async recordAttemptFailure(
+    ctx: ChatAttemptContext,
+    model: AiModelRecord,
+    attemptIndex: number,
+    outcome: {
+      error: unknown;
+      /** Absent when the attempt never reached the provider - a gate refusal. */
+      latencyMs?: number | undefined;
+    },
+  ): Promise<void> {
+    await this.recordFailure(
+      ctx.request,
+      ctx.requestId,
+      model.modelCode,
+      model.provider,
+      outcome.error,
+      outcome.latencyMs,
+      ctx.auth,
+      ctx.routed.endpointCode,
+      attemptIndex,
+    );
+  }
+
   private async recordFailure(
     request: ChatRequest,
     requestId: string,
@@ -1063,6 +1185,7 @@ export class ModelRuntimeService {
     latencyMs: number | undefined,
     auth?: S2sAuthContext,
     routedEndpointCode?: string | null,
+    attemptIndex?: number,
   ): Promise<void> {
     const applicationScope = resolveApplicationScope(request);
     const errorCode = readRuntimeErrorCode(error);
@@ -1077,17 +1200,7 @@ export class ModelRuntimeService {
       // PROVIDER_UNAVAILABLE / ...) is carried by error_records.error_code
       // rather than being flattened into a status the column cannot hold.
       status: "error",
-      ...(auth?.workspaceId !== undefined
-        ? { workspaceId: auth.workspaceId }
-        : {}),
-      ...(auth?.userId !== undefined ? { userId: auth.userId } : {}),
-      tenantId: auth?.tenantId ?? request.tenantId,
-      applicationId: applicationScope.applicationId,
-      applicationType: applicationScope.applicationType,
-      agentId: applicationScope.agentId,
-      ...(request.featureId !== undefined
-        ? { featureId: request.featureId }
-        : {}),
+      ...callerDimensions(request, applicationScope, auth),
       ...(modelCode !== undefined ? { modelCode } : {}),
       ...(providerCode !== undefined ? { providerCode } : {}),
       ...(routedEndpointCode ? { endpointCode: routedEndpointCode } : {}),
@@ -1095,6 +1208,13 @@ export class ModelRuntimeService {
         ? { productCode: auth.callerProductCode }
         : {}),
       ...(latencyMs !== undefined ? { latencyMs } : {}),
+      // TD-037. Which candidate this row is. Deliberately NOT expressed by
+      // setting usage_type to 'retry', which TD-037's own recovery note
+      // suggested: that word is already the CALLER's - `ChatRequest.usageType`
+      // lets a product say "this is my second call for this task". Atlas's
+      // second CANDIDATE for one call is a different fact, and X-4 does not
+      // allow one word to carry both. The ordinal says it without ambiguity.
+      ...(attemptIndex !== undefined ? { attemptIndex } : {}),
       // TD-024: the CHECK vocabulary is normal|retry|test; NULL would exclude
       // real traffic from any usage_type filter, so requests default to normal.
       usageType: request.usageType ?? "normal",
@@ -1128,6 +1248,7 @@ export class ModelRuntimeService {
     latencyMs: number,
     auth?: S2sAuthContext,
     routedEndpointCode?: string | null,
+    attemptIndex?: number,
   ): Promise<void> {
     const applicationScope = resolveApplicationScope(request);
     const reported = usage !== undefined && usage.usageReported !== false;
@@ -1152,17 +1273,7 @@ export class ModelRuntimeService {
       requestId,
       ...(request.taskId !== undefined ? { taskId: request.taskId } : {}),
       status: "success",
-      ...(auth?.workspaceId !== undefined
-        ? { workspaceId: auth.workspaceId }
-        : {}),
-      ...(auth?.userId !== undefined ? { userId: auth.userId } : {}),
-      tenantId: auth?.tenantId ?? request.tenantId,
-      applicationId: applicationScope.applicationId,
-      applicationType: applicationScope.applicationType,
-      agentId: applicationScope.agentId,
-      ...(request.featureId !== undefined
-        ? { featureId: request.featureId }
-        : {}),
+      ...callerDimensions(request, applicationScope, auth),
       modelCode: model.modelCode,
       providerCode: model.provider,
       ...(routedEndpointCode ? { endpointCode: routedEndpointCode } : {}),
@@ -1186,6 +1297,10 @@ export class ModelRuntimeService {
           }
         : {}),
       latencyMs,
+      // TD-037. The candidate that actually served this request - which is not
+      // always the one the caller named, and until now was not recorded
+      // anywhere durable.
+      ...(attemptIndex !== undefined ? { attemptIndex } : {}),
       // TD-024: default to normal so usage_type filters see real traffic.
       usageType: request.usageType ?? "normal",
       ...(request.businessId !== undefined
