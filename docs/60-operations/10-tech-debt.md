@@ -35,7 +35,7 @@ because those are the ones still needing a decision.
 | [TD-043](#td-043) | Two grant resources, two rules on whether the application scope may be edited | 2026-08-17 |
 | [TD-044](#td-044) | The tool-descriptor `version` field never moves, so its drift signal is dead | 2026-08-18 |
 | [TD-045](#td-045) | `codeql.yml` disabled - code scanning on a private repo needs GitHub Advanced Security | 2026-08-24 |
-| [TD-046](#td-046) | Reasoning-model output (`reasoning_content`) is parsed for diagnostics but never delivered | 2026-08-24 |
+| [TD-046](#td-046) | Both protocol adapters drop reasoning output, which makes multi-round tool calling structurally impossible on either | 2026-08-24 |
 | [TD-047](#td-047) | Cost inputs are all recorded, but nothing computes cost from them | 2026-08-24 |
 
 ## Closed
@@ -483,61 +483,85 @@ that was actually wrong with the file.
 
 ## TD-046
 
-**Reasoning-model output (`reasoning_content`) is parsed for diagnostics but
-never delivered.**
+**Both protocol adapters drop reasoning output, which makes multi-round tool
+calling structurally impossible on either.**
 
-`openai-compatible.ts` now reads `message.reasoning_content` (and the streaming
-`delta.reasoning_content` is typed) for exactly one purpose: telling an operator
-*why* a response came back empty. Nothing carries it any further - not to the
-`/v1/chat` response body, not as a stream frame, not into `ChatMessage`.
+This entry was first written as "one adapter parses a field it does not
+deliver", and prioritised on whether a consumer had asked for it. Both framings
+were wrong, and the correction matters more than the original text.
 
-Two consequences, one of them a hard failure:
+### It is not one adapter, it is both
 
-1. A caller talking to a thinking model sees the answer but never the chain.
-   That is a product decision Atlas has not made yet, and defaulting to "drop
-   it" is defensible.
-2. **DeepSeek rejects a multi-round tool-calling conversation whose assistant
-   turns do not echo `reasoning_content` back** (api-docs.deepseek.com, 思考模式:
-   "携带 tools 参数时必须在所有后续交互中完整回传，否则返回 400"). So function
-   calling over more than one round against a thinking model is not merely
-   degraded, it is unavailable - and it fails at the caller, not here.
+| Adapter | What is dropped | Evidence |
+|---|---|---|
+| `openai-chat-completions` | `message.reasoning_content`, `delta.reasoning_content` | verified against the live DeepSeek API, 2026-08-24 |
+| `anthropic-messages` | `thinking` and `signature` blocks | this repo's own code: `claude.provider.ts` filters `block.type === "text"`, and the stream comment reads *"thinking_delta / signature_delta 等块类型对上层不可见，忽略"* |
 
-**Why it is not fixed in the same change:** the field has to land somewhere in
-the product_251 A-4 response shape, which is a three-party contract
-(`docs/40-implementation/40-l1-api-conformance.md`), not a unilateral addition.
-The streaming half additionally needs a new `StreamEvent` variant and a new
-published error/event name.
+Both vendors make the same demand, in the same words, for the same reason:
 
-**Open thread: #18** (label `liaison`, 2026-08-25). Recording the number here
-rather than only in the issue is the point: a correction written into a document
-is not the same as one delivered.
+- DeepSeek: 携带 `tools` 参数时，`reasoning_content` 必须在所有后续交互中完整回传，否则返回 400
+- Anthropic: *"Pass thinking blocks back complete and unmodified... Echo the
+  assistant message exactly as received: rebuilding the message or filtering out
+  blocks triggers a 400 error"*
 
-Answered by the karda line, with two corrections worth carrying:
+So this is not a vendor quirk that happened to surface on DeepSeek. It is how
+reasoning models work, and Atlas claims to speak both protocol families.
 
-1. **The question went to the wrong party.** karda is a tool *provider* -
-   `karda.search` / `karda.ask` are tools OTHERS call, over Runos/MCP. As a
-   caller of Atlas it never sends `tools`, and its `ChatRequest` has no such
-   field and no `tool` role, so the broken combination is not merely unused
-   there, it is unconstructible. The lines that will hit this are the agent
-   lines that call Atlas directly (yucer is already here, #5). **Do not
-   downgrade this on karda's "not affected".**
-2. **karda v3 needs it.** Agentic Retrieval is multi-round tool calling. Zero
-   impact today, a prerequisite later - so: low priority, not closeable.
+### And it is structural, not unimplemented
 
-Settled on the response shape: `message.reasoningContent?: string`, absent when
-the upstream reported none. And a clause that was karda's contribution and is now
-in `docs/20-specs/10-http-surface.md`: **reasoning output never merges into
-`content`**. Their `ask()` writes `content` into `answer` and attaches citations,
-so a merged chain would reach an end user as a citation-backed answer with
-nothing to notice. Atlas already behaves this way; the clause makes it binding
-rather than accidental.
+`ChatMessage` has `role` / `content` / `toolCalls` / `toolCallId` / `name`.
+There is nowhere to put a reasoning block even if a caller wanted to send one
+back. So the round trip is not "not wired up yet" - **the type system forbids
+it**. A product cannot work around this from outside; only Atlas can fix it.
 
-Still open: the field position as product_251 A-4 states it, the stream event
-name (karda has no position - it does not consume streams), and the request-side
-round trip without which the upstream 400 cannot be fixed.
+### Why it is not demand-gated
 
-**Recovery:** agree the field position with the platform line and karda, then
-carry it through `ProviderChatResponse` -> `ChatResponse` and as a stream event.
+The first version of this entry said "low priority unless a consumer needs it",
+and #23 asked the agent lines whether they were hitting it. That question is
+worth asking, but it answers **ordering**, not whether the work is correct.
+
+Two reasons the demand signal is the wrong gate here:
+
+1. **The failure is invisible to Atlas.** The 400 happens at the caller. Atlas
+   sees a successful upstream call. So "wait until someone reports it"
+   guarantees late discovery - which is exactly the shape TD-044 already paid
+   for.
+2. **The generality test passes at the highest level.** The fix lives in the
+   protocol layer and serves any consumer of either protocol family. That today
+   there may be zero such consumers changes when it should be done, not whether.
+
+The standing rule this entry is an instance of: a defect in a protocol or
+contract Atlas publishes is fixed because it is a defect. A product-specific
+need is absorbed as DATA (`task_profile`, `wire.extraBody`) or refused - it is
+never absorbed as a branch in code. Demand orders the queue; it does not decide
+what belongs in it.
+
+### What actually blocks it
+
+Not the agent lines. The published shape:
+
+- **Response**: where `reasoningContent` sits in the product_251 A-4 shape - a
+  three-party contract (`docs/40-implementation/40-l1-api-conformance.md`).
+- **Request**: `ChatMessage` must be able to carry it back, which is the same
+  published shape in the other direction.
+- **Stream**: a new `StreamEvent` variant, i.e. a new published event name.
+
+Atlas proposes `message.reasoningContent?: string` alongside `content`, absent
+when the upstream reported none, and a `reasoning` stream event. The clause that
+reasoning output never merges into `content` is already binding
+(`docs/20-specs/10-http-surface.md`) and came from karda.
+
+**Open thread: #18** (label `liaison`). karda answered: unaffected today - it is
+a tool *provider* and never sends `tools` - but its v3 Agentic Retrieval needs
+this, so it is a prerequisite rather than a nice-to-have. karda also corrected
+the addressing: the consumers who will hit this are the agent lines calling
+Atlas directly, asked in **#23**.
+
+**Recovery:** the platform line settles the field position and the event name;
+Atlas then carries it through both adapters, `ChatMessage`, and the stream. The
+Anthropic half additionally needs the `signature` preserved verbatim - a
+reasoning block that survives the round trip with its signature rewritten is the
+same 400 as one that was dropped.
 
 ## TD-047
 
