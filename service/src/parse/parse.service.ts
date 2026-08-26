@@ -130,6 +130,26 @@ export class ParseService {
       );
     }
 
+    // Absent and wrong are different refusals, and only the first belongs in
+    // the published request contract. Until 2026-08-26 both answered
+    // PARSE_TASK_INVALID, so `task` was enforced at runtime and declared
+    // nowhere: a consumer building from `contract/atlas-contract.json` sent
+    // {taskId, workspaceId, selector, pages} and got a 400 the artifact could
+    // not have predicted - while that artifact exists precisely to be the one
+    // source worth trusting (#21).
+    //
+    // `check-request-contract` did not catch it because its census was the
+    // vocabulary's `*_REQUIRED` codes, and this one was named `*_INVALID`. The
+    // naming convention was what made it invisible; the guardrail now reads
+    // the throw sites instead.
+    if (request.task === undefined || request.task === null) {
+      throw new ModelRuntimeException(
+        HttpStatus.BAD_REQUEST,
+        "PARSE_TASK_REQUIRED",
+        "task is required",
+      );
+    }
+
     if (!VALID_TASKS.has(request.task)) {
       throw new ModelRuntimeException(
         HttpStatus.BAD_REQUEST,

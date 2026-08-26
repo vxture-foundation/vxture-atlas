@@ -142,6 +142,30 @@ describe("ParseService.parse", () => {
     });
   });
 
+  /**
+   * The distinction this pair exists to hold. Until 2026-08-26 both cases
+   * answered PARSE_TASK_INVALID, so `task` was enforced here and declared in
+   * no artifact: a consumer building from `contract/atlas-contract.json` had
+   * no way to learn the field was required, which is the `taskId` failure
+   * (TD-044) with a different field name. The published contract now carries
+   * `always ["task"] -> PARSE_TASK_REQUIRED`, and `check-request-contract`
+   * reads the throw sites so the two cannot drift apart again.
+   */
+  it("rejects a MISSING task with its own code, not the invalid-value one", async () => {
+    const { service } = makeService(makeModel());
+    await expect(
+      service.parse({
+        taskId: "task-fixture",
+        modelCode: "m",
+        pages: PAGES,
+        workspaceId: "ws-1",
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      } as any, AUTH),
+    ).rejects.toMatchObject({
+      response: { code: "PARSE_TASK_REQUIRED", retryable: false },
+    });
+  });
+
   it("rejects an invalid task", async () => {
     const { service } = makeService(makeModel());
     await expect(

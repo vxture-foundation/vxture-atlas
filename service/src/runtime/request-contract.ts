@@ -114,6 +114,7 @@ export const V1_REQUEST_CONTRACT: Readonly<Record<string, readonly V1RequestRule
         fields: ["modelCode", "endpointCode", "taskProfile"],
         code: "TARGET_SELECTOR_REQUIRED",
       },
+      { kind: "always", fields: ["task"], code: "PARSE_TASK_REQUIRED" },
       { kind: "always", fields: ["pages"], code: "PARSE_PAGES_REQUIRED" },
     ],
   });
