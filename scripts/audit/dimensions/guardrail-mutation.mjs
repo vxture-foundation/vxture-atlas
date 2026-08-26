@@ -33,7 +33,7 @@ import { applyEdit } from "../lib/edit.mjs";
 
 export const meta = {
   id: "guardrail-mutation",
-  title: "十条 CI guardrail 逐个变异测试（十一条变异）",
+  title: "十条 CI guardrail 逐个变异测试（十二条变异）",
   covered: [
     "每条 guardrail 在一个它自称会抓的已知坏输入上，是否真的以非零码退出",
     "变异前的干净基线是否为绿（否则变异后的红不可读）",
@@ -140,6 +140,21 @@ const MUTATIONS = [
       file: ".github/workflows/ci.yml",
       find: "on:\n  pull_request:\n    branches:\n      - main",
       replace: "on:\n  workflow_dispatch:",
+    },
+  },
+  {
+    // check-request-contract's second half. Its FIRST census - "every
+    // *_REQUIRED code in the vocabulary is published" - was green while
+    // /v1/parse enforced `task` and declared it nowhere, because that refusal
+    // was named PARSE_TASK_INVALID. The naming convention was the hiding
+    // place, so the census now reads the throw sites.
+    guardrail: "check-request-contract",
+    why: "把 /v1/parse 的 task 必填规则从已发布契约里撤掉（回到 2026-08-26 之前）",
+    edit: {
+      file: "service/src/runtime/request-contract.ts",
+      find: '      { kind: "always", fields: ["task"], code: "PARSE_TASK_REQUIRED" },
+',
+      replace: "",
     },
   },
   {

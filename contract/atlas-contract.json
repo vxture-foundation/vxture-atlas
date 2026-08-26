@@ -1,5 +1,5 @@
 {
-  "fingerprint": "c1-e132a38fae1a",
+  "fingerprint": "c1-d2ecccf5b20d",
   "errorCodes": [
     {
       "code": "APPLICATION_ID_REQUIRED",
@@ -83,6 +83,10 @@
     },
     {
       "code": "PARSE_TASK_INVALID",
+      "retryable": false
+    },
+    {
+      "code": "PARSE_TASK_REQUIRED",
       "retryable": false
     },
     {
@@ -317,6 +321,13 @@
           "taskProfile"
         ],
         "code": "TARGET_SELECTOR_REQUIRED"
+      },
+      {
+        "kind": "always",
+        "fields": [
+          "task"
+        ],
+        "code": "PARSE_TASK_REQUIRED"
       },
       {
         "kind": "always",

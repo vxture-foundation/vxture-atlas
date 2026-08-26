@@ -55,6 +55,7 @@ because those are the ones still needing a decision.
 | [TD-047](#td-047) | Cost and its off-peak window are modelled; the splits are still unreadable outside SQL, and no provider carries a policy row yet | 2026-08-24 |
 | [TD-048](#td-048) | `incr/NN` means two different files depending on which side of the rebaseline you read | 2026-08-26 |
 | [TD-050](#td-050) | A credential exposure is tracked only in a published document, so no release checklist can see it | 2026-08-26 |
+| [TD-051](#td-051) | The published contract states what is required, not what a surface accepts or can refuse with | 2026-08-26 |
 
 ## Closed
 
@@ -886,3 +887,44 @@ prevent one.
 the vault set handled by add-then-re-encrypt - or, if a check shows a credential
 was already rotated, that check recorded here with its date and how it was
 established.
+
+## TD-051
+
+**The published contract states what is REQUIRED, not what a surface accepts
+or can refuse with.**
+
+Atlas is the fleet's sole model egress, so `contract/atlas-contract.json` is
+not one service's README - it is the interface standard every other product
+builds against. Judged as a standard rather than as a bug report, it is
+half-shaped in two ways, both found on 2026-08-26 while answering a consumer's
+question about `/v1/parse`:
+
+1. **`errorCodes` is one flat global list; `requests` is per surface.** A
+   consumer of `/v1/embed` receives all 43 codes with nothing saying which of
+   them that endpoint can actually emit. The artifact can answer "what must I
+   send" per surface and cannot answer "what can this refuse me with".
+
+2. **Only required fields are published.** `EmbedRequest`, `RerankRequest` and
+   `ParseRequest` all accept an optional `tenantId`; `ChatRequest` does not
+   have the field at all and requires `tenantId` where the other three require
+   `workspaceId`. None of that is readable from the artifact. The asymmetry may
+   well be correct - the gate keys grants by tenant and entitlement by
+   workspace - but a standard that leaves its own asymmetry to be inferred is
+   how two consumers end up implementing it two ways.
+
+**Why this is not folded into the fix that found it.** Closing it changes the
+contract's SHAPE, which moves the fingerprint and asks every consumer to
+re-pin. That is a coordination decision with the platform line and the
+consumers, not a detail to smuggle into a defect fix - and the defect
+(`PARSE_TASK_REQUIRED`, 2026-08-26) had a consumer waiting on it.
+
+**Not the same as the `task` defect.** That one was a published document
+contradicting enforced behaviour - false, and now checked by
+`check-request-contract` reading the throw sites. This entry is about a true
+document that is incomplete as a standard. Filing them together would blur a
+distinction worth keeping.
+
+**Recovery**: decide the target shape with the platform line, then publish it
+in one fingerprint move rather than several - per-surface `errorCodes`, and
+`accepts` alongside `requires`. Consumers pin the fingerprint, so the cost is
+paid once per change, not once per field.
