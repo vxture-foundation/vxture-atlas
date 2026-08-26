@@ -563,7 +563,9 @@ it**. A product cannot work around this from outside; only Atlas can fix it.
 
 The first version of this entry said "low priority unless a consumer needs it",
 and #23 asked the agent lines whether they were hitting it. That question is
-worth asking, but it answers **ordering**, not whether the work is correct.
+worth asking, but it answers **ordering**, not whether the work is correct - and
+as of 2026-08-26 it cannot be asked at all, because those lines have no
+repositories to ask in.
 
 Two reasons the demand signal is the wrong gate here:
 
@@ -596,11 +598,25 @@ when the upstream reported none, and a `reasoning` stream event. The clause that
 reasoning output never merges into `content` is already binding
 (`docs/20-specs/10-http-surface.md`) and came from karda.
 
-**Open thread: #18** (label `liaison`). karda answered: unaffected today - it is
-a tool *provider* and never sends `tools` - but its v3 Agentic Retrieval needs
-this, so it is a prerequisite rather than a nice-to-have. karda also corrected
-the addressing: the consumers who will hit this are the agent lines calling
-Atlas directly, asked in **#23**.
+**Open thread: `vxture-platform/vxture-platform#50`.** It lived here as #18
+until 2026-08-26, which was the wrong repo: the liaison rule
+(`docs/80-liaison/00-index.md`) puts an issue in the repo *that has to act*, and
+the ask - settle the field position and the stream event name - is the platform
+line's. An issue in the wrong repo is not invisible to a person, but it is
+absent from the queue of the repo where the work happens, which is where it
+would have been scheduled. #18 is closed with a pointer.
+
+karda answered before the move: unaffected today - it is a tool *provider* and
+never sends `tools` - but its v3 Agentic Retrieval needs this, so it is a
+prerequisite rather than a nice-to-have. karda also corrected the addressing:
+the consumers who will hit this are the agent lines calling Atlas directly.
+
+That question to the agent lines is **#23**, and it has been reframed rather
+than left open as a liaison thread. `forge` / `scribe` / `anlan` / `raven` /
+`yucer` have no repositories yet, so there is nowhere for the answer to come
+from - an issue waiting for a reply that cannot arrive looks exactly like an
+issue somebody forgot. It now records what it actually is: the risk exists and
+cannot be surveyed until those repos do.
 
 **Recovery:** the platform line settles the field position and the event name;
 Atlas then carries it through both adapters, `ChatMessage`, and the stream. The

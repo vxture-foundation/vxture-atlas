@@ -85,7 +85,7 @@ one string; nothing about a reasoning chain makes it look different from an
 answer. karda's `ask()` writes `res.content` straight into `answer` and attaches
 citations, so a merged chain would be presented to an end user as a
 citation-backed answer - well formed, no error, no warning, nothing to notice
-(karda's input on `#18`).
+(karda's input, given on the thread that is now `vxture-platform/vxture-platform#50`).
 
 The same rule already existed for the streaming side, where it is *less* severe:
 a stream consumer can at least see the event type. On the non-streaming body
