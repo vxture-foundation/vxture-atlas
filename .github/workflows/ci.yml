@@ -104,6 +104,13 @@ jobs:
       - name: Workflow guardrail (workflows parse and keep their triggers)
         run: node scripts/guardrails/check-workflows.mjs --strict
 
+      # A documented `docker compose` line passed `IMAGE=`, which compose does
+      # not read, so local verification silently BUILT the image it claimed to
+      # have pulled from CI. Two releases were verified that way before the
+      # `gitSha: unknown` in the identity block gave it away.
+      - name: Compose invocation guardrail (documented vars are vars compose reads)
+        run: node scripts/guardrails/check-compose-invocations.mjs --strict
+
       # TD-023: esbuild silently drops design:paramtypes, so a Nest parameter
       # injected by type alone is undefined at runtime while tsc, vitest and
       # the build all stay green. This is the static half of that fix; the

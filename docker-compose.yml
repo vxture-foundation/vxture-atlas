@@ -43,7 +43,16 @@ services:
       # than editing this file.
       secrets:
         - node_auth_token
-    image: ${IMAGE_REGISTRY:-ghcr.io}/${IMAGE_NAMESPACE:-vxture}/${PRODUCT_CODE:-atlas}-app:${IMAGE_TAG:-local}
+    # IMAGE_NAMESPACE has no GHA context to derive the owner from, so it
+    # carries a literal default - and it must be the SAME literal deploy.sh
+    # settled on, for the same reason. It was `vxture` here until 2026-08-26
+    # while deploy.sh already said `vxture-foundation`: one fact, two sources,
+    # disagreeing. Nothing broke in the deploy path (CI always exports the
+    # value, so this default is never reached there); what broke was local
+    # verification, which reached it every time and silently BUILT the missing
+    # image instead of running the CI one. See CLAUDE.md's val-stack recipe -
+    # `IMAGE` is not read here, `IMAGE_NAMESPACE` is.
+    image: ${IMAGE_REGISTRY:-ghcr.io}/${IMAGE_NAMESPACE:-vxture-foundation}/${PRODUCT_CODE:-atlas}-app:${IMAGE_TAG:-local}
     # Load the full operator .env into the app so ALL runtime config (platform
     # client, webhook, PLATFORM_INTERNAL_AUTH_TOKEN, ...) reaches it - not just the few
     # keys in `environment:` below. APP_ENV_FILE is the absolute path

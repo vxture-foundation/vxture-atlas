@@ -17,6 +17,7 @@
     "lint:error-codes": "node scripts/guardrails/check-error-codes.mjs --strict",
     "lint:query-filters": "node scripts/guardrails/check-query-filters.mjs --strict",
     "lint:liaison-archive": "node scripts/guardrails/check-liaison-archive.mjs --strict",
+    "lint:compose-invocations": "node scripts/guardrails/check-compose-invocations.mjs --strict",
     "audit:run": "node scripts/audit/run-audit.mjs",
     "audit:selftest": "node scripts/audit/selftest.mjs"
   }
