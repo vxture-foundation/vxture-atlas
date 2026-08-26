@@ -160,6 +160,19 @@ export function isPeak(policy: OffPeakPolicy, isoDow: number, hour: number): boo
  * the operator setting `config.pricing` has something exact to copy rather than
  * re-deriving it from prose, and so a test can assert it against the quoted
  * sentence at the top of this file.
+ *
+ * READ, MERGE, THEN WRITE. `PATCH /capability/providers/:id` sets `config`
+ * WHOLESALE - the repository hands the object straight to Prisma, which
+ * replaces the JSON column rather than merging into it. Sending
+ * `{ config: { pricing: DEEPSEEK_OFF_PEAK } }` on its own therefore deletes
+ * everything else that provider's config holds, and on DeepSeek that is
+ * `config.wire`: the chat path, the auth style, `streamUsage`, and the
+ * `extraBody` that turns thinking off. The next call would go out with none of
+ * it. Fetch the provider, merge `pricing` into the config it already has, and
+ * PATCH the whole object back.
+ *
+ * This note exists because exporting a constant "to copy" is exactly what
+ * invites the unsafe version of that copy.
  */
 export const DEEPSEEK_OFF_PEAK: OffPeakPolicy = {
   timezone: "UTC",

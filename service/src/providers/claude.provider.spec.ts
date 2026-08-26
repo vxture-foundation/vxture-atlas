@@ -1,4 +1,8 @@
 import { afterEach, describe, it, expect, vi } from "vitest";
+import {
+  UpstreamCallFailure,
+  usageFromError,
+} from "./upstream-failure";
 
 import { buildClaudeBody, ClaudeProvider, parseClaudeStream } from "./claude.provider";
 import { ANTHROPIC_WIRE_DEFAULTS, resolveWire } from "./wire";
@@ -347,5 +351,50 @@ describe("ClaudeProvider.chat - cost splits (TD-047)", () => {
     const r = await new ClaudeProvider().chat(request);
 
     expect(r.cachedInputTokens).toBeUndefined();
+  });
+
+  it("carries Anthropic's reported usage out of an empty response (TD-037)", async () => {
+    // Anthropic's shape of the failure that opened this line of work: a
+    // complete response, a full usage object, and no content block. The
+    // provider charged for it, so the attempt's reqlog row must not be NULL.
+    //
+    // `cache_read_input_tokens` is Anthropic's name for the cached half.
+    // `reasoningTokens` is deliberately absent rather than 0: Anthropic counts
+    // `thinking` blocks inside `output_tokens` and does not break them out, so
+    // a 0 here would be an invented number about a provider that reported none.
+    const provider = new ClaudeProvider();
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      // The adapter reads text() and parses it - json() is never called, and a
+      // mock that only fills json() trips the empty-body guard in parseJson
+      // instead of reaching the branch under test.
+      text: async () =>
+        JSON.stringify({
+          content: [],
+          usage: {
+            input_tokens: 84,
+            output_tokens: 16,
+            cache_read_input_tokens: 40,
+          },
+        }),
+    }) as never;
+
+    const failure = await provider
+      .chat({
+        endpointUrl: "https://anthropic.example/v1",
+        apiKey: "sk-test",
+        modelCode: "claude-x",
+        messages: [{ role: "user", content: "hi" }],
+      })
+      .catch((error: unknown) => error);
+
+    expect(failure).toBeInstanceOf(UpstreamCallFailure);
+    expect(usageFromError(failure)).toEqual({
+      promptTokens: 84,
+      completionTokens: 16,
+      totalTokens: 100,
+      cachedInputTokens: 40,
+    });
   });
 });

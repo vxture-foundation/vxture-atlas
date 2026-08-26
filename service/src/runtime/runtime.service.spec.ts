@@ -3,6 +3,7 @@ import { HttpStatus, Logger } from "@nestjs/common";
 
 import { ModelRuntimeService } from "./runtime.service";
 import { ModelCircuitBreakerService } from "./model-circuit-breaker.service";
+import { UpstreamCallFailure } from "../providers/upstream-failure";
 import { metricsRegistry } from "./metrics.registry";
 import {
   ModelRateLimiterService,
@@ -1958,6 +1959,71 @@ describe("ModelRuntimeService runtime flow", () => {
       expect(rows).toHaveLength(1);
       expect(rows[0]).toMatchObject({ attemptIndex: 0, status: "error" });
       expect(rows[0].latencyMs).toBeUndefined();
+    });
+
+    it("records what a failed attempt cost, when the upstream reported it", async () => {
+      // TD-037's remaining half. A thinking model that spends its whole output
+      // budget on the reasoning chain answers 200 with a full usage object and
+      // no content. The attempt was already visible; this is its cost.
+      const { service, requestLog } = makeRuntime({
+        router: {
+          resolve: vi.fn((model: { provider: string }) => {
+            if (model.provider === "primary") {
+              return {
+                chat: vi
+                  .fn()
+                  .mockRejectedValue(
+                    new UpstreamCallFailure("empty model response", {
+                      promptTokens: 84,
+                      completionTokens: 16,
+                      totalTokens: 100,
+                      reasoningTokens: 16,
+                    }),
+                  ),
+                chatStream: vi.fn(),
+              };
+            }
+            return {
+              chat: vi.fn().mockResolvedValue({
+                content: "fallback response",
+                promptTokens: 8,
+                completionTokens: 4,
+                totalTokens: 12,
+              }),
+              chatStream: vi.fn(),
+            };
+          }),
+        },
+      });
+
+      await service.chat(makeRequest({ modelCode: "primary-model" }));
+
+      const rows = requestLog.record.mock.calls.map(([entry]) => entry);
+      expect(rows[0]).toMatchObject({
+        attemptIndex: 0,
+        status: "error",
+        inputTokens: 84,
+        outputTokens: 16,
+        totalTokens: 100,
+        reasoningTokens: 16,
+      });
+      // Recorded, not billed: nothing was consumed for a failed attempt, so the
+      // row is the reconciliation signal rather than a charge.
+      expect(rows[0].billedAmount).toBeUndefined();
+    });
+
+    it("leaves the columns absent when the failure reported nothing", async () => {
+      // A timeout measures nothing. NULL is the honest answer, and a 0 would
+      // make an unmeasured attempt look free.
+      const { service, requestLog } = failingPrimary();
+
+      await service.chat(makeRequest({ modelCode: "primary-model" }));
+
+      const rows = requestLog.record.mock.calls.map(([entry]) => entry);
+      expect(rows[0].status).toBe("error");
+      expect(rows[0].inputTokens).toBeUndefined();
+      expect(rows[0].outputTokens).toBeUndefined();
+      expect(rows[0].totalTokens).toBeUndefined();
     });
 
     it("does not suppress the row of a candidate refused before the provider", async () => {

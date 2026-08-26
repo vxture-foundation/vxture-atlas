@@ -10,6 +10,11 @@ import { metricsRegistry } from "./metrics.registry";
 import { randomUUID } from "node:crypto";
 
 import { ProviderHttpError } from "../providers/base.provider";
+import {
+  usageColumns,
+  usageFromError,
+  type UpstreamUsageSnapshot,
+} from "../providers/upstream-failure";
 import { RequestLogService } from "../reqlog/request-log.service";
 import { PlatformEntitlementClient } from "../platform/platform-entitlement.client";
 import type { S2sAuthContext } from "./guards/s2s-auth.guard";
@@ -57,6 +62,7 @@ import type {
  * reports while the totals stay right - which is the failure `tenant_id`
  * already produced once.
  */
+
 function callerDimensions(
   request: ChatRequest,
   applicationScope: ReturnType<typeof resolveApplicationScope>,
@@ -1074,6 +1080,13 @@ export class ModelRuntimeService {
     await this.recordAttemptFailure(ctx, model, fallbackAttempt, {
       error: normalised,
       latencyMs,
+      // Read off the ORIGINAL error, not the normalised one: normalising
+      // produces a ModelRuntimeException carrying the runtime vocabulary, and
+      // the usage the upstream reported does not survive that translation.
+      // Absent for every failure that reported nothing, which is most of them.
+      ...(usageFromError(error) !== undefined
+        ? { usage: usageFromError(error) }
+        : {}),
     });
     return normalised;
   }
@@ -1161,6 +1174,12 @@ export class ModelRuntimeService {
       error: unknown;
       /** Absent when the attempt never reached the provider - a gate refusal. */
       latencyMs?: number | undefined;
+      /**
+       * TD-037. What the upstream reported before failing, when it reported
+       * anything. Absent stays NULL in the columns: a failure that measured
+       * nothing and a failure that cost nothing are different facts.
+       */
+      usage?: UpstreamUsageSnapshot | undefined;
     },
   ): Promise<void> {
     await this.recordFailure(
@@ -1173,6 +1192,7 @@ export class ModelRuntimeService {
       ctx.auth,
       ctx.routed.endpointCode,
       attemptIndex,
+      outcome.usage,
     );
   }
 
@@ -1186,6 +1206,7 @@ export class ModelRuntimeService {
     auth?: S2sAuthContext,
     routedEndpointCode?: string | null,
     attemptIndex?: number,
+    usage?: UpstreamUsageSnapshot,
   ): Promise<void> {
     const applicationScope = resolveApplicationScope(request);
     const errorCode = readRuntimeErrorCode(error);
@@ -1208,6 +1229,13 @@ export class ModelRuntimeService {
         ? { productCode: auth.callerProductCode }
         : {}),
       ...(latencyMs !== undefined ? { latencyMs } : {}),
+      // TD-037. What a failed attempt cost, when the upstream said. Absent for
+      // a timeout or a refused connection, which report nothing - and absent is
+      // NULL, never 0, because "we did not measure it" and "it was free" are
+      // the two answers this table exists to keep apart. No consume is emitted
+      // for these: nothing was billed, so `billed_amount` stays NULL and the
+      // row is the reconciliation signal rather than a charge.
+      ...usageColumns(usage),
       // TD-037. Which candidate this row is. Deliberately NOT expressed by
       // setting usage_type to 'retry', which TD-037's own recovery note
       // suggested: that word is already the CALLER's - `ChatRequest.usageType`

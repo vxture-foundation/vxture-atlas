@@ -214,19 +214,41 @@ deduplicates on that key - bill the FIRST attempt's tokens instead of the
 successful one's. Both are wrong, and neither would have failed anything. A
 test asserts the single consume across a failover.
 
-**What is still not recorded:** the tokens a failed attempt burned. The throw
-path does not carry usage, so those rows have NULL token columns - the attempt
-is now visible, its cost is not. Unreported stays NULL rather than 0, as
-everywhere else. Making the adapters carry usage out through the error is its
-own change.
+**The tokens a failed attempt burned are now recorded where they exist
+(2026-08-26).** The first version of this entry said the throw path carries no
+usage. Half true, and the half that mattered was wrong: most failures - a
+timeout, a refused connection, a 5xx - genuinely report nothing, and NULL is the
+honest answer there. One does not, and it is the expensive one. A response that
+arrives complete, with a full usage object and no content, is what a thinking
+model produces when the output budget goes to the reasoning chain - the exact
+failure that opened this line of work. Both adapters had those numbers in hand
+and threw them away.
 
-**One consequence worth stating rather than discovering:** `attemptIndex` now
-appears on `/capability/logs` rows, because that response serialises whatever
-the row carries. It is additive and nullable. TD-047 item 3 records a stricter
-reading of product_251 A-4 for the token splits - that adding a field to a
-published shape is a three-party decision - and if that reading is the right
-one, both belong behind the same decision rather than one slipping through.
-Flagged rather than assumed.
+They now travel out on `UpstreamCallFailure` (`providers/upstream-failure.ts`)
+and land on the attempt's row. `usageFromError` matches by `instanceof` rather
+than by duck-typing a `usage` property: an arbitrary object that happens to have
+one is not a report from an upstream, and treating it as one would put invented
+numbers into the metering table - the NULL-not-zero failure arriving by a
+different door. An empty snapshot is treated as no report at all.
+
+No consume is emitted for these rows. Nothing was billed, so `billed_amount`
+stays NULL and the row is the reconciliation signal rather than a charge.
+Anthropic reports no reasoning split - `thinking` blocks are counted inside
+`output_tokens` and not broken out - so `reasoningTokens` is absent there rather
+than invented as 0.
+
+**One consequence, stated rather than discovered:** `attemptIndex` now appears
+on `/capability/logs` rows, because that response serialises whatever the row
+carries. It is additive and nullable, and it stays.
+
+This was first flagged as possibly needing the same decision TD-047 item 3
+reserves for the token splits. **That symmetry was wrong** and the correction
+is recorded in item 3: `/capability/*` has one consumer, which parses by
+TypeScript cast with no runtime schema, so an additive field cannot break it -
+and an attempt ordinal is an operational fact about routing, which is what an
+operator's log view is for. The open question on the splits is a product one
+about cost-adjacent numbers, and it does not extend to every field that lands
+on the row.
 
 ## TD-038
 
@@ -646,6 +668,17 @@ What remains is the arithmetic, and three things it needs.
    exact. `DEEPSEEK_OFF_PEAK` in `pricing-window.ts` is the exact policy to
    copy, so the operator is not re-deriving it from prose.
 
+   **That operational step has a foot-gun, added 2026-08-26 after the fact:**
+   `PATCH /capability/providers/:id` sets `config` WHOLESALE - the repository
+   passes the object to Prisma, which replaces the JSON column rather than
+   merging. PATCHing `{ config: { pricing: ... } }` alone deletes the rest of
+   that provider's config, and on DeepSeek the rest is `config.wire` - chat
+   path, auth style, `streamUsage`, and the `extraBody` that switches thinking
+   off. That is an outage, not a mis-estimate. Read the provider, merge
+   `pricing` into its existing config, PATCH the whole object back. The hazard
+   is now stated beside the exported constant as well, because a constant
+   published "to copy" is what invites the unsafe copy.
+
    The original text, kept because it is what the code now implements:
 
    DeepSeek bills its idle window at 50%
@@ -659,9 +692,22 @@ What remains is the arithmetic, and three things it needs.
 
 3. **Nothing reads the splits back out.** `/capability/logs` returns
    `RequestLogRecord`, which does not include them, so today the only way to see
-   the numbers is SQL against `reqlog`. Adding them changes a published response
-   shape (product_251 A-4), which is a three-party decision rather than a
-   unilateral one.
+   the numbers is SQL against `reqlog`.
+
+   **The reason this is still open was overstated, and is corrected here
+   (2026-08-26).** It said adding them "changes a published response shape
+   (product_251 A-4), which is a three-party decision". Checked rather than
+   assumed: `/capability/*` has ONE consumer, the platform's BFFs, and
+   `opera-bff/src/routers/atlas.router.ts` reads the body as
+   `JSON.parse(text) as TResponse` - a TypeScript cast, no runtime schema, no
+   `.strict()`. An additive nullable field cannot break it. Compatibility is
+   not what holds this back.
+
+   What does is a product question, and only for these two fields: whether
+   cost-adjacent numbers belong in an operator's log view at all. That is a
+   conversation, not a compatibility risk, and it does not generalise to every
+   field. `attemptIndex` (TD-037) was let through on the same reasoning: it is
+   an operational fact about routing, on the plane operations reads.
 
 **Recovery:** a `config.pricing.offPeak` row on each provider that discounts
 (the code to read it is in place as of 2026-08-26);

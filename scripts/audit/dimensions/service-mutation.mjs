@@ -45,7 +45,7 @@ export const meta = {
   id: "service-mutation",
   title: "服务不变量的变异测试（钉住的一组）",
   covered: [
-    "十条承重不变量：探针输出预算、流式空交付判绿、成本拆分的“未上报不是 0”、wire.extraBody 保留键、推理 token 不重复计价、未声明缓存单价的回退方向、高峰窗口的半开边界、无策略供应商按全价、失败候选自己写行并带序号、契约指纹随必填规则移动",
+    "十一条承重不变量：探针输出预算、流式空交付判绿、成本拆分的“未上报不是 0”、wire.extraBody 保留键、推理 token 不重复计价、未声明缓存单价的回退方向、高峰窗口的半开边界、无策略供应商按全价、失败候选自己写行并带序号、失败尝试的 token 不被丢弃、契约指纹随必填规则移动",
     "每条变异点名它应当被哪个 spec 抓住，只跑那个 spec —— 抓不住时区分“套件没红”与“红在别处”",
     "变异前后各校验一次工作树干净，确保 git checkout 是精确回滚",
     "每个 spec 的干净基线只跑一次并复用；vitest 退出码 1 才算测试失败，其余非零一律记为崩溃、不算“挡住了”",
@@ -181,6 +181,19 @@ const MUTATIONS = [
       replace:
         "      // allow one word to carry both. The ordinal says it without ambiguity.\n" +
         "      ...(false ? { attemptIndex } : {}),",
+    },
+  },
+  {
+    invariant: "失败尝试报上来的 token 不被丢弃",
+    why:
+      "只有一种失败带得出 usage —— 上游回了完整 usage 却没有正文，也就是思考型模型" +
+      "把输出预算烧在推理链上的那种，正是开启这条工作线的那个故障。它花掉的钱是真的。" +
+      "把 usage 从错误里读回来的那一步一旦没了，行还在、钱又没了，而且看不出区别。",
+    spec: "src/runtime/runtime.service.spec.ts",
+    edit: {
+      file: "service/src/runtime/runtime.service.ts",
+      find: "      ...(usageFromError(error) !== undefined",
+      replace: "      ...(false",
     },
   },
   {
