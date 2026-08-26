@@ -75,8 +75,10 @@ Gateway capabilities ([ADR-004](../30-design/decisions/ADR-004-reject-portkey-ga
       third changes a published shape and is a three-party decision
 - [x] Unify `request_records` failover grain across chat and S2S surfaces -
       one row per attempt on both, `attempt_index` carries the ordinal
-      (TD-037, 2026-08-26). Failed attempts are visible; the tokens they burned
-      still are not, because the throw path carries no usage
+      (TD-037, 2026-08-26). Failed attempts are visible, and so is what they
+      cost wherever the upstream reported it - which is the empty-response case
+      that started this line of work. A timeout still reports nothing, and NULL
+      remains the honest answer for those
 
 Platform-side, not this repo's write-scope:
 

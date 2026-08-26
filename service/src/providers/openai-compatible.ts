@@ -1,4 +1,5 @@
 import { joinEndpoint, resolveUpstreamModel } from "./base.provider";
+import { UpstreamCallFailure } from "./upstream-failure";
 import type {
   OpenAiCompatibleChatResponse,
   OpenAiCompatibleChatStreamChunk,
@@ -136,8 +137,25 @@ export function normalizeOpenAiCompatibleResponse(
   const toolCalls = parseOpenAiToolCalls(message?.tool_calls);
 
   if (!content && toolCalls.length === 0) {
-    throw new Error(
+    // TD-037. The call failed, and the provider still reported what it charged
+    // for - which on a thinking model that spent its whole budget on the
+    // reasoning chain is the entire cost of the request. Carrying it out
+    // through the error is the only way the reqlog row for this attempt gets
+    // anything but NULL.
+    throw new UpstreamCallFailure(
       `${providerName} returned invalid response: ${describeEmptyResponse(response)}`,
+      {
+        ...(typeof response.usage?.prompt_tokens === "number"
+          ? { promptTokens: response.usage.prompt_tokens }
+          : {}),
+        ...(typeof response.usage?.completion_tokens === "number"
+          ? { completionTokens: response.usage.completion_tokens }
+          : {}),
+        ...(typeof response.usage?.total_tokens === "number"
+          ? { totalTokens: response.usage.total_tokens }
+          : {}),
+        ...readCostSplits(response.usage),
+      },
     );
   }
 

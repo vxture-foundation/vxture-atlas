@@ -1,4 +1,5 @@
 import { Injectable } from "@nestjs/common";
+import { UpstreamCallFailure } from "./upstream-failure";
 
 import { BaseProvider, joinEndpoint, resolveUpstreamModel } from "./base.provider";
 import { openSseRequest, readSseMessages } from "./sse";
@@ -114,8 +115,32 @@ export class ClaudeProvider extends BaseProvider {
 
     if (!content && toolCalls.length === 0) {
       const providerMessage = response.error?.message ?? "empty model response";
-      throw new Error(
+      // TD-037, same as the OpenAI-dialect adapter: a response that arrives
+      // complete, with usage, and no content is a failure the provider still
+      // charged for. Anthropic names its cached half `cache_read_input_tokens`
+      // and reports no reasoning split at all - `thinking` blocks are counted
+      // in `output_tokens` and not broken out - so `reasoningTokens` stays
+      // absent here rather than being invented as 0.
+      throw new UpstreamCallFailure(
         `${this.providerName} returned invalid response: ${providerMessage}`,
+        {
+          ...(typeof response.usage?.input_tokens === "number"
+            ? { promptTokens: response.usage.input_tokens }
+            : {}),
+          ...(typeof response.usage?.output_tokens === "number"
+            ? { completionTokens: response.usage.output_tokens }
+            : {}),
+          ...(typeof response.usage?.input_tokens === "number" &&
+          typeof response.usage?.output_tokens === "number"
+            ? {
+                totalTokens:
+                  response.usage.input_tokens + response.usage.output_tokens,
+              }
+            : {}),
+          ...(typeof response.usage?.cache_read_input_tokens === "number"
+            ? { cachedInputTokens: response.usage.cache_read_input_tokens }
+            : {}),
+        },
       );
     }
 
