@@ -88,6 +88,15 @@ covered?" has an answer that is not a guess.
 `modelCode` > `endpointCode` > `taskProfile`. At least one required; passing
 several is not an error, the narrower wins.
 
+**Precedence is not advice.** It says which one wins when several are present;
+it does not say which to reach for. A PRODUCT integrating wants `endpointCode`:
+it resolves from a single string on the product authorization axis, needs no
+tenant, and repoints for free - every product holding the code follows.
+`taskProfile` resolves through `model_grants`, the tenant axis being counted
+down to removal, so naming a label there requires a `tenantId` the caller may
+have no reason to hold and repointing costs a grant row per tenant. See
+TD-052; the correction to a consumer steered the wrong way is vxture-atlas#47.
+
 Two contracts, not implementation details:
 
 - **The endpoint owns its failover chain.** On endpoint routing, the

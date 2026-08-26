@@ -46,12 +46,19 @@ export class ModelRegistryService {
   }
 
   /**
-   * Task-profile routing (docs/70-workplan): resolve a modelCode from the
-   * tenant's active `model_grants.task_profile` match instead of requiring
-   * the caller to pass an explicit modelCode. Picks the highest-priority
-   * (lowest `priority` number) active, non-expired grant scoped to the exact
-   * application (or the tenant-wide wildcard grant), same precedence as
-   * `QuotaService.assertAllowed`'s entitlement lookup.
+   * Task-profile routing on the LEGACY TENANT AXIS - see `ChatRequest.taskProfile`
+   * for why a product integrating today should name an `endpointCode` instead,
+   * and TD-052 for why this is not extended.
+   *
+   * Resolves a modelCode from the tenant's active `model_grants.task_profile`
+   * match. Picks the highest-priority (lowest `priority` number) active,
+   * non-expired grant scoped to the exact application (or the tenant-wide
+   * wildcard grant), same precedence as `QuotaService.assertAllowed`'s
+   * entitlement lookup.
+   *
+   * Kept working, deliberately: `model_grant_authorizations_total{axis}` decides
+   * when this goes, and that decision is made by observing zero traffic rather
+   * than by assuming the migration finished.
    */
   async resolveModelCodeForTaskProfile(
     input: ResolveModelCodeForTaskProfileInput,
@@ -86,9 +93,19 @@ export class ModelRegistryService {
    * the model's own chain also applied, the same question would have two
    * answers depending on which one you read.
    *
-   * Unlike `taskProfile`, this is a GLOBAL name, not a per-tenant preference
-   * - entitlement is still enforced downstream against the resolved model,
-   * so naming an endpoint never grants access to a model a tenant lacks.
+   * Unlike `taskProfile`, this is a GLOBAL name resolved from a single string -
+   * no tenant, no application scope. That is the whole reason a PRODUCT should
+   * name an endpoint: authorization for it lives on the product axis
+   * (`product_endpoint_grants`), so there is no tenant to supply, and
+   * repointing costs nothing - every product holding the code follows.
+   *
+   * "Not a per-tenant preference" was the previous wording, and it framed the
+   * difference as scope when the difference is which AXIS the selector lives
+   * on. That framing is how a product was steered onto the retiring one
+   * (TD-052).
+   *
+   * Entitlement is still enforced downstream against the resolved model, so
+   * naming an endpoint never grants access to a model the caller lacks.
    */
   async resolveEndpoint(code: string): Promise<ResolvedEndpoint> {
     const endpoint = await this.repository.findActiveEndpointByCode(code);

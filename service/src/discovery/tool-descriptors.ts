@@ -23,6 +23,14 @@ export const ATLAS_TOOL_DESCRIPTORS: ToolDescriptor[] = [
       // selector is how a consumer ends up pinning a model code it should not
       // have pinned: the descriptor is the discovery surface, so what it omits
       // is what callers hard-code around (vxture-atlas#198).
+      //
+      // `anyOf` says they are ACCEPTED equally; it cannot say they are equally
+      // ADVISABLE, and until 2026-08-26 nothing here did. A consumer read three
+      // peer options, picked `taskProfile` because "routes by intent" reads
+      // best, and was then blocked on a tenantId it had no reason to hold - on
+      // the axis being counted down to removal. The steering now lives in each
+      // selector's `description`, which is the half that travels to callers;
+      // this comment does not (TD-052).
       anyOf: [
         { required: ["modelCode"] },
         { required: ["endpointCode"] },
@@ -32,9 +40,23 @@ export const ATLAS_TOOL_DESCRIPTORS: ToolDescriptor[] = [
         modelCode: { type: "string" },
         // Routes by entry point rather than a pinned model - the code list a
         // caller holds is discoverable at GET /v1/endpoints.
-        endpointCode: { type: "string" },
-        // Routes by intent; Atlas picks the model behind it.
-        taskProfile: { type: "string" },
+        endpointCode: {
+          type: "string",
+          description:
+            "Preferred selector for a product integration. Names a stable entry " +
+            "point on the PRODUCT authorization axis; operators repoint it and " +
+            "every product holding it follows, with no grant to update and no " +
+            "tenant involved. Discover the codes you hold at GET /v1/endpoints.",
+        },
+        taskProfile: {
+          type: "string",
+          description:
+            "Legacy TENANT axis. Resolves through model_grants.task_profile, so " +
+            "it requires a tenantId the caller may have no reason to hold, and " +
+            "repointing costs a grant row per tenant. That axis is being counted " +
+            "down to removal - a product integrating today should use " +
+            "endpointCode instead (vxture-atlas#47, TD-052).",
+        },
         // product_251 X-2, required since 2026-08-16: the agent task this call
         // belongs to. Same value across every product and model the task
         // touches - it is the only key that totals a task back up.
@@ -65,7 +87,7 @@ export const ATLAS_TOOL_DESCRIPTORS: ToolDescriptor[] = [
     // retroactive: it documents ground truth for whoever starts polling
     // today, not a new change happening now. Same reason on the other three
     // descriptors below, without repeating the explanation.
-    version: "1.1.0",
+    version: "1.2.0",
     deprecated: false,
     // Chat bills by realized tokens, not by call - a 100k-token
     // completion and a 100-token one are not the same unit of consumption.
@@ -88,6 +110,14 @@ export const ATLAS_TOOL_DESCRIPTORS: ToolDescriptor[] = [
       // selector is how a consumer ends up pinning a model code it should not
       // have pinned: the descriptor is the discovery surface, so what it omits
       // is what callers hard-code around (vxture-atlas#198).
+      //
+      // `anyOf` says they are ACCEPTED equally; it cannot say they are equally
+      // ADVISABLE, and until 2026-08-26 nothing here did. A consumer read three
+      // peer options, picked `taskProfile` because "routes by intent" reads
+      // best, and was then blocked on a tenantId it had no reason to hold - on
+      // the axis being counted down to removal. The steering now lives in each
+      // selector's `description`, which is the half that travels to callers;
+      // this comment does not (TD-052).
       anyOf: [
         { required: ["modelCode"] },
         { required: ["endpointCode"] },
@@ -97,9 +127,23 @@ export const ATLAS_TOOL_DESCRIPTORS: ToolDescriptor[] = [
         modelCode: { type: "string" },
         // Routes by entry point rather than a pinned model - the code list a
         // caller holds is discoverable at GET /v1/endpoints.
-        endpointCode: { type: "string" },
-        // Routes by intent; Atlas picks the model behind it.
-        taskProfile: { type: "string" },
+        endpointCode: {
+          type: "string",
+          description:
+            "Preferred selector for a product integration. Names a stable entry " +
+            "point on the PRODUCT authorization axis; operators repoint it and " +
+            "every product holding it follows, with no grant to update and no " +
+            "tenant involved. Discover the codes you hold at GET /v1/endpoints.",
+        },
+        taskProfile: {
+          type: "string",
+          description:
+            "Legacy TENANT axis. Resolves through model_grants.task_profile, so " +
+            "it requires a tenantId the caller may have no reason to hold, and " +
+            "repointing costs a grant row per tenant. That axis is being counted " +
+            "down to removal - a product integrating today should use " +
+            "endpointCode instead (vxture-atlas#47, TD-052).",
+        },
         // product_251 X-2, required since 2026-08-16: the agent task this call
         // belongs to. Same value across every product and model the task
         // touches - it is the only key that totals a task back up.
@@ -123,7 +167,7 @@ export const ATLAS_TOOL_DESCRIPTORS: ToolDescriptor[] = [
       },
     },
     // TD-044 - same bump, same reason: see atlas.chat above.
-    version: "1.1.0",
+    version: "1.2.0",
     deprecated: false,
     // Bills realized tokens, not calls: one request embeds N texts and the C3
     // consume sends `usage.totalTokens`. Published as `per_call` until
@@ -147,6 +191,14 @@ export const ATLAS_TOOL_DESCRIPTORS: ToolDescriptor[] = [
       // selector is how a consumer ends up pinning a model code it should not
       // have pinned: the descriptor is the discovery surface, so what it omits
       // is what callers hard-code around (vxture-atlas#198).
+      //
+      // `anyOf` says they are ACCEPTED equally; it cannot say they are equally
+      // ADVISABLE, and until 2026-08-26 nothing here did. A consumer read three
+      // peer options, picked `taskProfile` because "routes by intent" reads
+      // best, and was then blocked on a tenantId it had no reason to hold - on
+      // the axis being counted down to removal. The steering now lives in each
+      // selector's `description`, which is the half that travels to callers;
+      // this comment does not (TD-052).
       anyOf: [
         { required: ["modelCode"] },
         { required: ["endpointCode"] },
@@ -156,9 +208,23 @@ export const ATLAS_TOOL_DESCRIPTORS: ToolDescriptor[] = [
         modelCode: { type: "string" },
         // Routes by entry point rather than a pinned model - the code list a
         // caller holds is discoverable at GET /v1/endpoints.
-        endpointCode: { type: "string" },
-        // Routes by intent; Atlas picks the model behind it.
-        taskProfile: { type: "string" },
+        endpointCode: {
+          type: "string",
+          description:
+            "Preferred selector for a product integration. Names a stable entry " +
+            "point on the PRODUCT authorization axis; operators repoint it and " +
+            "every product holding it follows, with no grant to update and no " +
+            "tenant involved. Discover the codes you hold at GET /v1/endpoints.",
+        },
+        taskProfile: {
+          type: "string",
+          description:
+            "Legacy TENANT axis. Resolves through model_grants.task_profile, so " +
+            "it requires a tenantId the caller may have no reason to hold, and " +
+            "repointing costs a grant row per tenant. That axis is being counted " +
+            "down to removal - a product integrating today should use " +
+            "endpointCode instead (vxture-atlas#47, TD-052).",
+        },
         // product_251 X-2, required since 2026-08-16: the agent task this call
         // belongs to. Same value across every product and model the task
         // touches - it is the only key that totals a task back up.
@@ -195,7 +261,7 @@ export const ATLAS_TOOL_DESCRIPTORS: ToolDescriptor[] = [
       },
     },
     // TD-044 - same bump, same reason: see atlas.chat above.
-    version: "1.1.0",
+    version: "1.2.0",
     deprecated: false,
     // Bills per CANDIDATE - the C3 consume sends `candidates.length`, so a
     // 500-candidate pool is not one call's worth of consumption.
@@ -216,6 +282,14 @@ export const ATLAS_TOOL_DESCRIPTORS: ToolDescriptor[] = [
       // selector is how a consumer ends up pinning a model code it should not
       // have pinned: the descriptor is the discovery surface, so what it omits
       // is what callers hard-code around (vxture-atlas#198).
+      //
+      // `anyOf` says they are ACCEPTED equally; it cannot say they are equally
+      // ADVISABLE, and until 2026-08-26 nothing here did. A consumer read three
+      // peer options, picked `taskProfile` because "routes by intent" reads
+      // best, and was then blocked on a tenantId it had no reason to hold - on
+      // the axis being counted down to removal. The steering now lives in each
+      // selector's `description`, which is the half that travels to callers;
+      // this comment does not (TD-052).
       anyOf: [
         { required: ["modelCode"] },
         { required: ["endpointCode"] },
@@ -225,9 +299,23 @@ export const ATLAS_TOOL_DESCRIPTORS: ToolDescriptor[] = [
         modelCode: { type: "string" },
         // Routes by entry point rather than a pinned model - the code list a
         // caller holds is discoverable at GET /v1/endpoints.
-        endpointCode: { type: "string" },
-        // Routes by intent; Atlas picks the model behind it.
-        taskProfile: { type: "string" },
+        endpointCode: {
+          type: "string",
+          description:
+            "Preferred selector for a product integration. Names a stable entry " +
+            "point on the PRODUCT authorization axis; operators repoint it and " +
+            "every product holding it follows, with no grant to update and no " +
+            "tenant involved. Discover the codes you hold at GET /v1/endpoints.",
+        },
+        taskProfile: {
+          type: "string",
+          description:
+            "Legacy TENANT axis. Resolves through model_grants.task_profile, so " +
+            "it requires a tenantId the caller may have no reason to hold, and " +
+            "repointing costs a grant row per tenant. That axis is being counted " +
+            "down to removal - a product integrating today should use " +
+            "endpointCode instead (vxture-atlas#47, TD-052).",
+        },
         // product_251 X-2, required since 2026-08-16: the agent task this call
         // belongs to. Same value across every product and model the task
         // touches - it is the only key that totals a task back up.
@@ -255,7 +343,7 @@ export const ATLAS_TOOL_DESCRIPTORS: ToolDescriptor[] = [
       },
     },
     // TD-044 - same bump, same reason: see atlas.chat above.
-    version: "1.1.0",
+    version: "1.2.0",
     deprecated: false,
     // Bills per PAGE - the C3 consume sends `pages.length`.
     metering: { metric: "atlas.parse", mode: "per_unit" },

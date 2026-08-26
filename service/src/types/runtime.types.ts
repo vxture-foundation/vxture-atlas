@@ -66,10 +66,29 @@ export interface ChatRequest {
    */
   endpointCode?: string;
   /**
-   * Task-profile routing (docs/70-workplan): when `modelCode` is omitted, Atlas
-   * resolves it from the tenant's active `model.model_grants.task_profile`
-   * match (see `ModelRegistryService.resolveModelCodeForTaskProfile`) instead
-   * of requiring the caller to know a specific modelCode up front.
+   * Task-profile routing on the LEGACY TENANT AXIS. A product integrating
+   * today wants `endpointCode` above instead.
+   *
+   * Resolves through `model.model_grants.task_profile` (see
+   * `ModelRegistryService.resolveModelCodeForTaskProfile`), which is keyed by
+   * tenant - so naming a label here drags in a `tenantId` the caller may have
+   * no reason to hold, and repointing the label costs a grant row per tenant.
+   * `model_grant_authorizations_total{axis}` exists to count that axis down to
+   * zero.
+   *
+   * **The tenant is not what decides the answer** - it is an artefact of where
+   * label routing happened to be built. `endpointCode` does the same job with
+   * no tenant and repoints better: change what the endpoint points at and every
+   * product holding it follows, with no grant row touched at all.
+   *
+   * This was not documented, and a consumer was steered here and blocked on a
+   * tenant uuid it does not have (vxture-atlas#4/#39, corrected in #47).
+   *
+   * **Not extended.** "Different customers get different tiers" is properly a
+   * business MODE the product selects - cost-first / quality-first /
+   * latency-first - with operators deciding what serves each: O(modes) rather
+   * than O(tenants), and the label keeps stating what the CALLER needs, which
+   * tenant identity does not carry. Owner ruling 2026-08-26, TD-052.
    */
   taskProfile?: string;
   messages: ChatMessage[];
