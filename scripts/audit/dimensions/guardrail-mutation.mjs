@@ -33,7 +33,7 @@ import { applyEdit } from "../lib/edit.mjs";
 
 export const meta = {
   id: "guardrail-mutation",
-  title: "九条 CI guardrail 逐个变异测试（十条变异）",
+  title: "十条 CI guardrail 逐个变异测试（十一条变异）",
   covered: [
     "每条 guardrail 在一个它自称会抓的已知坏输入上，是否真的以非零码退出",
     "变异前的干净基线是否为绿（否则变异后的红不可读）",
@@ -140,6 +140,20 @@ const MUTATIONS = [
       file: ".github/workflows/ci.yml",
       find: "on:\n  pull_request:\n    branches:\n      - main",
       replace: "on:\n  workflow_dispatch:",
+    },
+  },
+  {
+    // The defect that created this guardrail, replanted verbatim. It is the
+    // only mutation here whose original cost was two false verifications: the
+    // recipe said `IMAGE=`, compose read `IMAGE_NAMESPACE`, and the difference
+    // was a locally-built image reporting `gitSha: unknown` while everything
+    // else looked right.
+    guardrail: "check-compose-invocations",
+    why: "本机验证配方改回传 IMAGE=（compose 不读它，于是静默构建而非跑 CI 镜像）",
+    edit: {
+      file: "CLAUDE.md",
+      find: "IMAGE_NAMESPACE=vxture-foundation IMAGE_TAG=pr-$PR",
+      replace: "IMAGE=ghcr.io/vxture-foundation/atlas-app IMAGE_TAG=pr-$PR",
     },
   },
   {

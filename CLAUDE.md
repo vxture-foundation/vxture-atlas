@@ -146,8 +146,9 @@ Always branch off `origin/main`, never off a stale local branch.
      (vitest does NOT type-check, so a green suite says nothing about a
      signature change)
    - `pnpm lint`
-   - `node scripts/guardrails/check-*.mjs --strict` (nine of them - the count
-     said six until 2026-08-25, which is the shape this repo keeps producing)
+   - `node scripts/guardrails/check-*.mjs --strict` (ten of them - the count
+     said six until 2026-08-25 and nine until 2026-08-26, which is the shape
+     this repo keeps producing)
    - `pnpm audit:run` - **required, and not a bigger version of the line
      above.** The guardrails check the code; this checks the guardrails, the
      tests, and what the platform actually reports. It re-plants a known defect
@@ -196,7 +197,7 @@ Always branch off `origin/main`, never off a stale local branch.
    ```
    PR=249                       # your PR number
    docker pull ghcr.io/vxture-foundation/atlas-app:pr-$PR
-   PROJECT_NAME=atlas-val DEPLOY_ENV=val DATA_DIR=./data/val      APP_PUBLISH_PORT=3102 IMAGE=ghcr.io/vxture-foundation/atlas-app IMAGE_TAG=pr-$PR      DATABASE_URL=postgresql://atlas_svc:PW@db:5432/vx_atlas_db      docker compose --profile dev up -d
+   PROJECT_NAME=atlas-val DEPLOY_ENV=val DATA_DIR=./data/val      APP_PUBLISH_PORT=3102 IMAGE_NAMESPACE=vxture-foundation IMAGE_TAG=pr-$PR      DATABASE_URL=postgresql://atlas_svc:PW@db:5432/vx_atlas_db      docker compose --profile dev up -d --no-build
    curl localhost:3102/healthz && curl localhost:3102/readyz
    ```
 
