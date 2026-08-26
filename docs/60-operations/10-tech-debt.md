@@ -9,6 +9,23 @@ cannot yet be met because an upstream dependency is not ready must be
 (clause / reason / recovery condition), and (3) reported to the platform line.
 Silent deviation fails self-rectify acceptance.
 
+**An entry blocked on another repo must name the issue there, by number.**
+Point (3) above says "reported to the platform line"; what it did not say is
+that the report has to be findable from here afterwards. It does now, because
+the difference is not cosmetic: TD-009 was annotated "not fixed here, belongs
+to opera" on 2026-08-10 and no issue was ever opened in the repo that has to
+act. For sixteen days it was recorded on our side and absent from the queue
+where it would have been scheduled, while two consumer requests waited on it.
+An entry that says "belongs to X" without a number is indistinguishable from
+one that was reported - which is the shape this repo keeps producing.
+
+Recorded so far: TD-009 -> `vxture-platform/vxture-platform#52`,
+TD-046 -> `#50`, TD-047 -> `#47`. **Still carrying no number: TD-004, TD-016,
+TD-034.** Those three are named here rather than left to be noticed, because a
+convention stated without its current exceptions reads as already satisfied.
+TD-034 arguably has nothing to file (it waits for a consumer to exist at all);
+TD-004 and TD-016 do, and have not been.
+
 This file records the debt, not how it was found or fixed. **A closed entry
 keeps its row in the table below and nothing else** - the investigation, the
 options weighed and the fix all live in the commit that closed it, which is
@@ -141,6 +158,15 @@ moves to the opera product later, deliberately not scheduled in atlas.
 **Recovery**: opera adds the field via the same interim `/capability/*`-proxy
 pattern used for provider-keys, or the future opera-side model-management
 module carries it.
+
+**Filed 2026-08-26: `vxture-platform/vxture-platform#52`.** It had been marked
+"not fixed here, belongs to opera" since 2026-08-10 and was never opened in the
+repo that has to act - so for sixteen days it was recorded on our side and
+absent from the queue where it would have been scheduled. Two consumer requests
+were waiting on it the whole time (vxture-atlas#4, #39), and one of them is now
+taking a `404 TASK_PROFILE_NOT_ROUTABLE` in production on every call by the
+consumer's own decision, which turns this from dormant debt into someone
+actively waiting.
 
 ## TD-016
 
@@ -644,6 +670,13 @@ mutations in `scripts/audit`. Cost stayed a rollup and did not become a column,
 per the note below. `is_active` is deliberately not part of rule selection: it
 is a present-tense switch, and letting it decide history would make last month's
 number move today.
+
+**The remaining operational write is filed as
+`vxture-platform/vxture-platform#47`** (2026-08-26): no provider row carries
+`config.pricing.offPeak`, and the operator console has nowhere to set it. Until
+it is set, cost is computed at peak price for the whole week - on DeepSeek about
+79% of the hours are overstated by roughly double. It is not silently wrong:
+`coverage.requestsWithoutPricingWindow` reports how many rows had no window.
 
 The two items below remain, and the original text is kept because both are still
 exactly as described.
