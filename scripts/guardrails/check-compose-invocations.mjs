@@ -54,7 +54,16 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
-const ROOT = join(import.meta.dirname, "..", "..");
+/**
+ * Inputs resolve from `process.cwd()`, NOT from this file's own location.
+ *
+ * That is the contract every guardrail here follows, and it is not cosmetic:
+ * `scripts/audit` runs the real script against a mutated worktree as cwd. A
+ * guardrail that resolved its inputs relative to itself would read the clean
+ * repo, exit 0, and be reported as "does not bite" - which is exactly what the
+ * first version of this file did on its first audit run.
+ */
+const ROOT = process.cwd();
 const DOC = "CLAUDE.md";
 const COMPOSE = "docker-compose.yml";
 
