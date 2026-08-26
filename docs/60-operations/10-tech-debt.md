@@ -597,6 +597,23 @@ repositories to ask in.
 
 Two reasons the demand signal is the wrong gate here:
 
+**2026-08-26: the exposure is now measured, which the entry previously said
+could not be done.** `model_reasoning_tool_exposure_total{product,multi_round}`
+counts calls that carried `tools` AND came back with reasoning - the shape this
+entry describes. `multi_round="no"` is exposure created, `"yes"` is exposure
+exercised.
+
+Point 1 below is true and stays. What was wrong is what it had been extended
+into: vxture-atlas#23 parked this as *风险存在，且暂时无法调查*, and nothing
+separated "we cannot see the 400" from "so we cannot know the size". Atlas
+already recorded whether the model reasoned (`incr/01`) and can see whether the
+call is multi-round; only "did this request carry tools" went nowhere. An
+unmeasurable risk and a measured-at-zero one look identical on a board.
+
+A counter and not a column, deliberately: the first question is go/no-go, and
+that needs no db-init. A column earns its place if this reads non-zero - that
+is the grain needed to notify a named tenant.
+
 1. **The failure is invisible to Atlas.** The 400 happens at the caller. Atlas
    sees a successful upstream call. So "wait until someone reports it"
    guarantees late discovery - which is exactly the shape TD-044 already paid

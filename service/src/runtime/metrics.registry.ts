@@ -20,6 +20,7 @@ type MetricName =
   | "model_request_latency_ms"
   | "model_grant_authorizations_total"
   | "model_request_rejections_total"
+  | "model_reasoning_tool_exposure_total"
   | "capability_legacy_path_requests_total";
 
 type MetricDefinition = {
@@ -64,6 +65,29 @@ const METRIC_DEFINITIONS: Record<MetricName, MetricDefinition> = {
    * Labelled by product so the answer is "vxtpl, 900 times" rather than "some
    * traffic is being rejected".
    */
+  /**
+   * TD-046's population, because TD-046's FAILURE is unobservable here.
+   *
+   * A thinking model's reasoning must be echoed back on later turns when
+   * `tools` is in play; both adapters drop it; the upstream's 400 therefore
+   * lands at the caller and Atlas sees a normal 200. That true sentence was
+   * being used as a second one - "so the exposure cannot be surveyed" - and
+   * #23 was parked on it. It can be surveyed: Atlas already recorded whether
+   * the model reasoned and can see whether the call is multi-round; only
+   * "did this request carry tools" was going nowhere.
+   *
+   * A counter rather than a column, deliberately: the first question is
+   * go/no-go, and this answers it without db-init. A column earns its place
+   * if this reads non-zero - that is the grain needed to tell a named tenant.
+   *
+   * `multi_round="no"` is exposure created (the caller now holds a turn it
+   * cannot echo); `"yes"` is exposure exercised.
+   */
+  model_reasoning_tool_exposure_total: {
+    type: "counter",
+    help: "model_reasoning_tool_exposure_total 带 tools 且模型产出了推理内容的调用数（TD-046 的风险面，不是失败数）",
+    labelNames: ["product", "multi_round"],
+  },
   model_request_rejections_total: {
     type: "counter",
     help: "model_request_rejections_total 进入日志前被拒的请求数（按错误码与调用产品聚合）",
