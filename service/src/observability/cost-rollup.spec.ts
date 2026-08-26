@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 
-import { computeCostRollup, type CostGroupRow } from "./cost-rollup";
+import {
+  computeCostRollup,
+  InvalidPricingPolicyError,
+  type CostGroupRow,
+} from "./cost-rollup";
 
 /**
  * A group priced the way DeepSeek prices flash at peak: 3.00 CNY per million
@@ -182,6 +186,35 @@ describe("computeCostRollup, off-peak", () => {
     expect(() =>
       computeCostRollup([group({ isoDow: 6, hourUtc: 2, providerPricing: broken })]),
     ).toThrow(/timezone must be "UTC"/u);
+  });
+
+  it("names the provider whose policy is unusable", () => {
+    // Without the code, an operator reading "unusable" has to open every
+    // provider row to find the one that is. The refusal is only useful to the
+    // person who can act on it if it says where to act.
+    const broken = JSON.stringify({ offPeak: { timezone: "Asia/Shanghai" } });
+    let thrown: unknown;
+    try {
+      computeCostRollup([
+        group({ providerCode: "deepseek", isoDow: 6, hourUtc: 2, providerPricing: broken }),
+      ]);
+    } catch (error) {
+      thrown = error;
+    }
+    expect(thrown).toBeInstanceOf(InvalidPricingPolicyError);
+    expect((thrown as InvalidPricingPolicyError).providerCode).toBe("deepseek");
+  });
+
+  it("refuses unparseable JSON as a policy problem, not a crash", () => {
+    let thrown: unknown;
+    try {
+      computeCostRollup([
+        group({ providerCode: "deepseek", isoDow: 6, hourUtc: 2, providerPricing: "{not json" }),
+      ]);
+    } catch (error) {
+      thrown = error;
+    }
+    expect(thrown).toBeInstanceOf(InvalidPricingPolicyError);
   });
 });
 

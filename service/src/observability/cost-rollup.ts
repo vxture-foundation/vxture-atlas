@@ -163,6 +163,47 @@ function discounted(scaledPrice: bigint, multiplier: bigint): bigint {
  * after the fact. They are re-aggregated here to the same item shape callers
  * already had, with the peak/off-peak split reported alongside.
  */
+/**
+ * A provider whose `config.pricing` cannot be read.
+ *
+ * Carries the provider code because the operator has to know WHICH row to fix,
+ * and a message that says only "unusable" sends them to read every provider.
+ */
+export class InvalidPricingPolicyError extends Error {
+  readonly providerCode: string | null;
+
+  constructor(providerCode: string | null, reason: string) {
+    super(reason);
+    this.name = "InvalidPricingPolicyError";
+    this.providerCode = providerCode;
+  }
+}
+
+/**
+ * Parse once per distinct config text, and fail with the provider named.
+ *
+ * The throw is deliberate - a malformed policy silently ignored prices a whole
+ * provider at full rate while the operator believes a discount is live. But it
+ * is OPERATOR DATA, not a defect, so the caller turns this into a coded 4xx
+ * rather than letting it surface as a bare 500. A 500 caused by a config row is
+ * the shape `PATCH /capability/price-rules/:id` had for weeks (TD-047), and it
+ * tells the person who can fix it nothing at all.
+ */
+function readPolicy(
+  providerCode: string | null,
+  raw: string | null,
+): OffPeakPolicy | null {
+  if (raw === null) return null;
+  try {
+    return parseOffPeakPolicy(JSON.parse(raw) as unknown);
+  } catch (error) {
+    throw new InvalidPricingPolicyError(
+      providerCode,
+      error instanceof Error ? error.message : String(error),
+    );
+  }
+}
+
 export function computeCostRollup(rows: readonly CostGroupRow[]): CostRollupResult {
   const byCurrency = new Map<string, bigint>();
   const items = new Map<string, CostRollupItem>();
@@ -230,12 +271,7 @@ export function computeCostRollup(rows: readonly CostGroupRow[]): CostRollupResu
 
     const policyKey = row.providerPricing ?? "";
     if (!policies.has(policyKey)) {
-      policies.set(
-        policyKey,
-        row.providerPricing === null
-          ? null
-          : parseOffPeakPolicy(JSON.parse(row.providerPricing) as unknown),
-      );
+      policies.set(policyKey, readPolicy(row.providerCode, row.providerPricing));
     }
     const policy = policies.get(policyKey) ?? null;
 

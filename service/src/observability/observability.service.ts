@@ -8,6 +8,7 @@ import type {
 import {
   COST_ROLLUP_BASIS,
   computeCostRollup,
+  InvalidPricingPolicyError,
   type CostRollupResult,
 } from "./cost-rollup";
 
@@ -307,12 +308,31 @@ export class ObservabilityService {
       ...(query.providerCode ? { providerCode: query.providerCode } : {}),
     });
 
-    return {
-      from: from.toISOString(),
-      to: to.toISOString(),
-      basis: COST_ROLLUP_BASIS,
-      ...computeCostRollup(rows),
-    };
+    try {
+      return {
+        from: from.toISOString(),
+        to: to.toISOString(),
+        basis: COST_ROLLUP_BASIS,
+        ...computeCostRollup(rows),
+      };
+    } catch (error) {
+      // A provider's `config.pricing` is operator data. Refusing it is right -
+      // silently ignoring it would price that provider at full rate while the
+      // operator believes a discount is live - but refusing it as a bare 500
+      // tells the one person who can fix it nothing, and leaves the operator
+      // plane's envelope without a code. Name the provider and the reason.
+      if (error instanceof InvalidPricingPolicyError) {
+        throw new BadRequestException({
+          code: "OBSERVABILITY_INVALID_PRICING_POLICY",
+          message:
+            `provider ${error.providerCode ?? "(unknown)"} has an unusable ` +
+            `config.pricing.offPeak: ${error.message}`,
+          field: "config.pricing.offPeak",
+          providerCode: error.providerCode,
+        });
+      }
+      throw error;
+    }
   }
 }
 

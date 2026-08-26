@@ -484,3 +484,48 @@ describe("ObservabilityService.summarizeCost", () => {
     expect(result.coverage.requests).toBe(1);
   });
 });
+
+describe("ObservabilityService.summarizeCost, unusable provider policy", () => {
+  it("answers with a code and the provider, not a bare 500", () => {
+    // Operator data, not a defect. A 500 here would repeat the shape
+    // `PATCH /capability/price-rules/:id` had for weeks: a config row producing
+    // an uncoded server error that names nothing.
+    const repo = makeRepo({
+      summarizeRequestCost: vi.fn().mockResolvedValue([
+        {
+          modelCode: "m",
+          providerCode: "deepseek",
+          priceRuleId: null,
+          currency: null,
+          unitTokens: null,
+          inputUnitPrice: null,
+          outputUnitPrice: null,
+          requestUnitPrice: null,
+          cachedInputUnitPrice: null,
+          isoDow: 6,
+          hourUtc: 2,
+          providerPricing: JSON.stringify({ offPeak: { timezone: "Asia/Shanghai" } }),
+          requests: 1n,
+          requestsMissingInput: 0n,
+          requestsMissingOutput: 0n,
+          inputTokens: 0n,
+          cachedInputTokens: 0n,
+          outputTokens: 0n,
+          reasoningTokens: 0n,
+        },
+      ]),
+    });
+    const svc = new ObservabilityService(repo as never);
+
+    return svc.summarizeCost({}).then(
+      () => expect.unreachable("expected a refusal"),
+      (error: unknown) => {
+        expect(error).toBeInstanceOf(BadRequestException);
+        const body = (error as BadRequestException).getResponse() as Record<string, unknown>;
+        expect(body["code"]).toBe("OBSERVABILITY_INVALID_PRICING_POLICY");
+        expect(body["providerCode"]).toBe("deepseek");
+      },
+    );
+  });
+});
+
