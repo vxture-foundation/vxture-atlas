@@ -1,6 +1,54 @@
 import type { ToolDescriptor } from "./discovery.types";
 
 /**
+ * The three target selectors, defined once and spread into all four tools.
+ *
+ * `anyOf` says they are ACCEPTED equally; it cannot say they are equally
+ * ADVISABLE, and until 2026-08-26 nothing published here did. A consumer read
+ * three peer options, picked `taskProfile` because "routes by intent" reads
+ * best, and was then blocked on a `tenantId` it had no reason to hold - on the
+ * axis `model_grant_authorizations_total{axis}` exists to count down to zero
+ * (vxture-atlas#4/#39, corrected in #47, root cause TD-052).
+ *
+ * These live in one constant rather than four copies for the reason the
+ * guidance itself exists: four copies is four places for the advice to drift,
+ * and the next person to correct it would have to find all of them.
+ */
+const TARGET_SELECTOR_PROPERTIES = {
+  modelCode: {
+    type: "string",
+    description:
+      "Pins one model by code. Exact, and therefore the selector an operator " +
+      "cannot repoint - prefer endpointCode unless the model itself is the " +
+      "requirement.",
+  },
+  endpointCode: {
+    type: "string",
+    description:
+      "Preferred selector for a product integration. Names a stable entry " +
+      "point on the PRODUCT authorization axis; operators repoint it and " +
+      "every product holding it follows, with no grant to update and no " +
+      "tenant involved. Discover the codes you hold at GET /v1/endpoints.",
+  },
+  taskProfile: {
+    type: "string",
+    description:
+      "Legacy TENANT axis. Resolves through model_grants.task_profile, so " +
+      "it requires a tenantId the caller may have no reason to hold, and " +
+      "repointing costs a grant row per tenant. That axis is being counted " +
+      "down to removal - a product integrating today should use " +
+      "endpointCode instead (vxture-atlas#47, TD-052).",
+  },
+} as const;
+
+/** The `anyOf` clause that goes with the selectors above. */
+const TARGET_SELECTOR_ANY_OF = [
+  { required: ["modelCode"] },
+  { required: ["endpointCode"] },
+  { required: ["taskProfile"] },
+] as const;
+
+/**
  * Descriptors for Atlas's four S2S contract shapes. Kept in sync by
  * hand with the real request/response types (`runtime.types.ts`,
  * `embedding.types.ts`, `rerank.types.ts`, `parse.types.ts`) and
@@ -17,46 +65,13 @@ export const ATLAS_TOOL_DESCRIPTORS: ToolDescriptor[] = [
     input_schema: {
       type: "object",
       required: ["taskId", "tenantId", "messages"],
-      // One of three, not modelCode alone. The service accepts modelCode,
-      // endpointCode or taskProfile and refuses only when all three are absent
-      // (TARGET_SELECTOR_REQUIRED). Publishing modelCode as the sole required
-      // selector is how a consumer ends up pinning a model code it should not
-      // have pinned: the descriptor is the discovery surface, so what it omits
-      // is what callers hard-code around (vxture-atlas#198).
-      //
-      // `anyOf` says they are ACCEPTED equally; it cannot say they are equally
-      // ADVISABLE, and until 2026-08-26 nothing here did. A consumer read three
-      // peer options, picked `taskProfile` because "routes by intent" reads
-      // best, and was then blocked on a tenantId it had no reason to hold - on
-      // the axis being counted down to removal. The steering now lives in each
-      // selector's `description`, which is the half that travels to callers;
-      // this comment does not (TD-052).
-      anyOf: [
-        { required: ["modelCode"] },
-        { required: ["endpointCode"] },
-        { required: ["taskProfile"] },
-      ],
+      // One of three, not modelCode alone - publishing modelCode as the sole
+      // required selector is how a consumer ends up pinning a model code it
+      // should not have pinned (vxture-atlas#198). Which of the three to
+      // actually reach for is published in TARGET_SELECTOR_PROPERTIES above.
+      anyOf: [...TARGET_SELECTOR_ANY_OF],
       properties: {
-        modelCode: { type: "string" },
-        // Routes by entry point rather than a pinned model - the code list a
-        // caller holds is discoverable at GET /v1/endpoints.
-        endpointCode: {
-          type: "string",
-          description:
-            "Preferred selector for a product integration. Names a stable entry " +
-            "point on the PRODUCT authorization axis; operators repoint it and " +
-            "every product holding it follows, with no grant to update and no " +
-            "tenant involved. Discover the codes you hold at GET /v1/endpoints.",
-        },
-        taskProfile: {
-          type: "string",
-          description:
-            "Legacy TENANT axis. Resolves through model_grants.task_profile, so " +
-            "it requires a tenantId the caller may have no reason to hold, and " +
-            "repointing costs a grant row per tenant. That axis is being counted " +
-            "down to removal - a product integrating today should use " +
-            "endpointCode instead (vxture-atlas#47, TD-052).",
-        },
+        ...TARGET_SELECTOR_PROPERTIES,
         // product_251 X-2, required since 2026-08-16: the agent task this call
         // belongs to. Same value across every product and model the task
         // touches - it is the only key that totals a task back up.
@@ -104,46 +119,13 @@ export const ATLAS_TOOL_DESCRIPTORS: ToolDescriptor[] = [
     input_schema: {
       type: "object",
       required: ["taskId", "texts", "workspaceId"],
-      // One of three, not modelCode alone. The service accepts modelCode,
-      // endpointCode or taskProfile and refuses only when all three are absent
-      // (TARGET_SELECTOR_REQUIRED). Publishing modelCode as the sole required
-      // selector is how a consumer ends up pinning a model code it should not
-      // have pinned: the descriptor is the discovery surface, so what it omits
-      // is what callers hard-code around (vxture-atlas#198).
-      //
-      // `anyOf` says they are ACCEPTED equally; it cannot say they are equally
-      // ADVISABLE, and until 2026-08-26 nothing here did. A consumer read three
-      // peer options, picked `taskProfile` because "routes by intent" reads
-      // best, and was then blocked on a tenantId it had no reason to hold - on
-      // the axis being counted down to removal. The steering now lives in each
-      // selector's `description`, which is the half that travels to callers;
-      // this comment does not (TD-052).
-      anyOf: [
-        { required: ["modelCode"] },
-        { required: ["endpointCode"] },
-        { required: ["taskProfile"] },
-      ],
+      // One of three, not modelCode alone - publishing modelCode as the sole
+      // required selector is how a consumer ends up pinning a model code it
+      // should not have pinned (vxture-atlas#198). Which of the three to
+      // actually reach for is published in TARGET_SELECTOR_PROPERTIES above.
+      anyOf: [...TARGET_SELECTOR_ANY_OF],
       properties: {
-        modelCode: { type: "string" },
-        // Routes by entry point rather than a pinned model - the code list a
-        // caller holds is discoverable at GET /v1/endpoints.
-        endpointCode: {
-          type: "string",
-          description:
-            "Preferred selector for a product integration. Names a stable entry " +
-            "point on the PRODUCT authorization axis; operators repoint it and " +
-            "every product holding it follows, with no grant to update and no " +
-            "tenant involved. Discover the codes you hold at GET /v1/endpoints.",
-        },
-        taskProfile: {
-          type: "string",
-          description:
-            "Legacy TENANT axis. Resolves through model_grants.task_profile, so " +
-            "it requires a tenantId the caller may have no reason to hold, and " +
-            "repointing costs a grant row per tenant. That axis is being counted " +
-            "down to removal - a product integrating today should use " +
-            "endpointCode instead (vxture-atlas#47, TD-052).",
-        },
+        ...TARGET_SELECTOR_PROPERTIES,
         // product_251 X-2, required since 2026-08-16: the agent task this call
         // belongs to. Same value across every product and model the task
         // touches - it is the only key that totals a task back up.
@@ -185,46 +167,13 @@ export const ATLAS_TOOL_DESCRIPTORS: ToolDescriptor[] = [
     input_schema: {
       type: "object",
       required: ["taskId", "query", "candidates", "workspaceId"],
-      // One of three, not modelCode alone. The service accepts modelCode,
-      // endpointCode or taskProfile and refuses only when all three are absent
-      // (TARGET_SELECTOR_REQUIRED). Publishing modelCode as the sole required
-      // selector is how a consumer ends up pinning a model code it should not
-      // have pinned: the descriptor is the discovery surface, so what it omits
-      // is what callers hard-code around (vxture-atlas#198).
-      //
-      // `anyOf` says they are ACCEPTED equally; it cannot say they are equally
-      // ADVISABLE, and until 2026-08-26 nothing here did. A consumer read three
-      // peer options, picked `taskProfile` because "routes by intent" reads
-      // best, and was then blocked on a tenantId it had no reason to hold - on
-      // the axis being counted down to removal. The steering now lives in each
-      // selector's `description`, which is the half that travels to callers;
-      // this comment does not (TD-052).
-      anyOf: [
-        { required: ["modelCode"] },
-        { required: ["endpointCode"] },
-        { required: ["taskProfile"] },
-      ],
+      // One of three, not modelCode alone - publishing modelCode as the sole
+      // required selector is how a consumer ends up pinning a model code it
+      // should not have pinned (vxture-atlas#198). Which of the three to
+      // actually reach for is published in TARGET_SELECTOR_PROPERTIES above.
+      anyOf: [...TARGET_SELECTOR_ANY_OF],
       properties: {
-        modelCode: { type: "string" },
-        // Routes by entry point rather than a pinned model - the code list a
-        // caller holds is discoverable at GET /v1/endpoints.
-        endpointCode: {
-          type: "string",
-          description:
-            "Preferred selector for a product integration. Names a stable entry " +
-            "point on the PRODUCT authorization axis; operators repoint it and " +
-            "every product holding it follows, with no grant to update and no " +
-            "tenant involved. Discover the codes you hold at GET /v1/endpoints.",
-        },
-        taskProfile: {
-          type: "string",
-          description:
-            "Legacy TENANT axis. Resolves through model_grants.task_profile, so " +
-            "it requires a tenantId the caller may have no reason to hold, and " +
-            "repointing costs a grant row per tenant. That axis is being counted " +
-            "down to removal - a product integrating today should use " +
-            "endpointCode instead (vxture-atlas#47, TD-052).",
-        },
+        ...TARGET_SELECTOR_PROPERTIES,
         // product_251 X-2, required since 2026-08-16: the agent task this call
         // belongs to. Same value across every product and model the task
         // touches - it is the only key that totals a task back up.
@@ -276,46 +225,13 @@ export const ATLAS_TOOL_DESCRIPTORS: ToolDescriptor[] = [
     input_schema: {
       type: "object",
       required: ["taskId", "task", "pages", "workspaceId"],
-      // One of three, not modelCode alone. The service accepts modelCode,
-      // endpointCode or taskProfile and refuses only when all three are absent
-      // (TARGET_SELECTOR_REQUIRED). Publishing modelCode as the sole required
-      // selector is how a consumer ends up pinning a model code it should not
-      // have pinned: the descriptor is the discovery surface, so what it omits
-      // is what callers hard-code around (vxture-atlas#198).
-      //
-      // `anyOf` says they are ACCEPTED equally; it cannot say they are equally
-      // ADVISABLE, and until 2026-08-26 nothing here did. A consumer read three
-      // peer options, picked `taskProfile` because "routes by intent" reads
-      // best, and was then blocked on a tenantId it had no reason to hold - on
-      // the axis being counted down to removal. The steering now lives in each
-      // selector's `description`, which is the half that travels to callers;
-      // this comment does not (TD-052).
-      anyOf: [
-        { required: ["modelCode"] },
-        { required: ["endpointCode"] },
-        { required: ["taskProfile"] },
-      ],
+      // One of three, not modelCode alone - publishing modelCode as the sole
+      // required selector is how a consumer ends up pinning a model code it
+      // should not have pinned (vxture-atlas#198). Which of the three to
+      // actually reach for is published in TARGET_SELECTOR_PROPERTIES above.
+      anyOf: [...TARGET_SELECTOR_ANY_OF],
       properties: {
-        modelCode: { type: "string" },
-        // Routes by entry point rather than a pinned model - the code list a
-        // caller holds is discoverable at GET /v1/endpoints.
-        endpointCode: {
-          type: "string",
-          description:
-            "Preferred selector for a product integration. Names a stable entry " +
-            "point on the PRODUCT authorization axis; operators repoint it and " +
-            "every product holding it follows, with no grant to update and no " +
-            "tenant involved. Discover the codes you hold at GET /v1/endpoints.",
-        },
-        taskProfile: {
-          type: "string",
-          description:
-            "Legacy TENANT axis. Resolves through model_grants.task_profile, so " +
-            "it requires a tenantId the caller may have no reason to hold, and " +
-            "repointing costs a grant row per tenant. That axis is being counted " +
-            "down to removal - a product integrating today should use " +
-            "endpointCode instead (vxture-atlas#47, TD-052).",
-        },
+        ...TARGET_SELECTOR_PROPERTIES,
         // product_251 X-2, required since 2026-08-16: the agent task this call
         // belongs to. Same value across every product and model the task
         // touches - it is the only key that totals a task back up.
