@@ -71,7 +71,9 @@ const TRIGGERS = ["push", "pull_request", "workflow_dispatch", "workflow_call", 
  */
 const PINNED_TRIGGERS = new Map([
   ["build.yml", ["pull_request", "workflow_call", "workflow_dispatch"]],
-  ["ci.yml", ["pull_request", "push"]],
+  // workflow_dispatch added 2026-08-26: required-check evidence on a sha must
+  // be reproducible, because a lost push event is otherwise unrecoverable.
+  ["ci.yml", ["pull_request", "push", "workflow_dispatch"]],
   ["codeql.yml", ["pull_request", "push", "schedule"]],
   ["db-init.yml", ["workflow_dispatch"]],
   ["deploy.yml", ["workflow_dispatch"]],

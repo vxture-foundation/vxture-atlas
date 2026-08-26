@@ -15,6 +15,18 @@ on:
   push:
     branches:
       - main
+  # A push event cannot be replayed. release.yml refuses to release a commit
+  # unless all five required checks reported on that exact sha, and on `main`
+  # the only producer of those checks was the push above - so a push event that
+  # never ran left the commit permanently unreleasable, with no recovery short
+  # of writing another commit on top.
+  #
+  # That is not hypothetical: on 2026-08-26 the merge of #44 landed during a
+  # GitHub Actions major outage, the push event produced no run, and v0.7.2 was
+  # refused by its own gate for a commit whose checks had all passed minutes
+  # earlier on the PR. The gate was right - the sha genuinely had no evidence.
+  # What was missing was any way to produce it again.
+  workflow_dispatch:
 
 concurrency:
   group: ci-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || format('push-{0}', github.ref_name) }}
