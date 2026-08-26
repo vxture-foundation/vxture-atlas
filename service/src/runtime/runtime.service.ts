@@ -7,6 +7,11 @@ import { countingRejections } from "./pre-log-rejection";
 /** The C3 metric the chat plane consumes against; also keys its cost unit. */
 const CHAT_METRIC = "atlas.chat";
 import { metricsRegistry } from "./metrics.registry";
+import {
+  REASONING_TOOL_EXPOSURE_METRIC,
+  classifyReasoningToolCall,
+  reasoningTokensOf,
+} from "../observability/reasoning-tool-exposure";
 import { randomUUID } from "node:crypto";
 
 import { ProviderHttpError } from "../providers/base.provider";
@@ -1295,6 +1300,25 @@ export class ModelRuntimeService {
             idempotencyKey: requestId,
           })
         : { billed: false };
+
+    // TD-046's exposure, counted where both halves are finally in scope: the
+    // request (did it carry `tools`, is it multi-round) and the usage (did the
+    // model reason). Neither alone is the shape; the pair is.
+    //
+    // Metrics only - see `reasoning-tool-exposure.ts` for why this is not a
+    // column, and for the sentence in #23 it exists to stop being unfalsifiable.
+    const exposure = classifyReasoningToolCall({
+      toolsPresent: (request.tools?.length ?? 0) > 0,
+      reasoningTokens: reasoningTokensOf(usage),
+      messages: request.messages,
+      productCode: auth?.callerProductCode,
+    });
+    if (exposure) {
+      metricsRegistry.incCounter(REASONING_TOOL_EXPOSURE_METRIC, {
+        product: exposure.product,
+        multi_round: exposure.multiRound,
+      });
+    }
 
     // Atlas's own per-request history.
     await this.requestLog.record({

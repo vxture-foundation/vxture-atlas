@@ -197,6 +197,21 @@ const MUTATIONS = [
     },
   },
   {
+    // TD-046's exposure counter. Its whole value is that the number is SMALL
+    // and therefore actionable - counting `tools` alone, or reasoning alone,
+    // would report most of the fleet's traffic and get discounted.
+    invariant: "推理曝光计数要求 tools 与推理同时成立",
+    why:
+      "只满足一个条件就计数，会把风险面报成流量面 —— 一个没人会据以行动的数字，" +
+      "和没有这个数字是同一件事。",
+    spec: "src/observability/reasoning-tool-exposure.spec.ts",
+    edit: {
+      file: "service/src/observability/reasoning-tool-exposure.ts",
+      find: "  if (!input.toolsPresent) return undefined;\n",
+      replace: "",
+    },
+  },
+  {
     invariant: "契约指纹随必填规则移动",
     why:
       "指纹不动，消费方轮询到的就是“什么都没变” —— 这正是工具描述符里那个手维护 " +
