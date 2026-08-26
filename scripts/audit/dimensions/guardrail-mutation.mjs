@@ -152,8 +152,7 @@ const MUTATIONS = [
     why: "把 /v1/parse 的 task 必填规则从已发布契约里撤掉（回到 2026-08-26 之前）",
     edit: {
       file: "service/src/runtime/request-contract.ts",
-      find: '      { kind: "always", fields: ["task"], code: "PARSE_TASK_REQUIRED" },
-',
+      find: '      { kind: "always", fields: ["task"], code: "PARSE_TASK_REQUIRED" },\n',
       replace: "",
     },
   },
