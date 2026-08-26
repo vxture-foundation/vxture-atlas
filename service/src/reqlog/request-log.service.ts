@@ -116,6 +116,13 @@ export class RequestLogService {
             typeof entry.latencyMs === "number"
               ? Math.trunc(entry.latencyMs)
               : null,
+          // TD-037. Zero-based position of this attempt in a failover chain.
+          // Absent stays NULL rather than becoming 0: 0 asserts "first of
+          // several", and a row from a caller that ran no chain asserts nothing.
+          attemptIndex:
+            typeof entry.attemptIndex === "number"
+              ? Math.trunc(entry.attemptIndex)
+              : null,
           usageType: this.asUsageTypeOrNull(entry.usageType, entry.requestId),
           businessId: clamp(entry.businessId, 128),
           billedMetricKey: clamp(entry.billedMetricKey, 64),

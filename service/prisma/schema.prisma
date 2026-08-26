@@ -334,6 +334,12 @@ model RequestRecord {
   /// of outputTokens, billed at the output rate, kept apart because it is the
   /// one output cost an operator can switch off (config.wire.extraBody).
   reasoningTokens        BigInt?  @map("reasoning_tokens")
+  /// TD-037 (incr/03). Zero-based position of this attempt inside one logical
+  /// request; rows of one chain share `requestId`. NULL on rows written before
+  /// the column existed - those are single-row logical requests under the old
+  /// chat grain, and a fabricated 0 would claim they were the first attempt of
+  /// a chain nothing recorded.
+  attemptIndex           Int?     @map("attempt_index") @db.SmallInt
 
   @@id([id, createdAt])
   @@index([requestId], map: "idx_request_records_request_id")

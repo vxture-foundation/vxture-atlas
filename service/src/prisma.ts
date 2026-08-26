@@ -126,6 +126,8 @@ export interface RequestRecordRow {
   outputTokens: bigint | null;
   totalTokens: bigint | null;
   latencyMs: number | null;
+  /** TD-037. Zero-based attempt ordinal within one failover chain. */
+  attemptIndex: number | null;
   usageType: string | null;
   status: string | null;
   businessId: string | null;

@@ -26,7 +26,6 @@ because those are the ones still needing a decision.
 | [TD-016](#td-016) | Quota gate stays permissive for uncovered workspaces | 2026-07-28 |
 | [TD-019](#td-019) | `atlas.parse` cannot be advertised honestly | 2026-07-28 |
 | [TD-034](#td-034) | Gateway API keys authenticate nothing, and have no consumer to wire them to | 2026-08-14 |
-| [TD-037](#td-037) | `request_records` attempt semantics differ between the chat and S2S surfaces | 2026-08-16 |
 | [TD-038](#td-038) | `model_policies` has no history - value columns are overwritten in place and the read has no `asOf` | 2026-08-16 |
 | [TD-039](#td-039) | Nothing checks that a column a repository writes is a column `atlas_svc` may write | 2026-08-16 |
 | [TD-040](#td-040) | A partition's grants depend on how many times db-init has run | 2026-08-17 |
@@ -37,11 +36,14 @@ because those are the ones still needing a decision.
 | [TD-045](#td-045) | `codeql.yml` disabled - code scanning on a private repo needs GitHub Advanced Security | 2026-08-24 |
 | [TD-046](#td-046) | Both protocol adapters drop reasoning output, which makes multi-round tool calling structurally impossible on either | 2026-08-24 |
 | [TD-047](#td-047) | Cost and its off-peak window are modelled; the splits are still unreadable outside SQL, and no provider carries a policy row yet | 2026-08-24 |
+| [TD-048](#td-048) | `incr/NN` means two different files depending on which side of the rebaseline you read | 2026-08-26 |
 
 ## Closed
 
 | ID | Title | Closed |
 |----|-------|--------|
+| TD-049 | `chat()` and `chatStream()` are parallel implementations of one routing loop | 2026-08-26, the shared steps extracted; duplication on new code 16.1% -> 0.0% |
+| TD-037 | `request_records` attempt semantics differ between the chat and S2S surfaces | 2026-08-26, one row per attempt on both surfaces; `attempt_index` (incr/03_reqlog_attempt_index) carries the ordinal |
 | TD-002 | Usage-metering write path was a no-op | 2026-07-28, by TD-017 |
 | TD-005 | Service code referenced Prisma models removed by the DB split | 2026-07-28 |
 | TD-006 | Provider API keys were env-var only; rotation required a redeploy | 2026-07-26, see [ADR-003](../30-design/decisions/ADR-003-provider-key-vault-envelope-encryption.md) |
@@ -190,20 +192,41 @@ correct, and rebuilding it when a partner arrives would be pure churn.
 
 ## TD-037
 
-**Wrong**: the two request surfaces write different `request_records`
-semantics for failover. The chat path writes ONE row per logical request -
-intermediate failed candidates appear only in logs and Prometheus counters -
-while the S2S path (`withRequestLog` inside `runWithS2sFailover`) writes a
-`status: error` row per failed attempt plus the final row, sharing one
-`requestId` when the caller supplied one. Same table, different grain:
-count-based rollups are not comparable across surfaces, and chat's failed
-upstream attempts (which burned provider spend) are invisible to reqlog.
+**Closed 2026-08-26.** One row per attempt on both surfaces. The chat path now
+records every candidate it tried, `attempt_index` carries the ordinal
+(`incr/03_reqlog_attempt_index.sql`), and the terminal failure row is written
+only when no attempt recorded itself - otherwise it would be an N+1th record of
+a failure already counted N times, landing in exactly the rollups this change
+existed to make comparable.
 
-**Recovery**: pick one grain and apply it to both surfaces. Candidate: one
-row per attempt with the attempt index carried explicitly, so per-provider
-error rates come from reqlog rather than metrics. Wants its own change with
-rollup queries reviewed together (`usage_type = 'retry'` is the reserved
-vocabulary for non-first attempts, see TD-024's closing row).
+**The recovery note this entry carried was wrong on one point, and reading the
+code is what showed it.** It proposed marking non-first attempts
+`usage_type='retry'`. That word already has an owner: `ChatRequest.usageType`
+lets a PRODUCT declare "this is my second call for this task". Atlas's second
+CANDIDATE for one call is a different fact, and product_251 X-4 does not allow
+one word to carry both. X-4 is in the rigid zone and this note was not, so the
+ordinal carries it alone and `usage_type` stays the caller's assertion.
+
+**What did NOT change, deliberately:** C3 consume is still one per logical
+request. It is keyed on `requestId`, which every row in a chain shares, so
+consuming per attempt would either bill retries or - because the kernel
+deduplicates on that key - bill the FIRST attempt's tokens instead of the
+successful one's. Both are wrong, and neither would have failed anything. A
+test asserts the single consume across a failover.
+
+**What is still not recorded:** the tokens a failed attempt burned. The throw
+path does not carry usage, so those rows have NULL token columns - the attempt
+is now visible, its cost is not. Unreported stays NULL rather than 0, as
+everywhere else. Making the adapters carry usage out through the error is its
+own change.
+
+**One consequence worth stating rather than discovering:** `attemptIndex` now
+appears on `/capability/logs` rows, because that response serialises whatever
+the row carries. It is additive and nullable. TD-047 item 3 records a stricter
+reading of product_251 A-4 for the token splits - that adding a field to a
+published shape is a three-party decision - and if that reading is the right
+one, both belong behind the same decision rather than one slipping through.
+Flagged rather than assumed.
 
 ## TD-038
 
@@ -653,3 +676,69 @@ for the internal cost pool, separate from the tenant-facing token quota. It is
 labelled as such in the response itself (`basis`), not only here: a reader who
 does not know reasoning tokens are excluded from the sum will reconcile against
 the provider's invoice and conclude the meter is broken.
+
+## TD-048
+
+**Wrong**: `incr/NN` identifies two different files. ADR-006 folded
+`incr/01`..`incr/15` into the baseline and the directory restarted at `01`
+(`deploy/database/ddl/incr/README.md` states the restart explicitly, so the
+numbering is correct). What did not restart is the prose: comments across the
+service still cite the OLD numbers - `request-log.service.ts` points at
+"incr/03_reqlog_endpoint_code.sql" while `incr/03_reqlog_attempt_index.sql` is
+what exists, and `incr/01`, `incr/02`, `incr/05`, `incr/12`, `incr/13`,
+`incr/14`, `incr/15` appear in the same ambiguous bare form elsewhere.
+
+This is TD-038's shape one directory over: a stable identifier that means two
+things depending on when it was written. Nothing breaks; a reader follows the
+reference to the wrong file and reasons from it.
+
+**Interim**: new references use the full slug (`incr/03_reqlog_attempt_index`),
+never the bare number.
+
+**Recovery**: rewrite the historical citations to name what the change WAS
+rather than which file carried it ("the increment that added endpoint_code"),
+since those files no longer exist to be pointed at. A guardrail could enforce
+the slug form on new references; whether that earns its place is a judgement
+about how often this is written, not a certainty.
+
+## TD-049
+
+**Closed 2026-08-26, in the same change that opened it.**
+
+The two chat surfaces no longer carry their own copy of the routing loop's
+steps. What is shared is now defined once:
+
+| Extracted | What it was |
+|---|---|
+| `beginChatRequest` | route + validate + requestId + in-flight gauge + start log |
+| `resolveCandidatesOrFail` | the candidate chain, or a logged and enriched refusal |
+| `skipTripped` | the circuit-breaker skip, including "never skip the last candidate" |
+| `assertQuotaOrRecordRefusal` | the quota gate and the row a refusal leaves |
+| `buildUpstreamRequest` | the request body handed to an adapter |
+| `logAttempt` / `logChainExhausted` | the per-attempt and chain-failure log lines |
+| `failCandidate` | normalise, trip the breaker, log, record - in that order |
+| `recordAttemptFailure` | one reqlog row for one failed attempt |
+| `callerDimensions` | the seven caller fields both reqlog writers assembled |
+
+A `ChatAttemptContext` is built once per request and handed down, so a new
+dimension is a field rather than an edit at eight call sites.
+
+**Why it was worth doing rather than tolerating.** The duplication was not
+cosmetic: every one of those blocks was a place where a fix could be applied to
+one surface and not the other, and the streaming surface is the one with fewer
+tests. TD-037 hit exactly that - the same attempt row had to be added twice, and
+the streaming half had no test until the duplication was noticed.
+
+**Two defects fell out of the extraction itself**, which is the argument for
+doing it rather than the reward:
+
+- a comment explaining "do not let a fallback stream a second answer" sat above
+  the wrong statement, describing a `break` two statements away;
+- the terminal failure row had become unreachable once every attempt recorded
+  itself - a branch nothing could enter, reading as a safety net. Removed, with
+  the "writes N rows, not N+1" test standing in its place.
+
+**Measured**: a scan for duplicated eight-line blocks in `runtime.service.ts`
+went from 14 to 0, and SonarCloud's duplication on new code from 16.1% to 0.0%
+with coverage on new code at 86.2%. The gate that flagged it was right, and was
+worth following past the point where the number stopped being the reason.

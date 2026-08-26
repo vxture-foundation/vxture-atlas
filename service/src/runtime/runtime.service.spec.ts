@@ -1733,4 +1733,265 @@ describe("ModelRuntimeService runtime flow", () => {
       },
     );
   });
+
+  /**
+   * TD-037. The chat surface wrote ONE row per logical request; the S2S surface
+   * wrote one per attempt. Same table, two grains, so nothing counted across both
+   * was comparable - and chat's failed candidates, which cost real provider money
+   * and real latency, existed only in logs and a Prometheus counter.
+   *
+   * These cases are about the grain and about the one thing the grain change is
+   * most likely to break: C3 consume must stay ONE per logical request. It is
+   * keyed on `requestId`, which every row in a chain shares, so consuming per
+   * attempt would either bill retries or - because the kernel deduplicates on
+   * that key - bill the FIRST attempt's tokens instead of the successful one's.
+   * Both are wrong and neither would fail anything.
+   */
+  describe("TD-037: one request_records row per attempt", () => {
+    function failingPrimary() {
+      return makeRuntime({
+        router: {
+          resolve: vi.fn((model: { provider: string }) => {
+            if (model.provider === "primary") {
+              return {
+                chat: vi.fn().mockRejectedValue(new Error("upstream exploded")),
+                chatStream: vi.fn(),
+              };
+            }
+            return {
+              chat: vi.fn().mockResolvedValue({
+                content: "fallback response",
+                promptTokens: 8,
+                completionTokens: 4,
+                totalTokens: 12,
+              }),
+              chatStream: vi.fn(),
+            };
+          }),
+        },
+      });
+    }
+
+    it("records the failed candidate as its own row, ahead of the success", async () => {
+      const { service, requestLog } = failingPrimary();
+
+      await service.chat(makeRequest({ modelCode: "primary-model" }));
+
+      const rows = requestLog.record.mock.calls.map(([entry]) => entry);
+      expect(rows).toHaveLength(2);
+      expect(rows[0]).toMatchObject({
+        attemptIndex: 0,
+        status: "error",
+        modelCode: "primary-model",
+      });
+      expect(rows[1]).toMatchObject({
+        attemptIndex: 1,
+        status: "success",
+        modelCode: "fallback-model",
+      });
+      // One logical request: every row in the chain carries the same id, which
+      // is what makes the chain reconstructable and what C3 keys on.
+      expect(rows[0].requestId).toBe(rows[1].requestId);
+    });
+
+    it("consumes ONCE across a failover, not once per attempt", async () => {
+      const { service, entitlements } = failingPrimary();
+
+      await service.chat(makeRequest({ modelCode: "primary-model" }));
+
+      expect(entitlements.consume.mock.calls.length).toBeLessThanOrEqual(1);
+    });
+
+    it("does not relabel usage_type - that word belongs to the caller", async () => {
+      // TD-037's own recovery note suggested marking non-first attempts
+      // `usage_type='retry'`. That word is already taken: `ChatRequest.usageType`
+      // lets a PRODUCT say "this is my second call for this task", which is a
+      // different fact from "Atlas's second candidate for this one call". X-4
+      // does not allow one word to carry both, so the ordinal carries it instead.
+      const { service, requestLog } = failingPrimary();
+
+      await service.chat(makeRequest({ modelCode: "primary-model" }));
+
+      for (const [entry] of requestLog.record.mock.calls) {
+        expect(entry.usageType).toBe("normal");
+      }
+    });
+
+    it("writes N rows when every candidate fails, not N+1", async () => {
+      // The terminal path used to write the only row. Now that each attempt
+      // writes its own, a terminal row would be an extra record of a failure
+      // already counted - landing in the very rollups this change exists to make
+      // comparable.
+      const { service, requestLog } = makeRuntime({
+        router: {
+          resolve: vi.fn(() => ({
+            chat: vi.fn().mockRejectedValue(new Error("upstream exploded")),
+            chatStream: vi.fn(),
+          })),
+        },
+      });
+
+      await expect(
+        service.chat(makeRequest({ modelCode: "primary-model" })),
+      ).rejects.toBeDefined();
+
+      const rows = requestLog.record.mock.calls.map(([entry]) => entry);
+      expect(rows).toHaveLength(2);
+      expect(rows.map((r) => r.attemptIndex)).toEqual([0, 1]);
+      expect(rows.every((r) => r.status === "error")).toBe(true);
+    });
+
+    it("records the streaming candidate that failed before a byte was sent", async () => {
+      // The streaming loop is where this change is riskiest: once bytes are on
+      // the wire a fallback cannot answer into the same response, so the code
+      // has two exits - fail over (nothing yielded yet) and give up (partial
+      // output already sent). Only the first produces a chain, and only the
+      // first is what these rows describe.
+      const { service, requestLog } = makeRuntime({
+        router: {
+          resolve: vi.fn((model: { provider: string }) => {
+            if (model.provider === "primary") {
+              return {
+                chat: vi.fn(),
+                // Throws before yielding anything, so failover is still legal.
+                chatStream: vi.fn(async function* (): AsyncGenerator<StreamEvent> {
+                  throw new Error("upstream exploded");
+                  yield { type: "text", delta: "never" };
+                }),
+              };
+            }
+            return {
+              chat: vi.fn(),
+              chatStream: vi.fn(async function* (): AsyncGenerator<StreamEvent> {
+                yield { type: "text", delta: "fallback stream" };
+                yield {
+                  type: "done",
+                  usage: { promptTokens: 8, completionTokens: 4, totalTokens: 12 },
+                };
+              }),
+            };
+          }),
+        },
+      });
+
+      const events: unknown[] = [];
+      for await (const event of service.chatStream(
+        makeRequest({ modelCode: "primary-model", requestId: "stream-chain" }),
+      )) {
+        events.push(event);
+      }
+
+      const rows = requestLog.record.mock.calls.map(([entry]) => entry);
+      expect(rows).toHaveLength(2);
+      expect(rows[0]).toMatchObject({
+        attemptIndex: 0,
+        status: "error",
+        modelCode: "primary-model",
+      });
+      expect(rows[1]).toMatchObject({
+        attemptIndex: 1,
+        status: "success",
+        modelCode: "fallback-model",
+      });
+      expect(rows[0].requestId).toBe(rows[1].requestId);
+      // The caller still got exactly one answer, from the fallback.
+      expect(events.length).toBeGreaterThan(0);
+    });
+
+    it("writes N streaming rows when every candidate fails, not N+1", async () => {
+      const { service, requestLog } = makeRuntime({
+        router: {
+          resolve: vi.fn(() => ({
+            chat: vi.fn(),
+            chatStream: vi.fn(async function* (): AsyncGenerator<StreamEvent> {
+              throw new Error("upstream exploded");
+              yield { type: "text", delta: "never" };
+            }),
+          })),
+        },
+      });
+
+      await expect(
+        (async () => {
+          for await (const _ of service.chatStream(
+            makeRequest({ modelCode: "primary-model", requestId: "stream-dead" }),
+          )) {
+            // drained only so the generator runs to its failure
+          }
+        })(),
+      ).rejects.toBeDefined();
+
+      const rows = requestLog.record.mock.calls.map(([entry]) => entry);
+      expect(rows.map((r) => r.attemptIndex)).toEqual([0, 1]);
+      expect(rows.every((r) => r.status === "error")).toBe(true);
+    });
+
+    it("records a streaming candidate refused by quota with its ordinal", async () => {
+      // The gate refusal path never reaches a provider, so it has no latency to
+      // report - the shared helper takes it as absent rather than writing a 0
+      // that would claim the upstream answered instantly.
+      const { service, requestLog } = makeRuntime({
+        quota: {
+          assertAllowed: vi
+            .fn()
+            .mockRejectedValue(
+              new ModelRuntimeException(
+                HttpStatus.FORBIDDEN,
+                "QUOTA_EXCEEDED",
+                "quota exhausted",
+              ),
+            ),
+        },
+      });
+
+      await expect(
+        (async () => {
+          for await (const _ of service.chatStream(
+            makeRequest({ modelCode: "primary-model", requestId: "stream-quota" }),
+          )) {
+            // no events are expected
+          }
+        })(),
+      ).rejects.toMatchObject({ code: "QUOTA_EXCEEDED" });
+
+      const rows = requestLog.record.mock.calls.map(([entry]) => entry);
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({ attemptIndex: 0, status: "error" });
+      expect(rows[0].latencyMs).toBeUndefined();
+    });
+
+    it("does not suppress the row of a candidate refused before the provider", async () => {
+      // The terminal guard must not over-reach. A quota refusal on the first
+      // candidate writes its row from inside the loop and throws, so exactly
+      // one row exists and it carries attempt 0 - not zero rows because the
+      // guard swallowed it, and not two because the terminal path added one.
+      //
+      // What this case deliberately does NOT cover: a request that fails
+      // routing before any candidate exists writes no row at all. That is the
+      // pre-log rejection shape (`PreLogRejection`) - validation happens before
+      // the write, so a refused call leaves metrics and no reqlog row by
+      // construction. Pre-existing, documented, and untouched here.
+      const { service, requestLog } = makeRuntime({
+        quota: {
+          assertAllowed: vi
+            .fn()
+            .mockRejectedValue(
+              new ModelRuntimeException(
+                HttpStatus.FORBIDDEN,
+                "QUOTA_EXCEEDED",
+                "quota exhausted",
+              ),
+            ),
+        },
+      });
+
+      await expect(
+        service.chat(makeRequest({ modelCode: "primary-model" })),
+      ).rejects.toMatchObject({ code: "QUOTA_EXCEEDED" });
+
+      const rows = requestLog.record.mock.calls.map(([entry]) => entry);
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({ attemptIndex: 0, status: "error" });
+    });
+  });
 });

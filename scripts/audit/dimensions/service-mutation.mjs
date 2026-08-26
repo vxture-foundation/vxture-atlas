@@ -45,7 +45,7 @@ export const meta = {
   id: "service-mutation",
   title: "服务不变量的变异测试（钉住的一组）",
   covered: [
-    "九条承重不变量：探针输出预算、流式空交付判绿、成本拆分的“未上报不是 0”、wire.extraBody 保留键、推理 token 不重复计价、未声明缓存单价的回退方向、高峰窗口的半开边界、无策略供应商按全价、契约指纹随必填规则移动",
+    "十条承重不变量：探针输出预算、流式空交付判绿、成本拆分的“未上报不是 0”、wire.extraBody 保留键、推理 token 不重复计价、未声明缓存单价的回退方向、高峰窗口的半开边界、无策略供应商按全价、失败候选自己写行并带序号、契约指纹随必填规则移动",
     "每条变异点名它应当被哪个 spec 抓住，只跑那个 spec —— 抓不住时区分“套件没红”与“红在别处”",
     "变异前后各校验一次工作树干净，确保 git checkout 是精确回滚",
     "每个 spec 的干净基线只跑一次并复用；vitest 退出码 1 才算测试失败，其余非零一律记为崩溃、不算“挡住了”",
@@ -164,6 +164,23 @@ const MUTATIONS = [
       file: "service/src/observability/cost-rollup.ts",
       find: "      policy === null || !placeable\n        ? true",
       replace: "      policy === null || !placeable\n        ? false",
+    },
+  },
+  {
+    invariant: "失败的候选也写自己那一行，并带上尝试序号",
+    why:
+      "chat 此前整条失败转移链只写一行，失败候选只活在日志和 Prometheus 计数器里 —— " +
+      "而它们花掉了真实的供应商开销和延迟。序号丢了，链条就没法重建，" +
+      "按供应商的错误率也就仍然只能从指标而不是 reqlog 得出。",
+    spec: "src/runtime/runtime.service.spec.ts",
+    edit: {
+      file: "service/src/runtime/runtime.service.ts",
+      find:
+        "      // allow one word to carry both. The ordinal says it without ambiguity.\n" +
+        "      ...(attemptIndex !== undefined ? { attemptIndex } : {}),",
+      replace:
+        "      // allow one word to carry both. The ordinal says it without ambiguity.\n" +
+        "      ...(false ? { attemptIndex } : {}),",
     },
   },
   {
