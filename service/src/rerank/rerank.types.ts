@@ -15,7 +15,10 @@ export interface RerankRequest {
    * data-plane surfaces run the same `runWithS2sFailover` loop.
    */
   endpointCode?: string;
-  /** Task-profile routing (docs/70-workplan) - see `ChatRequest.taskProfile`. */
+  /**
+   * Task-profile routing on the LEGACY TENANT AXIS - a product wants
+   * `endpointCode` above. See `ChatRequest.taskProfile` and TD-052.
+   */
   taskProfile?: string;
   query: string;
   candidates: RerankCandidate[];

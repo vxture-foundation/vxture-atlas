@@ -364,11 +364,36 @@ finished migrating" a query rather than a guess.
 `modelCode` > `endpointCode` > `taskProfile`. At least one required; passing
 more than one is not an error, the narrower wins.
 
-| Field | Resolves via | Scope |
-|---|---|---|
-| `modelCode` | direct | exact model |
-| `endpointCode` | `model.model_endpoints` | global stable name, e.g. `chat/default` |
-| `taskProfile` | `model_grants.task_profile` | per-tenant preference |
+| Field | Resolves via | Axis | Scope |
+|---|---|---|---|
+| `modelCode` | direct | either | exact model |
+| `endpointCode` | `model.model_endpoints` | **product** | global stable name, e.g. `chat/default` |
+| `taskProfile` | `model_grants.task_profile` | **tenant (legacy)** | a label matched against tenant grants |
+
+**A product integrating today wants `endpointCode`.** The three are not
+equivalent choices, and this table said they were until 2026-08-26 - it
+described `taskProfile` as a *per-tenant preference* and named no axis, while
+the section below already said authorization is moving to (product, endpoint).
+A consumer reading only this table picks the third row, is then required to
+supply a `tenantId` it has no reason to hold, and lands on the axis
+`model_grant_authorizations_total{axis}` exists to count down to zero.
+
+That is not hypothetical: it is what karda was told to do (vxture-atlas#4,
+#39), by us, and the correction is vxture-atlas#47.
+
+**Why the tenant axis is the wrong shape for this, not merely the older one.**
+Label routing was only ever built on it, so asking for a label drags a tenant
+along - but the tenant is not what decides the answer. Binding models to
+tenants makes tenancy a routing dimension: every new customer becomes a routing
+config change, O(tenants). And repointing costs a grant row per tenant, where
+repointing an endpoint costs nothing at all - every product holding it follows.
+
+**If "different customers get different tiers" is ever needed, it is not a
+tenant grant.** It is a business MODE the product selects - cost-first,
+quality-first, latency-first - with operators deciding what serves each. That
+is O(modes), and it keeps the property that matters: **the label states what
+the caller needs**, and tenant identity does not carry that intent. So
+`taskProfile` is not extended; the mode idea lands on the product axis.
 
 On endpoint routing the endpoint's `fallbackModelCode` is the only chain (the
 model's own `config.fallbackModelCodes` does not stack); an endpoint may point

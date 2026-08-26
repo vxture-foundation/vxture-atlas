@@ -56,6 +56,7 @@ because those are the ones still needing a decision.
 | [TD-048](#td-048) | `incr/NN` means two different files depending on which side of the rebaseline you read | 2026-08-26 |
 | [TD-050](#td-050) | A credential exposure is tracked only in a published document, so no release checklist can see it | 2026-08-26 |
 | [TD-051](#td-051) | The published contract states what is required, not what a surface accepts or can refuse with | 2026-08-26 |
+| [TD-052](#td-052) | Label routing exists only on the retiring tenant axis, so asking for a label drags a tenant along | 2026-08-26 |
 
 ## Closed
 
@@ -945,3 +946,44 @@ distinction worth keeping.
 in one fingerprint move rather than several - per-surface `errorCodes`, and
 `accepts` alongside `requires`. Consumers pin the fingerprint, so the cost is
 paid once per change, not once per field.
+
+## TD-052
+
+**Label routing exists only on the retiring tenant axis, so asking for a label
+drags a tenant along.**
+
+Two mechanisms wear the word `grant`, and only one of them can route:
+
+- `product_endpoint_grants` - a PRODUCT holds ENDPOINTS; the models it may name
+  are whatever those endpoints reach. No tenant. Repointing an endpoint costs
+  nothing: every product holding it follows, with no grant row to update.
+- `model_grants` - a TENANT holds MODELS, and this table alone carries
+  `task_profile`. It is the axis `model_grant_authorizations_total{axis}` is
+  counting down to zero.
+
+So a product that wants "fixed label, operators pick the model, zero caller
+change" has two ways to get it, and the one it is likely to find first requires
+a `tenantId` it has no reason to hold. **The tenant is not what decides the
+answer; it is an artefact of where the feature was built.**
+
+**This shipped as bad advice, which is the part that cost something.** karda was
+pointed at `taskProfile` (vxture-atlas#4, #39) and blocked on a tenant uuid it
+does not have, while it already holds product-axis endpoint grants. Corrected in
+vxture-atlas#47 and vxture-platform#55. The doc that steered it -
+`docs/20-specs/10-http-surface.md` - listed the three selectors as equivalent
+rows, called `taskProfile` a *per-tenant preference*, and named no axis, in the
+same file that already said authorization was moving to (product, endpoint).
+
+**`taskProfile` is not extended, and the reason is not just that its axis is
+retiring.** Binding models to tenants makes tenancy a routing dimension: every
+new customer becomes a routing config change, O(tenants). The need it appears
+to serve - "different customers get different tiers" - is properly a business
+MODE the product selects (cost-first / quality-first / latency-first) with
+operators deciding what serves each: O(modes), and it preserves the property
+that matters, that **the label states what the caller needs**. Tenant identity
+does not carry that intent. Owner ruling, 2026-08-26.
+
+**Recovery**: the mode concept lands on the product axis when a second tier is
+actually wanted; `taskProfile` is left to the countdown already in place. No
+code change is required for the correction itself - `endpointCode` has always
+worked and needs no tenant.

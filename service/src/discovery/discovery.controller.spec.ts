@@ -20,7 +20,18 @@ describe("DiscoveryController.list", () => {
       // moved when taskId became required (#230/#231), so it was worthless
       // as a drift signal for a polling consumer. Retroactive bump - it
       // documents ground truth for whoever starts polling today.
-      expect(tool.version).toBe("1.1.0");
+      //
+      // 1.1.0 -> 1.2.0 (TD-052, 2026-08-26): the selector properties gained
+      // `description`s saying which authorization axis each lives on, after a
+      // consumer read three peer options and picked the one on the retiring
+      // tenant axis. Not breaking - nothing accepted before is refused now -
+      // but a polling consumer diffing `input_schema` sees a real change, and
+      // this field is the cheap signal that is supposed to say so.
+      //
+      // That this assertion had to be edited at all is the mechanism working:
+      // the version cannot move by accident, which is precisely what TD-044
+      // was about.
+      expect(tool.version).toBe("1.2.0");
       expect(tool.deprecated).toBe(false);
       expect(tool.input_schema).toBeTruthy();
       // product_210 §4.1a: the field that lets discovery announce a
