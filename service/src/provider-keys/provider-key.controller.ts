@@ -66,8 +66,14 @@ export class ProviderKeyController {
     @Req() req: OperatorAuthenticatedRequest,
   ): Promise<ProviderKeyAdminRecord> {
     const rotatedBy = toOperatorAccountUuid(req.operatorAuth?.operatorId);
+    // Named copies, not `...body`: the spread forwarded whatever the client
+    // sent, so a body-supplied `rotatedBy` reached the audit log unchanged
+    // whenever the line above resolved to `undefined`.
     return this.keys.rotate(providerKeyId, {
-      ...body,
+      ...(body.plaintextKey !== undefined
+        ? { plaintextKey: body.plaintextKey }
+        : {}),
+      ...(body.reason !== undefined ? { reason: body.reason } : {}),
       ...(rotatedBy !== undefined ? { rotatedBy } : {}),
     });
   }

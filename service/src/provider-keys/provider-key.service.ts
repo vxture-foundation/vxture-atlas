@@ -17,7 +17,7 @@ import { ProviderKeyRepository } from "./provider-key.repository";
 import type {
   CreateProviderKeyBody,
   ProviderKeyAdminRecord,
-  RotateProviderKeyBody,
+  RotateProviderKeyInput,
 } from "./provider-key.types";
 import type { ProviderApiKeyRow } from "../prisma";
 import { toObjectState } from "../object-state";
@@ -141,7 +141,7 @@ export class ProviderKeyService {
   /** Rotates the secret material in place under the same (providerCode, keyAlias); old ciphertext is overwritten, never retained. */
   async rotate(
     providerKeyId: string,
-    body: RotateProviderKeyBody,
+    body: RotateProviderKeyInput,
   ): Promise<ProviderKeyAdminRecord> {
     const existing = await this.repository.findById(providerKeyId);
     if (!existing) {

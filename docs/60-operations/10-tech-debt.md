@@ -37,6 +37,7 @@ because those are the ones still needing a decision.
 | [TD-046](#td-046) | Both protocol adapters drop reasoning output, which makes multi-round tool calling structurally impossible on either | 2026-08-24 |
 | [TD-047](#td-047) | Cost and its off-peak window are modelled; the splits are still unreadable outside SQL, and no provider carries a policy row yet | 2026-08-24 |
 | [TD-048](#td-048) | `incr/NN` means two different files depending on which side of the rebaseline you read | 2026-08-26 |
+| [TD-050](#td-050) | A credential exposure is tracked only in a published document, so no release checklist can see it | 2026-08-26 |
 
 ## Closed
 
@@ -804,3 +805,51 @@ doing it rather than the reward:
 went from 14 to 0, and SonarCloud's duplication on new code from 16.1% to 0.0%
 with coverage on new code at 86.2%. The gate that flagged it was right, and was
 worth following past the point where the number stopped being the reason.
+
+## TD-050
+
+**A credential exposure is tracked only in a published document, so no release
+checklist can see it.**
+
+The exposure itself is not new and is not in dispute. On 2026-08-17 a container
+environment dump was caught by `git add -A`, committed and pushed. Four secrets
+were in it: the vault master key SET (`PROVIDER_KEY_ENCRYPTION_KEYS`), an
+upstream provider key, the C3 webhook secret, and the database password. The
+branch was deleted and the PR closed, but GitHub retains a PR head ref
+indefinitely, so the commit remains fetchable. Per this repo's secret
+discipline the remedy is revocation and reissue at each source console, never
+history rewriting.
+
+**What this entry is about is the second failure, found on 2026-08-26 while
+re-checking the published documents against the repo.** The full account of the
+incident lives in one artifact - the produce-status document, section 08. There
+is no row for it here, and `docs/` contains no other mention. The consequence is
+specific rather than theoretical: the pre-release checks are assembled from this
+register, so **every release since has been cut without the exposure appearing
+anywhere in front of the person cutting it**, v0.7.0 included. An unregistered
+open item and a closed one produce the same silence.
+
+**Rotation status is unconfirmed.** This entry deliberately does not claim the
+credentials are still live, and does not claim they have been rotated: neither
+can be established from a developer machine. It is answerable in one of two
+places - the issue timestamp on each credential in its own source console, or a
+successful decrypt of existing ciphertext under a new `keyId`. Recording
+"unknown" is the honest state; recording either alternative would be a fresh
+instance of the defect this register exists to catch.
+
+**The master key has a prerequisite that outlives this entry.**
+`PROVIDER_KEY_ENCRYPTION_KEYS` is a `{keyId: key}` set. Rotation means ADDING a
+new `keyId` and re-encrypting, never substituting the value: a straight
+replacement leaves every stored ciphertext undecryptable, which takes the
+service down rather than securing it.
+
+**Already done, and its limit.** Three `.gitignore` patterns (`*.tmp`,
+`.devenv*`, `*.env.dump`) were added and tested against the real file. That
+narrows recurrence; it does not close this. `gitleaks` runs in CI after a push,
+so it demonstrated on this very incident that it can report a leak but cannot
+prevent one.
+
+**Closing condition**: each of the four revoked and reissued at its source, with
+the vault set handled by add-then-re-encrypt - or, if a check shows a credential
+was already rotated, that check recorded here with its date and how it was
+established.
