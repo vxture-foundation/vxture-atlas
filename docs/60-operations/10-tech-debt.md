@@ -43,7 +43,7 @@ because those are the ones still needing a decision.
 | [TD-016](#td-016) | Quota gate stays permissive for uncovered workspaces | 2026-07-28 |
 | [TD-019](#td-019) | `atlas.parse` cannot be advertised honestly | 2026-07-28 |
 | [TD-034](#td-034) | Gateway API keys authenticate nothing, and have no consumer to wire them to | 2026-08-14 |
-| [TD-038](#td-038) | `model_policies` has no history - value columns are overwritten in place and the read has no `asOf` | 2026-08-16 |
+| [TD-053](#td-053) | `model_policies` has no history - value columns are overwritten in place and the read has no `asOf` | 2026-08-16 |
 | [TD-039](#td-039) | Nothing checks that a column a repository writes is a column `atlas_svc` may write | 2026-08-16 |
 | [TD-040](#td-040) | A partition's grants depend on how many times db-init has run | 2026-08-17 |
 | [TD-041](#td-041) | The retired `/capability` path names have a sunset date and nothing that reads it | 2026-08-17 |
@@ -157,9 +157,27 @@ task-profile routing by calling the API directly.
 `vxture-platform`'s opera portal. Owner decision 2026-08-10: model management
 moves to the opera product later, deliberately not scheduled in atlas.
 
-**Recovery**: opera adds the field via the same interim `/capability/*`-proxy
-pattern used for provider-keys, or the future opera-side model-management
-module carries it.
+**Recovery, as first written**: opera adds the field via the same interim
+`/capability/*`-proxy pattern used for provider-keys, or the future opera-side
+model-management module carries it.
+
+**2026-08-27: that recovery is withdrawn, and the entry is downgraded.** Adding
+a `taskProfile` input would be building operator UI for the tenant axis that
+`model_grant_authorizations_total{axis}` is counting down to removal. A product
+integrating today wants `endpointCode`, and the product axis
+(`product_endpoint_grants`) already has full CRUD - list, create, patch,
+activate/deactivate, delete - so nothing is blocked on this.
+
+Withdrawn on `vxture-platform#52`, which this repo had opened the day before
+without questioning the axis. Root cause TD-052; the correction to the consumer
+that was steered here is `vxture-atlas#47`.
+
+**What remains true**: task-profile routing is configurable only through the
+API, not the console. That is now a property of a retiring feature rather than
+a gap to close, and it closes when the axis does. If opera turns out to lack a
+management surface for the PRODUCT axis, that is a separate and real gap - not
+this one, and not asserted here, because opera's surface is not this repo's to
+describe.
 
 **Filed 2026-08-26: `vxture-platform/vxture-platform#52`.** It had been marked
 "not fixed here, belongs to opera" since 2026-08-10 and was never opened in the
@@ -219,67 +237,7 @@ management-only and says so.
 **Not a candidate for deletion**: the management surface is complete and
 correct, and rebuilding it when a partner arrives would be pure churn.
 
-## TD-037
-
-**Closed 2026-08-26.** One row per attempt on both surfaces. The chat path now
-records every candidate it tried, `attempt_index` carries the ordinal
-(`incr/03_reqlog_attempt_index.sql`), and the terminal failure row is written
-only when no attempt recorded itself - otherwise it would be an N+1th record of
-a failure already counted N times, landing in exactly the rollups this change
-existed to make comparable.
-
-**The recovery note this entry carried was wrong on one point, and reading the
-code is what showed it.** It proposed marking non-first attempts
-`usage_type='retry'`. That word already has an owner: `ChatRequest.usageType`
-lets a PRODUCT declare "this is my second call for this task". Atlas's second
-CANDIDATE for one call is a different fact, and product_251 X-4 does not allow
-one word to carry both. X-4 is in the rigid zone and this note was not, so the
-ordinal carries it alone and `usage_type` stays the caller's assertion.
-
-**What did NOT change, deliberately:** C3 consume is still one per logical
-request. It is keyed on `requestId`, which every row in a chain shares, so
-consuming per attempt would either bill retries or - because the kernel
-deduplicates on that key - bill the FIRST attempt's tokens instead of the
-successful one's. Both are wrong, and neither would have failed anything. A
-test asserts the single consume across a failover.
-
-**The tokens a failed attempt burned are now recorded where they exist
-(2026-08-26).** The first version of this entry said the throw path carries no
-usage. Half true, and the half that mattered was wrong: most failures - a
-timeout, a refused connection, a 5xx - genuinely report nothing, and NULL is the
-honest answer there. One does not, and it is the expensive one. A response that
-arrives complete, with a full usage object and no content, is what a thinking
-model produces when the output budget goes to the reasoning chain - the exact
-failure that opened this line of work. Both adapters had those numbers in hand
-and threw them away.
-
-They now travel out on `UpstreamCallFailure` (`providers/upstream-failure.ts`)
-and land on the attempt's row. `usageFromError` matches by `instanceof` rather
-than by duck-typing a `usage` property: an arbitrary object that happens to have
-one is not a report from an upstream, and treating it as one would put invented
-numbers into the metering table - the NULL-not-zero failure arriving by a
-different door. An empty snapshot is treated as no report at all.
-
-No consume is emitted for these rows. Nothing was billed, so `billed_amount`
-stays NULL and the row is the reconciliation signal rather than a charge.
-Anthropic reports no reasoning split - `thinking` blocks are counted inside
-`output_tokens` and not broken out - so `reasoningTokens` is absent there rather
-than invented as 0.
-
-**One consequence, stated rather than discovered:** `attemptIndex` now appears
-on `/capability/logs` rows, because that response serialises whatever the row
-carries. It is additive and nullable, and it stays.
-
-This was first flagged as possibly needing the same decision TD-047 item 3
-reserves for the token splits. **That symmetry was wrong** and the correction
-is recorded in item 3: `/capability/*` has one consumer, which parses by
-TypeScript cast with no runtime schema, so an additive field cannot break it -
-and an attempt ordinal is an operational fact about routing, which is what an
-operator's log view is for. The open question on the splits is a product one
-about cost-adjacent numbers, and it does not extend to every field that lands
-on the row.
-
-## TD-038
+## TD-053
 
 **Wrong**: `model_policies` has no history. Every value column
 (`priority`, `max_concurrent`, `rate_limit_rpm`/`tpm`/`tpd`,
@@ -560,10 +518,6 @@ that was actually wrong with the file.
 **Both protocol adapters drop reasoning output, which makes multi-round tool
 calling structurally impossible on either.**
 
-This entry was first written as "one adapter parses a field it does not
-deliver", and prioritised on whether a consumer had asked for it. Both framings
-were wrong, and the correction matters more than the original text.
-
 ### It is not one adapter, it is both
 
 | Adapter | What is dropped | Evidence |
@@ -598,22 +552,12 @@ repositories to ask in.
 
 Two reasons the demand signal is the wrong gate here:
 
-**2026-08-26: the exposure is now measured, which the entry previously said
-could not be done.** `model_reasoning_tool_exposure_total{product,multi_round}`
-counts calls that carried `tools` AND came back with reasoning - the shape this
-entry describes. `multi_round="no"` is exposure created, `"yes"` is exposure
-exercised.
-
-Point 1 below is true and stays. What was wrong is what it had been extended
-into: vxture-atlas#23 parked this as *风险存在，且暂时无法调查*, and nothing
-separated "we cannot see the 400" from "so we cannot know the size". Atlas
-already recorded whether the model reasoned (`incr/01`) and can see whether the
-call is multi-round; only "did this request carry tools" went nowhere. An
-unmeasurable risk and a measured-at-zero one look identical on a board.
-
-A counter and not a column, deliberately: the first question is go/no-go, and
-that needs no db-init. A column earns its place if this reads non-zero - that
-is the grain needed to notify a named tenant.
+**The exposure is measured** by
+`model_reasoning_tool_exposure_total{product,multi_round}` (2026-08-26):
+`"no"` is exposure created, `"yes"` exposure exercised. A counter, not a
+column - the first question is go/no-go, and a column earns its place if this
+reads non-zero. Point 1 below remains true: the FAILURE is still invisible
+here; only its population is not.
 
 1. **The failure is invisible to Atlas.** The 400 happens at the caller. Atlas
    sees a successful upstream call. So "wait until someone reports it"
@@ -675,20 +619,10 @@ same 400 as one that was dropped.
 **Cost and its off-peak window are modelled; the splits are still unreadable
 outside SQL, and no provider carries a policy row yet.**
 
-**2026-08-26, item 1 of three closed:** `GET /capability/logs/cost` exists.
-Token quantities are grouped by `(modelCode, providerCode, priceRuleId)` in SQL
-- the temporal join, "the rule whose `effective_at`/`expires_at` window contains
-this row's `created_at`", is the part SQL does better than anything else - and
-the arithmetic runs in `computeCostRollup`, deliberately outside it. Money maths
-inside a `$queryRawUnsafe` string is money maths no test in this repo can reach,
-because vitest mocks Prisma, and this arithmetic has three ways to be quietly
-wrong: reasoning tokens double-charged (they are a subset of output, already
-priced), the cached half priced at the uncached rate, and an undeclared cached
-rate read as free. All three are assertions now, and the first two are pinned
-mutations in `scripts/audit`. Cost stayed a rollup and did not become a column,
-per the note below. `is_active` is deliberately not part of rule selection: it
-is a present-tense switch, and letting it decide history would make last month's
-number move today.
+**Item 1 of three closed 2026-08-26:** `GET /capability/logs/cost` exists;
+the arithmetic lives in `computeCostRollup`, outside SQL, and its three failure
+modes are assertions with pinned mutations in `scripts/audit`. How that was
+built is in the commit.
 
 **The remaining operational write is filed as
 `vxture-platform/vxture-platform#47`** (2026-08-26): no provider row carries
@@ -815,48 +749,6 @@ rather than which file carried it ("the increment that added endpoint_code"),
 since those files no longer exist to be pointed at. A guardrail could enforce
 the slug form on new references; whether that earns its place is a judgement
 about how often this is written, not a certainty.
-
-## TD-049
-
-**Closed 2026-08-26, in the same change that opened it.**
-
-The two chat surfaces no longer carry their own copy of the routing loop's
-steps. What is shared is now defined once:
-
-| Extracted | What it was |
-|---|---|
-| `beginChatRequest` | route + validate + requestId + in-flight gauge + start log |
-| `resolveCandidatesOrFail` | the candidate chain, or a logged and enriched refusal |
-| `skipTripped` | the circuit-breaker skip, including "never skip the last candidate" |
-| `assertQuotaOrRecordRefusal` | the quota gate and the row a refusal leaves |
-| `buildUpstreamRequest` | the request body handed to an adapter |
-| `logAttempt` / `logChainExhausted` | the per-attempt and chain-failure log lines |
-| `failCandidate` | normalise, trip the breaker, log, record - in that order |
-| `recordAttemptFailure` | one reqlog row for one failed attempt |
-| `callerDimensions` | the seven caller fields both reqlog writers assembled |
-
-A `ChatAttemptContext` is built once per request and handed down, so a new
-dimension is a field rather than an edit at eight call sites.
-
-**Why it was worth doing rather than tolerating.** The duplication was not
-cosmetic: every one of those blocks was a place where a fix could be applied to
-one surface and not the other, and the streaming surface is the one with fewer
-tests. TD-037 hit exactly that - the same attempt row had to be added twice, and
-the streaming half had no test until the duplication was noticed.
-
-**Two defects fell out of the extraction itself**, which is the argument for
-doing it rather than the reward:
-
-- a comment explaining "do not let a fallback stream a second answer" sat above
-  the wrong statement, describing a `break` two statements away;
-- the terminal failure row had become unreachable once every attempt recorded
-  itself - a branch nothing could enter, reading as a safety net. Removed, with
-  the "writes N rows, not N+1" test standing in its place.
-
-**Measured**: a scan for duplicated eight-line blocks in `runtime.service.ts`
-went from 14 to 0, and SonarCloud's duplication on new code from 16.1% to 0.0%
-with coverage on new code at 86.2%. The gate that flagged it was right, and was
-worth following past the point where the number stopped being the reason.
 
 ## TD-050
 
