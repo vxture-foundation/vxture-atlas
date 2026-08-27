@@ -546,9 +546,7 @@ it**. A product cannot work around this from outside; only Atlas can fix it.
 
 The first version of this entry said "low priority unless a consumer needs it",
 and #23 asked the agent lines whether they were hitting it. That question is
-worth asking, but it answers **ordering**, not whether the work is correct - and
-as of 2026-08-26 it cannot be asked at all, because those lines have no
-repositories to ask in.
+worth asking, but it answers **ordering**, not whether the work is correct.
 
 Two reasons the demand signal is the wrong gate here:
 
@@ -601,12 +599,22 @@ never sends `tools` - but its v3 Agentic Retrieval needs this, so it is a
 prerequisite rather than a nice-to-have. karda also corrected the addressing:
 the consumers who will hit this are the agent lines calling Atlas directly.
 
-That question to the agent lines is **#23**, and it has been reframed rather
-than left open as a liaison thread. `forge` / `scribe` / `anlan` / `raven` /
-`yucer` have no repositories yet, so there is nowhere for the answer to come
-from - an issue waiting for a reply that cannot arrive looks exactly like an
-issue somebody forgot. It now records what it actually is: the risk exists and
-cannot be surveyed until those repos do.
+That question was **#23**, closed 2026-08-27 once the exposure became
+measurable. It had been reframed as "the risk exists and cannot be surveyed",
+and **both halves of that were wrong**:
+
+- *Cannot be surveyed* - it can, and now is. Atlas already recorded whether the
+  model reasoned and can see whether a call is multi-round; only "did this
+  request carry `tools`" went nowhere.
+- *The agent lines have no repositories to ask in* - **they do.** That claim came
+  from listing one organisation and concluding from its absence there;
+  `vx-agent-forge`, `vx-agent-raven`, `vx-agent-anlan` and `vx-agent-yucer` all
+  exist and are not archived, and Atlas has filed issues into a consumer repo
+  before. Nothing was missing except the check.
+
+Recorded because the shape is the one this register exists to catch: a true
+sentence ("the 400 lands at the caller") was extended into a false one, and an
+unverified absence was written down as a fact.
 
 **Recovery:** the platform line settles the field position and the event name;
 Atlas then carries it through both adapters, `ChatMessage`, and the stream. The
