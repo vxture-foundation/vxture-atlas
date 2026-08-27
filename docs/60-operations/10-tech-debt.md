@@ -157,9 +157,27 @@ task-profile routing by calling the API directly.
 `vxture-platform`'s opera portal. Owner decision 2026-08-10: model management
 moves to the opera product later, deliberately not scheduled in atlas.
 
-**Recovery**: opera adds the field via the same interim `/capability/*`-proxy
-pattern used for provider-keys, or the future opera-side model-management
-module carries it.
+**Recovery, as first written**: opera adds the field via the same interim
+`/capability/*`-proxy pattern used for provider-keys, or the future opera-side
+model-management module carries it.
+
+**2026-08-27: that recovery is withdrawn, and the entry is downgraded.** Adding
+a `taskProfile` input would be building operator UI for the tenant axis that
+`model_grant_authorizations_total{axis}` is counting down to removal. A product
+integrating today wants `endpointCode`, and the product axis
+(`product_endpoint_grants`) already has full CRUD - list, create, patch,
+activate/deactivate, delete - so nothing is blocked on this.
+
+Withdrawn on `vxture-platform#52`, which this repo had opened the day before
+without questioning the axis. Root cause TD-052; the correction to the consumer
+that was steered here is `vxture-atlas#47`.
+
+**What remains true**: task-profile routing is configurable only through the
+API, not the console. That is now a property of a retiring feature rather than
+a gap to close, and it closes when the axis does. If opera turns out to lack a
+management surface for the PRODUCT axis, that is a separate and real gap - not
+this one, and not asserted here, because opera's surface is not this repo's to
+describe.
 
 **Filed 2026-08-26: `vxture-platform/vxture-platform#52`.** It had been marked
 "not fixed here, belongs to opera" since 2026-08-10 and was never opened in the

@@ -83,7 +83,10 @@ Gateway capabilities ([ADR-004](../30-design/decisions/ADR-004-reject-portkey-ga
 Platform-side, not this repo's write-scope:
 
 - [ ] Remaining S2S callers - admin-bff, varda (TD-004)
-- [ ] `taskProfile` field in the opera grants UI (TD-009)
+- [ ] ~~`taskProfile` field in the opera grants UI~~ **Withdrawn 2026-08-27**
+      (TD-009/TD-052): that would be building UI for the retiring tenant
+      axis. A product wants `endpointCode`, whose grants already have CRUD.
+      Withdrawn on `vxture-platform#52`
 - [ ] Published `atlas` plan_version so the quota gate can deny uncovered
       workspaces (TD-016)
 - [x] Action-ref pinning, enforced rather than performed - third-party
