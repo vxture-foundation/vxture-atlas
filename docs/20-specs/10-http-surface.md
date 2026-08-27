@@ -371,15 +371,10 @@ more than one is not an error, the narrower wins.
 | `taskProfile` | `model_grants.task_profile` | **tenant (legacy)** | a label matched against tenant grants |
 
 **A product integrating today wants `endpointCode`.** The three are not
-equivalent choices, and this table said they were until 2026-08-26 - it
-described `taskProfile` as a *per-tenant preference* and named no axis, while
-the section below already said authorization is moving to (product, endpoint).
-A consumer reading only this table picks the third row, is then required to
-supply a `tenantId` it has no reason to hold, and lands on the axis
-`model_grant_authorizations_total{axis}` exists to count down to zero.
-
-That is not hypothetical: it is what karda was told to do (vxture-atlas#4,
-#39), by us, and the correction is vxture-atlas#47.
+equivalent choices: naming a `taskProfile` requires a `tenantId` the caller may
+have no reason to hold, and lands on the axis
+`model_grant_authorizations_total{axis}` exists to count down to zero. How a
+consumer came to be steered onto it is TD-052.
 
 **Why the tenant axis is the wrong shape for this, not merely the older one.**
 Label routing was only ever built on it, so asking for a label drags a tenant
