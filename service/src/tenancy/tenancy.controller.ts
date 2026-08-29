@@ -1,4 +1,14 @@
-import { Controller, Get, Inject, Query, Req, UseGuards } from "@nestjs/common";
+import {
+  Controller,
+  Get,
+  Inject,
+  Query,
+  Req,
+  UseGuards,
+  UseInterceptors,
+} from "@nestjs/common";
+
+import { LegacyDataPlanePathInterceptor } from "../runtime/legacy-data-plane-path";
 
 import { S2sAuthGuard } from "../runtime/guards/s2s-auth.guard";
 import type { S2sAuthenticatedRequest } from "../runtime/guards/s2s-auth.guard";
@@ -30,6 +40,7 @@ import type { AiModelRecord } from "../types/runtime.types";
  */
 @Controller("tenancy")
 @UseGuards(S2sAuthGuard)
+@UseInterceptors(LegacyDataPlanePathInterceptor)
 export class TenancyController {
   // Explicit @Inject: the deployed artifact is an esbuild bundle, which does
   // not emit `design:paramtypes`, so constructor injection by type alone
@@ -49,7 +60,7 @@ export class TenancyController {
    * What this TENANT may call, and under what routing conditions. Keyed on the
    * tenant because `model_grants.tenant_id` is - see the service (TD-022).
    */
-  @Get("grants")
+  @Get(["tenant-model-grants", "grants"])
   listGrants(@Req() req: S2sAuthenticatedRequest): Promise<TenancyGrantRow[]> {
     return this.tenancy.listGrants(req.s2sAuth);
   }

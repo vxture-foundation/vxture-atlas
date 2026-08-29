@@ -10,8 +10,10 @@ import {
   Req,
   Res,
   UseGuards,
+  UseInterceptors,
 } from "@nestjs/common";
 
+import { LegacyDataPlanePathInterceptor } from "./legacy-data-plane-path";
 import { ModelRuntimeService } from "./runtime.service";
 import { ModelRegistryService } from "../registry/model-registry.service";
 import type { GrantedEndpoint } from "../registry/model-registry.service";
@@ -100,9 +102,12 @@ function rejectUnknownV1Filters(
   );
 }
 
-// /v1 is the only path - no aliases.
+// /v1 is the only path - no aliases. (Route-level aliases exist: TD-042 serves
+// the retired `endpoints` spelling alongside `model-routes`. The controller
+// PREFIX still has none, which is what this line has always meant.)
 @Controller("v1")
 @UseGuards(S2sAuthGuard)
+@UseInterceptors(LegacyDataPlanePathInterceptor)
 export class ModelRuntimeController {
   constructor(
     @Inject(ModelRuntimeService)
@@ -171,7 +176,7 @@ export class ModelRuntimeController {
    * production. vxtpl invented three codes that way and shipped them (#198).
    * With this, a caller can self-check at startup and reconcile in CI.
    */
-  @Get("endpoints")
+  @Get(["model-routes", "endpoints"])
   async listEndpoints(
     @Req() req: S2sAuthenticatedRequest,
     @Query() all: Record<string, string>,
