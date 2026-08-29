@@ -21,7 +21,8 @@ type MetricName =
   | "model_grant_authorizations_total"
   | "model_request_rejections_total"
   | "model_reasoning_tool_exposure_total"
-  | "capability_legacy_path_requests_total";
+  | "capability_legacy_path_requests_total"
+  | "data_plane_legacy_path_requests_total";
 
 type MetricDefinition = {
   type: "counter" | "gauge" | "histogram";
@@ -108,6 +109,11 @@ const METRIC_DEFINITIONS: Record<MetricName, MetricDefinition> = {
     type: "counter",
     help: "capability_legacy_path_requests_total 运营面已弃用路径名的调用数（按旧路径段与调用运营者聚合）",
     labelNames: ["path", "operator"],
+  },
+  data_plane_legacy_path_requests_total: {
+    type: "counter",
+    help: "data_plane_legacy_path_requests_total 数据面已弃用路径名的调用数（按旧路径与调用产品聚合；读到 0 是删除旧名的前提，TD-042）",
+    labelNames: ["path", "product"],
   },
   model_request_errors_total: {
     type: "counter",

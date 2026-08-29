@@ -346,6 +346,14 @@ Which leaves the actual removal depending on somebody remembering, in September,
 that there is a counter worth looking at. Nothing scrapes it, nothing alarms on
 it, and no checklist names the date.
 
+**Now two counters, two dates** (2026-08-29): TD-042 closed its own half by
+serving both data-plane spellings, which added
+`data_plane_legacy_path_requests_total{path,product}` with a sunset of
+2026-12-16. Nothing reads that one either. Recorded here rather than as a second
+entry because it is one gap, not two - and a gap that grows a second instance
+while still unfixed is worth saying out loud: the mechanism this entry asks for
+is now the difference between two renames landing and two renames finishing.
+
 This is the same shape this repo reported against itself twice in the same week:
 a correction written down and never sent, and a release promise made in an issue
 and never kept through three versions. Both failed the same way - the obligation
@@ -386,9 +394,25 @@ and the agent-facing list use two words for one thing.
 fold does not apply (the data plane is not audited into
 `audit.change_records`), so this is the smaller half of what #206 did.
 
-**Blocked on nothing.** It needs a liaison round with karda and vxtpl first,
-because unlike opera they were not part of the #206 conversation and have not
-agreed to the names.
+**Done 2026-08-29**: `data-plane-route-names.ts` +
+`runtime/legacy-data-plane-path.ts`; both spellings registered on
+`ModelRuntimeController` and `TenancyController`; sunset `2026-12-16` (later
+than the operator plane's, because this window moves karda and vxtpl rather than
+one console on our own release train); counter
+`data_plane_legacy_path_requests_total{path,product}`. Surface documented in
+`docs/20-specs/10-http-surface.md`.
+
+**Still open, and this is now the whole of it**: the retired spellings are still
+served. Removal needs the counter to read zero, and *that* is the point karda
+and vxtpl have to agree on.
+
+The earlier note here said this "needs a liaison round with karda and vxtpl
+first". **That was wrong about the first half.** A liaison round is needed to
+REMOVE a name, not to ADD one: the additive shape breaks nobody, and the
+interface rules say plainly that a rename does not need three parties to agree,
+because a name stating its object cannot collide with someone else's. Requiring
+agreement to start is how this entry sat for twelve days as a "deferral" that
+was really a drop - the exact failure its own first paragraph names.
 
 ## TD-043
 
