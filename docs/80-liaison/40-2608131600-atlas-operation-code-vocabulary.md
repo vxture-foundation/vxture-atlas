@@ -24,10 +24,21 @@ them. Splitting is what makes the flag usable at all.
 
 ## The vocabulary
 
-Format `{product_code}.{resource}.{action}`, one code per HTTP operation that
-changes something. Reads are deliberately absent: the catalogue gates actions,
-and Atlas's operator reads are already covered by `mgmt:atlas` scope plus the
-operator realm check.
+One code per HTTP operation that changes something. Reads are deliberately
+absent: the catalogue gates actions, and Atlas's operator reads are already
+covered by `mgmt:atlas` scope plus the operator realm check.
+
+> **Naming, settled 2026-09-13 (`vxture-platform#49`).** The codes below are
+> written `{product_code}.{resource}.{action}`, which is *not* the form they are
+> registered under. The platform catalogue is `{domain}:{object}.{action}`
+> throughout - 14 domains, ~50 codes - and Atlas's existing four
+> (`model:provider.read/.manage`, `model:model.read/.manage`) already sit in the
+> `model:` domain. These codes SPLIT those four, so they stay in that domain:
+> `atlas.price_rule.delete` registers as **`model:price_rule.delete`**.
+>
+> The dotted form is left in this letter rather than rewritten, because the
+> letter is a record of what was asked. Read the platform catalogue for what a
+> code is actually called.
 
 ### Credential material - the reason this split exists
 
@@ -78,14 +89,50 @@ cooldown; that is a hammering guard, not an authorization one.
 | `atlas.price_rule.create` / `.update` / `.activate` / `.deactivate` | `/capability/price-rules[...]` | no |
 | `atlas.policy.create` / `.update` / `.activate` / `.deactivate` | `/capability/policies[...]` | no |
 
-No `delete` on either, and that is structural rather than an oversight: both
-tables are versioned by append and the database withholds the grant. Please do
-not register `atlas.price_rule.delete` or `atlas.policy.delete` - a code with
-no route behind it is a permission that can be granted and never used.
+> **Retracted 2026-08-26, and both halves now landed (`vxture-platform#49`).**
+> This letter said "no `delete` on either, that is structural" and asked the
+> platform *not* to register the delete codes. **Three of the facts behind that
+> were wrong**, which is what #49 corrected:
+>
+> - `DELETE /capability/price-rules/:id` and `.../policies/:id` **both exist**
+>   (soft delete: `is_active=false`, `deleted_at=now()`).
+> - The database **does** grant it - `97_service_role.sql` grants `DELETE` on
+>   the whole `model` schema, and `incr/10` grants `UPDATE (deleted_at)`.
+> - Only `model_price_rules` is append-versioned. **`model_policies` is not** -
+>   `priority` / `max_concurrent` / rate limits / `max_context_tokens` / `name`
+>   all carry `UPDATE`, and `GET /capability/policies` has no `asOf` at all.
+>
+> Both codes are registered (`model:price_rule.delete`, `model:policy.delete`),
+> and the platform added the two missing admin-bff proxies in the same batch -
+> registering a code while its route stays unreachable is exactly the empty
+> permission this letter warned about.
 
-These rules feed downstream billing, so the argument for step-up is real. We
-suggest no because the change is fully reversible (write a new row, expire it)
-and every version stays queryable via `?asOf=`. Platform's call.
+### `policy.update` requires step-up
+
+The original "no" here rested on two claims that hold for price rules and
+**not** for policies: that the change is reversible by writing a new row, and
+that every version stays queryable via `?asOf=`. A policy update is an
+**in-place overwrite** of rate/concurrency/context limits; the old value
+survives nowhere but `audit.change_records`, and the policy surface has no
+`asOf` to read back.
+
+The deciding case: an operator raises a tenant's rate limit and lowers it
+again. **The row ends up identical** - the incident window cannot be asked of
+that resource. A change that leaves no trace on the resource should leave one
+on the action, and step-up is that trace.
+
+Settled 2026-09-13: `model:policy.update` carries `requires_step_up = true`.
+Price rules stay `false` - since 2026-08-16 `PATCH price-rules/:id` refuses
+every price field and accepts only `expiresAt`, so a price change really is
+append-then-expire, and it really does have `asOf`.
+
+**This is tied to TD-053** (not TD-038 - `vxture-platform#49` cited the wrong
+number; TD-038 is a closed entry about three unwritable columns on
+`model_providers`/`models`). If policies are given the price-rule treatment
+(REVOKE on the value columns, append writes, `asOf` reads), the two become
+isomorphic and this flag should be **withdrawn**. The criterion for withdrawing
+it is recorded in the platform migration next to the flag, so it does not become
+a marker nobody dares touch.
 
 ## What Atlas does on its side
 
