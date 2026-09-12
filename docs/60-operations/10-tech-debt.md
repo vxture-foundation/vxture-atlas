@@ -265,6 +265,25 @@ nothing behind it: with in-place UPDATE there is only ever one version per row,
 so the filter would answer every `asOf` with the current values and look like
 history.
 
+**2026-09-13 — decided, and the interim cost is now visible.** The owner's call
+is the **first** option: give policies the price-rule treatment. The reasoning
+was that append writes are cheap now, while converting later means migrating
+existing policy rows and changing every read site - and with no users and no
+data, none of the usual arguments for deferring apply.
+
+Until it lands, `model:policy.update` carries `requires_step_up = true` on the
+platform side (`vxture-platform#49`). That flag exists **because** this debt
+does: an operator who raises a tenant's rate limit and lowers it again leaves a
+row identical to the one they started with, so the incident window cannot be
+asked of the resource - a change that leaves no trace on the resource has to
+leave one on the action.
+
+**So closing this should withdraw that flag.** Once the value columns are
+REVOKEd, writes append, and the read takes `asOf`, policies are isomorphic to
+price rules, which carry `false`. The criterion is recorded next to the flag in
+`deploy/database/migrations/2026-10-02-atlas-fine-operation-codes.sql` as well,
+so it does not survive as a marker nobody dares touch.
+
 ## TD-039
 
 **Wrong**: nothing checks that a column a repository writes is a column
