@@ -21,3 +21,20 @@ overrides:
   # only, never reaches the deployed image), which pins 7.1.5. Fixed in 8.0.0.
   # Remove once @prisma/config floats past it on its own.
   'deepmerge-ts@^7': ^8.0.1
+  # GHSA-535w-7cp7-47q4 / -qfvm-cv95-jqjf / -qvfw-j98x-7q72 / -wc9g-mqfw-jrwm
+  # (high): multer 2.2.0 DoS set. Transitive via @nestjs/platform-express,
+  # which pins the exact version — **`@nestjs/platform-express@12` still pins
+  # 2.2.0**, so bumping the parent does not fix it and a major bump would be a
+  # much larger change than the one being made. Fixed in 2.3.0, same major.
+  # Remove once platform-express floats past it on its own.
+  multer: '>=2.3.0'
+  # GHSA-3f6p-5ww8-9rcr / -rgwj-5xj2-c3m3: mysql2 3.15.3. Transitive via
+  # `prisma` / `@prisma/client`, which bundle every driver — **Atlas is on
+  # PostgreSQL, so this driver is never loaded**. The override is here to keep
+  # the OSV gate honest rather than to close a reachable hole; `prisma@8` drops
+  # the bundled driver entirely but is still an RC. Remove at that upgrade.
+  mysql2: '>=3.23.1'
+  # GHSA-4mjr-xmp4-gh2g / -x5fp-wj9c-mxmx: qs < 6.16.0 prototype-pollution
+  # pair. One resolution already floated to 6.16.0; a second stayed at 6.15.1
+  # under a different parent, and a half-fixed graph still reports the CVE.
+  qs: '>=6.16.0'
