@@ -398,3 +398,125 @@ describe("ClaudeProvider.chat - cost splits (TD-047)", () => {
     });
   });
 });
+
+/**
+ * 推理载荷（TD-046 · Anthropic 半边）。
+ *
+ * 这一组比 OpenAI 那半更能说明为什么信封里装块而不是文本:`signature` 不在思维链
+ * 正文里,而 Anthropic 要求 assistant 轮次原样回传整个 thinking 块。**改写过的签名
+ * 和丢掉签名是同一个 400。**
+ */
+describe("推理载荷 · Anthropic（TD-046）", () => {
+  it("thinking_delta 走 reasoning 事件；signature_delta 不进任何流", async () => {
+    const events = await collect(
+      parseClaudeStream(
+        streamOf(
+          MESSAGE_START,
+          frame("content_block_start", {
+            index: 0,
+            content_block: { type: "thinking" },
+          }),
+          frame("content_block_delta", {
+            index: 0,
+            delta: { type: "thinking_delta", thinking: "先想" },
+          }),
+          frame("content_block_delta", {
+            index: 0,
+            delta: { type: "signature_delta", signature: "sig-xyz" },
+          }),
+          frame("content_block_stop", { index: 0 }),
+          frame("content_block_start", {
+            index: 1,
+            content_block: { type: "text" },
+          }),
+          frame("content_block_delta", {
+            index: 1,
+            delta: { type: "text_delta", text: "答案" },
+          }),
+          frame("message_stop", {}),
+        ),
+      ),
+    );
+    const text = events
+      .filter((e) => e.type === "text")
+      .map((e) => e.delta)
+      .join("");
+    const reasoning = events
+      .filter(
+        (e): e is Extract<StreamEvent, { type: "reasoning" }> =>
+          e.type === "reasoning",
+      )
+      .map((e) => e.delta);
+    expect(text).toBe("答案");
+    expect(reasoning).toEqual(["先想"]);
+    /* 决定性的一条:签名**不能**当成可读内容发出去。它对人没有意义,发出去只会
+       让调用方看到一串乱码,而它真正的用途是回传。 */
+    expect(JSON.stringify(reasoning)).not.toContain("sig-xyz");
+    expect(text).not.toContain("sig-xyz");
+  });
+
+  it("done 帧的信封里带着签名 —— 它是回传的依据", async () => {
+    const events = await collect(
+      parseClaudeStream(
+        streamOf(
+          MESSAGE_START,
+          frame("content_block_start", {
+            index: 0,
+            content_block: { type: "thinking" },
+          }),
+          frame("content_block_delta", {
+            index: 0,
+            delta: { type: "thinking_delta", thinking: "想" },
+          }),
+          frame("content_block_delta", {
+            index: 0,
+            delta: { type: "signature_delta", signature: "sig-xyz" },
+          }),
+          frame("message_stop", {}),
+        ),
+      ),
+    );
+    const done = events.find((e) => e.type === "done") as Extract<
+      StreamEvent,
+      { type: "done" }
+    >;
+    expect(done.reasoning?.["text"]).toBe("想");
+    /* 把分片拼起来**拼不出**这个。这就是为什么 done 要带完整信封,而不是让调用方
+       自己攒 —— 它攒不到签名。 */
+    expect(done.reasoning?.["claudeBlocks"]).toEqual([
+      { type: "thinking", thinking: "想", signature: "sig-xyz" },
+    ]);
+  });
+
+  it("回传时块排在 text / tool_use 之前，签名原样", () => {
+    const body = buildClaudeBody(
+      {
+        modelCode: "claude-sonnet-5",
+        messages: [
+          {
+            role: "assistant",
+            content: "答案",
+            reasoning: {
+              text: "想",
+              claudeBlocks: [
+                { type: "thinking", thinking: "想", signature: "sig-xyz" },
+              ],
+            },
+            toolCalls: [{ id: "c1", name: "search", arguments: {} }],
+          },
+        ],
+      } as never,
+      false,
+      resolveWire({ wire: ANTHROPIC_WIRE_DEFAULTS } as never),
+    );
+    const messages = body["messages"] as Array<{
+      content: Array<Record<string, unknown>>;
+    }>;
+    const blocks = messages[0]!.content;
+    /* 顺序不是审美:Anthropic 要求 thinking 块在同一轮的 text / tool_use 之前，
+       顺序错了和丢掉一样是 400。 */
+    expect(blocks[0]?.["type"]).toBe("thinking");
+    expect(blocks[0]?.["signature"]).toBe("sig-xyz");
+    expect(blocks.some((b) => b["type"] === "tool_use")).toBe(true);
+  });
+});

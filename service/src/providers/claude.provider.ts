@@ -16,6 +16,7 @@ import type {
   ToolCall,
   ToolChoice,
   ToolDefinition,
+  ChatReasoning,
 } from "../types/runtime.types";
 
 interface ClaudeContentBlock {
@@ -26,6 +27,55 @@ interface ClaudeContentBlock {
   input?: Record<string, unknown>;
   tool_use_id?: string;
   content?: string | Array<{ type: string; text?: string }>;
+  /** `thinking` 块的思维链正文。 */
+  thinking?: string;
+  /**
+   * `thinking` 块的签名。**不可重建** —— 改写过的签名和丢掉是同一个 400。
+   * 它是 `ChatReasoning` 信封必须整体回传、而不能只回传 `text` 的直接原因。
+   */
+  signature?: string;
+  /** `redacted_thinking` 块的密文载荷。同样不可解析、只可原样回传。 */
+  data?: string;
+}
+
+/**
+ * Anthropic 的 `thinking` / `redacted_thinking` 块 → `ChatReasoning` 信封。
+ *
+ * **信封里装块,不装文本。** `signature` 不在思维链正文里,而 Anthropic 要求
+ * assistant 轮次原样回传整个块(含签名),否则 400 —— 只交付文本等于让调用方去
+ * 重建一个它拿不到的东西,而「改写过的签名」和「丢掉签名」是同一个 400。
+ *
+ * `text` 仍然给出,那是可读投影,供展示用;它不是回传的依据。
+ */
+function claudeReasoningFromBlocks(
+  blocks: ClaudeContentBlock[],
+): ChatReasoning | undefined {
+  const thinking = blocks.filter(
+    (b) => b.type === "thinking" || b.type === "redacted_thinking",
+  );
+  if (thinking.length === 0) return undefined;
+  const text = thinking
+    .map((b) => b.thinking)
+    .filter((t): t is string => typeof t === "string")
+    .join("");
+  return {
+    ...(text.length > 0 ? { text } : {}),
+    /* 原样保留。调用方 MUST NOT 解析,适配器也不重排、不裁剪。 */
+    claudeBlocks: thinking,
+  };
+}
+
+/**
+ * 信封 → Anthropic 的块数组,放回 assistant 轮次的**最前面**。
+ *
+ * 位置不是随意的:Anthropic 要求 `thinking` 块出现在同一轮的 `text` / `tool_use`
+ * 之前。顺序错了和丢掉一样是 400。
+ */
+function claudeReasoningToBlocks(
+  reasoning: ChatReasoning | undefined,
+): ClaudeContentBlock[] {
+  const raw = reasoning?.["claudeBlocks"];
+  return Array.isArray(raw) ? (raw as ClaudeContentBlock[]) : [];
 }
 
 interface ClaudeMessage {
@@ -48,12 +98,17 @@ interface ClaudeStreamEvent {
     type?: string;
     id?: string;
     name?: string;
+    thinking?: string;
+    signature?: string;
+    data?: string;
   };
   delta?: {
     type?: string;
     text?: string;
     partial_json?: string;
     stop_reason?: string;
+    thinking?: string;
+    signature?: string;
   };
   usage?: { output_tokens?: number };
   error?: { type?: string; message?: string };
@@ -91,9 +146,11 @@ export class ClaudeProvider extends BaseProvider {
       request.signal,
     );
 
-    // 只取 text:`thinking` 块在这里被丢掉,同 TD-046。非流式这一路和流式那一路
-    // 是同一个洞的两个出口 —— 修的时候两处都要动,只补一处会让多轮在其中一种
-    // 传输上继续 400。
+    /* `thinking` / `redacted_thinking` 块整组留下来（TD-046 已修）。
+       **留的是块，不是文本。** Anthropic 要求原样回传，而 `signature` 不在文本里
+       ——只把思维链文本交出去，回传就永远拼不出来。 */
+    const reasoning = claudeReasoningFromBlocks(response.content ?? []);
+
     const content = (response.content ?? [])
       .filter((block) => block.type === "text")
       .map((block) => block.text)
@@ -156,6 +213,7 @@ export class ClaudeProvider extends BaseProvider {
       ...(mappedFinishReason !== undefined
         ? { finishReason: mappedFinishReason }
         : {}),
+      ...(reasoning !== undefined ? { reasoning } : {}),
       promptTokens,
       completionTokens,
       totalTokens: promptTokens + completionTokens,
@@ -265,6 +323,8 @@ export async function* parseClaudeStream(
     number,
     { id: string; name: string; partialJson: string }
   >();
+  /* thinking / redacted_thinking 块，按上游给的 index 归位。 */
+  const thinkingBlocks = new Map<number, ClaudeContentBlock>();
   let promptTokens = 0;
   let completionTokens = 0;
   let sawUsage = false;
@@ -314,6 +374,23 @@ export async function* parseClaudeStream(
 
       case "content_block_start": {
         const block = event.content_block;
+        if (
+          (block?.type === "thinking" || block?.type === "redacted_thinking") &&
+          event.index !== undefined
+        ) {
+          /* 开一个块并按 index 记住。累的是**块**,不是一段文本:`signature_delta`
+             要落到它所属的那个块上,而一次响应里可以有多个 thinking 块。 */
+          thinkingBlocks.set(event.index, {
+            type: block.type,
+            ...(typeof block.thinking === "string"
+              ? { thinking: block.thinking }
+              : {}),
+            ...(typeof block.signature === "string"
+              ? { signature: block.signature }
+              : {}),
+            ...(typeof block.data === "string" ? { data: block.data } : {}),
+          });
+        }
         if (block?.type === "tool_use" && event.index !== undefined) {
           toolBlocks.set(event.index, {
             id: block.id ?? "",
@@ -335,11 +412,24 @@ export async function* parseClaudeStream(
             block.partialJson += delta.partial_json;
           }
         }
-        // thinking_delta / signature_delta 丢弃 —— **这是 TD-046,不是一个中性的
-        // 取舍**。Anthropic 的规则和 DeepSeek 的一模一样:带 tools 的多轮里,
-        // assistant 轮次必须原样回传 thinking 块(含 signature),否则 400。
-        // 丢在这里 = 那个回传永远拼不出来,而失败发生在调用方那侧,Atlas 看不见。
-        // `signature` 尤其不能重建:改写过的签名和丢掉是同一个 400。
+        /* thinking_delta / signature_delta（TD-046 已修）。
+           两者处置**不同**:思维链有可读投影,所以既 yield 分片又累积;签名没有可读
+           意义,**只累积、不 yield** —— 把它当成正文的一部分发出去只会让调用方看到
+           一串乱码,而它真正的用途是回传。 */
+        else if (delta?.type === "thinking_delta" && delta.thinking) {
+          const blk =
+            event.index !== undefined
+              ? thinkingBlocks.get(event.index)
+              : undefined;
+          if (blk) blk.thinking = (blk.thinking ?? "") + delta.thinking;
+          yield { type: "reasoning", delta: delta.thinking };
+        } else if (delta?.type === "signature_delta" && delta.signature) {
+          const blk =
+            event.index !== undefined
+              ? thinkingBlocks.get(event.index)
+              : undefined;
+          if (blk) blk.signature = (blk.signature ?? "") + delta.signature;
+        }
         break;
       }
 
@@ -400,10 +490,19 @@ export async function* parseClaudeStream(
       }
     : undefined;
 
+  /* 按 index 升序还原块顺序。Map 的插入序恰好就是上游发来的顺序,但依赖插入序
+     等于依赖一个没人声明的性质——排一次是便宜的。 */
+  const orderedThinking = [...thinkingBlocks.entries()]
+    .sort((a, b) => a[0] - b[0])
+    .map(([, blk]) => blk);
+
+  const doneReasoning = claudeReasoningFromBlocks(orderedThinking);
+
   yield {
     type: "done",
     ...(usage !== undefined ? { usage } : {}),
     ...(finishReason !== undefined ? { finishReason } : {}),
+    ...(doneReasoning !== undefined ? { reasoning: doneReasoning } : {}),
   };
 }
 
@@ -487,7 +586,10 @@ function buildClaudeMessages(messages: ChatMessage[]): ClaudeMessage[] {
     }
 
     if (message.role === "assistant" && message.toolCalls?.length) {
-      const blocks: ClaudeContentBlock[] = [];
+      /* thinking 块必须排在 text / tool_use 之前 —— 见 claudeReasoningToBlocks。 */
+      const blocks: ClaudeContentBlock[] = claudeReasoningToBlocks(
+        message.reasoning,
+      );
       if (message.content) {
         blocks.push({ type: "text", text: message.content });
       }
@@ -503,6 +605,19 @@ function buildClaudeMessages(messages: ChatMessage[]): ClaudeMessage[] {
       continue;
     }
 
+    const plainBlocks = claudeReasoningToBlocks(message.reasoning);
+    if (message.role === "assistant" && plainBlocks.length > 0) {
+      /* 有推理载荷的 assistant 轮次必须走块形态:字符串 content 装不下 thinking 块,
+         而这一轮在多轮里同样要回传。 */
+      result.push({
+        role: "assistant",
+        content: [
+          ...plainBlocks,
+          ...(message.content ? [{ type: "text", text: message.content }] : []),
+        ],
+      });
+      continue;
+    }
     result.push({
       role: message.role === "assistant" ? "assistant" : "user",
       content: message.content,

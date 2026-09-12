@@ -92,10 +92,45 @@ a stream consumer can at least see the event type. On the non-streaming body
 there is no such handle, so the clause binds hardest exactly where it is easiest
 to break.
 
-Today Atlas does not deliver reasoning output at all - it is read only to say
-why a response came back empty (TD-046). When it is delivered it lands in its
-own field alongside `content`, never inside it, and absent will mean the upstream
-reported none rather than an empty string.
+### The reasoning payload is an envelope, not a string
+
+Delivered since 2026-09-12 (TD-046 closed) as `message.reasoning` - **an opaque
+envelope, not a passage of prose**:
+
+| Key | Meaning |
+|---|---|
+| `text?` | The readable projection. **For display only.** May be truncated or not shown. Some providers give none (OpenAI o-series returns no readable chain). |
+| anything else | Provider-specific continuation material. A caller **MUST NOT** parse it. |
+
+Two rules bind the caller:
+
+1. **Echo the whole object back, verbatim, including keys you do not
+   recognise.** The common mistake is rebuilding it - `{ text: msg.reasoning.text }`
+   - which drops keys such as Anthropic's `signature`. That looks correct on
+   DeepSeek and is a 400 on Anthropic.
+2. **`text` is not the basis for the round trip.** The object is.
+
+Absent means the upstream reported none - not an empty string, and not "the
+model did not think".
+
+**Why not `reasoningContent: string`.** DeepSeek requires the chain to be
+returned *in full* on every subsequent interaction when `tools` are present, or
+it answers 400. That makes the field an obligation rather than content - and
+content is the kind of thing a caller displays, truncates, summarises or drops
+when it grows. Each of those breaks the round trip, and the resulting 400
+surfaces on the *caller's* side with nothing to explain it. A `string` also fits
+exactly one vendor: Anthropic's thinking blocks carry a `signature` (and there
+is `redacted_thinking`), and OpenAI's o-series returns no readable text at all.
+One string field would force either JSON-inside-a-string or a second field, and
+the second is what product_251 P2 / X-4 forbid.
+
+The **cost** of reasoning has its own outlet and is not in this envelope:
+`usage.reasoningTokens` (TD-047).
+
+On the streaming side the split follows the two consumers: `reasoning` events
+carry display deltas, and the `done` frame carries the whole envelope for the
+round trip. A caller is never asked to assemble one from deltas - it could not,
+because `signature` never appears in them.
 
 ### Deprecation: retiring a model with notice (product_251 X-4)
 
