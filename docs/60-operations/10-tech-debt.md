@@ -20,7 +20,7 @@ An entry that says "belongs to X" without a number is indistinguishable from
 one that was reported - which is the shape this repo keeps producing.
 
 Recorded so far: TD-009 -> `vxture-platform/vxture-platform#52`,
-TD-046 -> `#50`, TD-047 -> `#47`. **Still carrying no number: TD-004, TD-016,
+TD-047 -> `#47`. **Still carrying no number: TD-004, TD-016,
 TD-034.** Those three are named here rather than left to be noticed, because a
 convention stated without its current exceptions reads as already satisfied.
 TD-034 arguably has nothing to file (it waits for a consumer to exist at all);
@@ -51,7 +51,6 @@ because those are the ones still needing a decision.
 | [TD-043](#td-043) | Two grant resources, two rules on whether the application scope may be edited | 2026-08-17 |
 | [TD-044](#td-044) | The tool-descriptor `version` field never moves, so its drift signal is dead | 2026-08-18 |
 | [TD-045](#td-045) | `codeql.yml` disabled - code scanning on a private repo needs GitHub Advanced Security | 2026-08-24 |
-| [TD-046](#td-046) | Both protocol adapters drop reasoning output, which makes multi-round tool calling structurally impossible on either | 2026-08-24 |
 | [TD-047](#td-047) | Cost and its off-peak window are modelled; the splits are still unreadable outside SQL, and no provider carries a policy row yet | 2026-08-24 |
 | [TD-048](#td-048) | `incr/NN` means two different files depending on which side of the rebaseline you read | 2026-08-26 |
 | [TD-050](#td-050) | A credential exposure is tracked only in a published document, so no release checklist can see it | 2026-08-26 |
@@ -62,6 +61,7 @@ because those are the ones still needing a decision.
 
 | ID | Title | Closed |
 |----|-------|--------|
+| TD-046 | Both protocol adapters drop reasoning output, which makes multi-round tool calling structurally impossible on either | 2026-09-12, `ChatMessage.reasoning` as an opaque envelope carried through both adapters plus a `reasoning` stream event; `done` carries the whole envelope so a caller never has to rebuild one (platform#50) |
 | TD-049 | `chat()` and `chatStream()` are parallel implementations of one routing loop | 2026-08-26, the shared steps extracted; duplication on new code 16.1% -> 0.0% |
 | TD-037 | `request_records` attempt semantics differ between the chat and S2S surfaces | 2026-08-26, one row per attempt on both surfaces; `attempt_index` (incr/03_reqlog_attempt_index) carries the ordinal |
 | TD-002 | Usage-metering write path was a no-op | 2026-07-28, by TD-017 |
@@ -536,107 +536,6 @@ or the repo goes public again. Either condition lets `codeql.yml` be
 re-enabled with `gh api -X PUT .../actions/workflows/{id}/enable` and no
 further changes - the `actions: read` fix in this commit is the only thing
 that was actually wrong with the file.
-
-## TD-046
-
-**Both protocol adapters drop reasoning output, which makes multi-round tool
-calling structurally impossible on either.**
-
-### It is not one adapter, it is both
-
-| Adapter | What is dropped | Evidence |
-|---|---|---|
-| `openai-chat-completions` | `message.reasoning_content`, `delta.reasoning_content` | verified against the live DeepSeek API, 2026-08-24 |
-| `anthropic-messages` | `thinking` and `signature` blocks | this repo's own code: `claude.provider.ts` filters `block.type === "text"`, and the stream comment reads *"thinking_delta / signature_delta 等块类型对上层不可见，忽略"* |
-
-Both vendors make the same demand, in the same words, for the same reason:
-
-- DeepSeek: 携带 `tools` 参数时，`reasoning_content` 必须在所有后续交互中完整回传，否则返回 400
-- Anthropic: *"Pass thinking blocks back complete and unmodified... Echo the
-  assistant message exactly as received: rebuilding the message or filtering out
-  blocks triggers a 400 error"*
-
-So this is not a vendor quirk that happened to surface on DeepSeek. It is how
-reasoning models work, and Atlas claims to speak both protocol families.
-
-### And it is structural, not unimplemented
-
-`ChatMessage` has `role` / `content` / `toolCalls` / `toolCallId` / `name`.
-There is nowhere to put a reasoning block even if a caller wanted to send one
-back. So the round trip is not "not wired up yet" - **the type system forbids
-it**. A product cannot work around this from outside; only Atlas can fix it.
-
-### Why it is not demand-gated
-
-The first version of this entry said "low priority unless a consumer needs it",
-and #23 asked the agent lines whether they were hitting it. That question is
-worth asking, but it answers **ordering**, not whether the work is correct - and
-as of 2026-08-26 it cannot be asked at all, because those lines have no
-repositories to ask in.
-
-Two reasons the demand signal is the wrong gate here:
-
-**The exposure is measured** by
-`model_reasoning_tool_exposure_total{product,multi_round}` (2026-08-26):
-`"no"` is exposure created, `"yes"` exposure exercised. A counter, not a
-column - the first question is go/no-go, and a column earns its place if this
-reads non-zero. Point 1 below remains true: the FAILURE is still invisible
-here; only its population is not.
-
-1. **The failure is invisible to Atlas.** The 400 happens at the caller. Atlas
-   sees a successful upstream call. So "wait until someone reports it"
-   guarantees late discovery - which is exactly the shape TD-044 already paid
-   for.
-2. **The generality test passes at the highest level.** The fix lives in the
-   protocol layer and serves any consumer of either protocol family. That today
-   there may be zero such consumers changes when it should be done, not whether.
-
-The standing rule this entry is an instance of: a defect in a protocol or
-contract Atlas publishes is fixed because it is a defect. A product-specific
-need is absorbed as DATA (`task_profile`, `wire.extraBody`) or refused - it is
-never absorbed as a branch in code. Demand orders the queue; it does not decide
-what belongs in it.
-
-### What actually blocks it
-
-Not the agent lines. The published shape:
-
-- **Response**: where `reasoningContent` sits in the product_251 A-4 shape - a
-  three-party contract (`docs/40-implementation/40-l1-api-conformance.md`).
-- **Request**: `ChatMessage` must be able to carry it back, which is the same
-  published shape in the other direction.
-- **Stream**: a new `StreamEvent` variant, i.e. a new published event name.
-
-Atlas proposes `message.reasoningContent?: string` alongside `content`, absent
-when the upstream reported none, and a `reasoning` stream event. The clause that
-reasoning output never merges into `content` is already binding
-(`docs/20-specs/10-http-surface.md`) and came from karda.
-
-**Open thread: `vxture-platform/vxture-platform#50`.** It lived here as #18
-until 2026-08-26, which was the wrong repo: the liaison rule
-(`docs/80-liaison/00-index.md`) puts an issue in the repo *that has to act*, and
-the ask - settle the field position and the stream event name - is the platform
-line's. An issue in the wrong repo is not invisible to a person, but it is
-absent from the queue of the repo where the work happens, which is where it
-would have been scheduled. #18 is closed with a pointer.
-
-karda answered before the move: unaffected today - it is a tool *provider* and
-never sends `tools` - but its v3 Agentic Retrieval needs this, so it is a
-prerequisite rather than a nice-to-have. karda also corrected the addressing:
-the consumers who will hit this are the agent lines calling Atlas directly.
-
-That question to the agent lines is **#23**, and it has been reframed rather
-than left open as a liaison thread. `forge` / `scribe` / `anlan` / `raven` /
-`yucer` have no repositories yet, so there is nowhere for the answer to come
-from - an issue waiting for a reply that cannot arrive looks exactly like an
-issue somebody forgot. It now records what it actually is: the risk exists and
-cannot be surveyed until those repos do.
-
-**Recovery:** the platform line settles the field position and the event name;
-Atlas then carries it through both adapters, `ChatMessage`, and the stream. The
-Anthropic half additionally needs the `signature` preserved verbatim - a
-reasoning block that survives the round trip with its signature rewritten is the
-same 400 as one that was dropped.
 
 ## TD-047
 

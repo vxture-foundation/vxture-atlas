@@ -20,6 +20,7 @@ import type {
   ToolCall,
   ToolChoice,
   ToolDefinition,
+  ChatReasoning,
 } from "../types/runtime.types";
 
 /**
@@ -77,6 +78,43 @@ export function buildOpenAiCompatibleBody(
   return body;
 }
 
+/**
+ * 把 `ChatReasoning` 信封还原成上游的线上形态。
+ *
+ * 本适配器面对的是 OpenAI 兼容协议，其上游字段是 `reasoning_content`（字符串）。
+ * 我们把信封里的 `text` 放回去，**其余键原样铺开** —— 那些键是别的供应商的续算
+ * 材料，对本上游没有意义，但铺开而不丢弃是有意的:调用方被要求「原样回传整个
+ * 对象」，如果适配器在这里静默丢掉它不认识的键，那条要求就成了一句空话，而症状
+ * 会在换供应商的那一天才出现。
+ *
+ * 上游会忽略它不认识的键（OpenAI 协议一贯如此）；真不忽略的那天，是上游告诉我们
+ * 它有话说，而不是我们提前替它猜。
+ */
+function reasoningToWire(
+  reasoning: ChatReasoning | undefined,
+): Record<string, unknown> {
+  if (!reasoning) return {};
+  const { text, ...rest } = reasoning;
+  return {
+    ...rest,
+    ...(typeof text === "string" ? { reasoning_content: text } : {}),
+  };
+}
+
+/**
+ * 上游的 `reasoning_content` → `ChatReasoning` 信封。
+ *
+ * 空串与缺省都按「上游没给」处理，**不构造一个空信封**:一个 `{ text: "" }` 会让
+ * 调用方以为有推理载荷要回传，然后回传一个空串——而对上游来说那和没传不是一回事。
+ */
+function reasoningFromWire(
+  raw: string | null | undefined,
+): { reasoning?: ChatReasoning } {
+  return typeof raw === "string" && raw.length > 0
+    ? { reasoning: { text: raw } }
+    : {};
+}
+
 function toWireMessage(message: ChatMessage): Record<string, unknown> {
   if (message.role === "tool") {
     return {
@@ -90,6 +128,9 @@ function toWireMessage(message: ChatMessage): Record<string, unknown> {
     return {
       role: "assistant",
       content: message.content || null,
+      /* **带 tools 的多轮对话必须回传这个。** 缺了上游直接 400，而错误出现在
+         调用方那一侧。这是 TD-046 的根因，也是 ChatMessage.reasoning 存在的理由。 */
+      ...reasoningToWire(message.reasoning),
       tool_calls: message.toolCalls.map((call) => ({
         id: call.id,
         type: "function",
@@ -101,6 +142,7 @@ function toWireMessage(message: ChatMessage): Record<string, unknown> {
     };
   }
   return {
+    ...reasoningToWire(message.reasoning),
     role: message.role,
     content: message.content,
   };
@@ -167,6 +209,7 @@ export function normalizeOpenAiCompatibleResponse(
   return {
     content,
     ...(mappedToolCalls !== undefined ? { toolCalls: mappedToolCalls } : {}),
+    ...reasoningFromWire(message?.reasoning_content),
     ...(mappedFinishReason !== undefined
       ? { finishReason: mappedFinishReason }
       : {}),
@@ -325,6 +368,9 @@ export async function* parseOpenAiCompatibleStream(
   let usage: TokenUsage | undefined;
   let finishReason: FinishReason | undefined;
 
+  /* 推理文本的累积。`done` 帧的信封要完整的那一份，而分片是逐个 yield 出去的。 */
+  let reasoningText = "";
+
   function* flush(): Generator<StreamEvent> {
     for (const buf of toolBuffers.values()) {
       yield {
@@ -340,6 +386,11 @@ export async function* parseOpenAiCompatibleStream(
       type: "done",
       ...(usage !== undefined ? { usage } : {}),
       ...(finishReason !== undefined ? { finishReason } : {}),
+      /* 完整信封，供下一轮回传。**不能让调用方把 `reasoning` 分片自己拼** ——
+         分片只是可读投影，而回传要的是整个对象；本上游恰好两者同源，别的上游
+         不是（Anthropic 的 `signature` 根本不在分片里）。让调用方拼，等于要求
+         它发明一个它拿不到的东西。 */
+      ...reasoningFromWire(reasoningText.length > 0 ? reasoningText : undefined),
     };
   }
 
@@ -380,6 +431,17 @@ export async function* parseOpenAiCompatibleStream(
     const delta = choice.delta;
     if (typeof delta?.content === "string" && delta.content.length > 0) {
       yield { type: "text", delta: delta.content };
+    }
+
+    /* 推理分片单独成事件。**不并进 `text`** ——把思维链混进正文流，调用方无法
+       区分，比不发更糟；分开之后「只想要答案」的调用方忽略它即可。
+       同时累积，`done` 帧要交付完整信封。 */
+    if (
+      typeof delta?.reasoning_content === "string" &&
+      delta.reasoning_content.length > 0
+    ) {
+      reasoningText += delta.reasoning_content;
+      yield { type: "reasoning", delta: delta.reasoning_content };
     }
 
     if (delta?.tool_calls?.length) {

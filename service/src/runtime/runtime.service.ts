@@ -189,6 +189,11 @@ export class ModelRuntimeService {
               ...(providerResponse.toolCalls !== undefined
                 ? { toolCalls: providerResponse.toolCalls }
                 : {}),
+              /* 推理载荷原样交付。**带 tools 的多轮对话，调用方必须把它整个带回**
+                 ——缺了上游 400，而错误出现在调用方那一侧（TD-046）。 */
+              ...(providerResponse.reasoning !== undefined
+                ? { reasoning: providerResponse.reasoning }
+                : {}),
             },
             usage: {
               promptTokens: providerResponse.promptTokens,

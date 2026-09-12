@@ -4,6 +4,39 @@ import type { ModelRuntimeErrorCode } from "../runtime/runtime.errors";
 
 export type ChatRole = "system" | "user" | "assistant" | "tool";
 
+/**
+ * 思考型模型的推理载荷 —— **一个不透明信封，不是一段正文。**
+ *
+ * ## 为什么不是 `reasoningContent: string`
+ *
+ * DeepSeek 的文档写明一条硬约束：携带 `tools` 时，`reasoning_content` 必须在所有
+ * 后续交互中**完整回传**，否则 400。那就说明它不是 content —— content 是可以展示、
+ * 截断、摘要、太长就丢的东西，而这四件每一件都会破坏回传。破坏之后的 400 出现在
+ * **调用方**那一侧，而没有任何一处说得出为什么。**名字把字段的用途告诉错了**，
+ * 这比少一个字段坏得多。
+ *
+ * 第二个理由是它只合一家。各供应商的回传材料形状完全不同：DeepSeek 是一段可读
+ * 文本；Anthropic 的 thinking 块带 `signature`，还有 `redacted_thinking`；OpenAI
+ * o 系列压根不给可读文本，只给不透明的续算态。一个 `string` 字段会逼出「JSON 塞进
+ * 字符串」或者「再加第二个字段」——后者正是 product_251 P2 / X-4 禁的那件事。
+ *
+ * ## 用法：读 `text` 展示，回传整个对象
+ *
+ * - `text` 是**可读投影**，**仅供展示**。可截断、可不显示。它**不是回传的依据**。
+ * - 回传时把整个 `reasoning` 对象**原样**带回，**包括你不认识的键**。
+ *   常见错法是 `{ text: msg.reasoning.text }` 重建一个——那会丢掉 `signature`
+ *   一类的键，在 DeepSeek 上看不出来，换到 Anthropic 就 400。
+ * - 缺省 = **上游没给**。不是空字符串，也不是「模型没思考」。
+ *
+ * 推理的**成本**另有出口，不在这里：`TokenUsage.reasoningTokens`（TD-047）。
+ */
+export interface ChatReasoning {
+  /** 可读投影。有的供应商不给（OpenAI o 系列）。 */
+  text?: string;
+  /** 供应商专有的续算材料。调用方 **MUST NOT** 解析，只原样回传。 */
+  [key: string]: unknown;
+}
+
 export interface ChatMessage {
   role: ChatRole;
   content: string;
@@ -13,6 +46,11 @@ export interface ChatMessage {
   toolCallId?: string;
   /** tool 角色：工具名称（部分 provider 要求） */
   name?: string;
+  /**
+   * assistant 角色：本轮的推理载荷。响应里由 Atlas 填；**请求里由调用方原样回传**
+   * ——带 `tools` 的多轮对话缺了它，上游直接 400。详见 {@link ChatReasoning}。
+   */
+  reasoning?: ChatReasoning;
 }
 
 /**
@@ -133,6 +171,14 @@ export interface ChatResponse {
  */
 export type StreamEvent =
   | { type: "text"; delta: string }
+  /**
+   * 推理分片。**只供展示**，不是回传的依据 —— 回传要用 `done` 帧上的
+   * `reasoning` 信封（见下）。
+   *
+   * 不能复用 `text`：把思维链混进正文流，调用方无法区分，比不发更糟。两个事件
+   * 分开之后，「只想要答案」的调用方忽略 `reasoning` 即可，什么都不必改。
+   */
+  | { type: "reasoning"; delta: string }
   | { type: "tool_call"; toolCall: ToolCall }
   | {
       type: "done";
@@ -158,6 +204,16 @@ export type StreamEvent =
        * carries the FALLBACK's code, not the one that was tried first.
        */
       modelCode?: string;
+      /**
+       * 本轮推理载荷的**完整信封**，用于下一轮回传。
+       *
+       * 为什么不让调用方把 `reasoning` 分片自己拼起来:分片只是可读投影，而回传要
+       * 的是整个对象——包括供应商专有的、根本不在分片里出现的键（Anthropic 的
+       * `signature`）。让调用方拼，等于要求它自己发明一个它拿不到的东西。
+       *
+       * 缺省 = 上游没给推理载荷。详见 {@link ChatReasoning}。
+       */
+      reasoning?: ChatReasoning;
     }
   /**
    * Same envelope as the HTTP error body, only carried on a different
@@ -367,6 +423,8 @@ export interface ProviderChatResponse extends TokenUsage {
   content: string;
   toolCalls?: ToolCall[];
   finishReason?: FinishReason;
+  /** 本轮推理载荷。适配器从上游读出，`runtime.service` 放进 `message`。 */
+  reasoning?: ChatReasoning;
   /**
    * False when the upstream response carried no usage object and the token
    * counts above are placeholder zeros. Metering must then record NULL, not
