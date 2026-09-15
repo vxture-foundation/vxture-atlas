@@ -8,9 +8,12 @@ import {
   Post,
   Patch,
   Query,
+  Req,
   UseGuards,
   UseInterceptors,
 } from "@nestjs/common";
+
+import type { AuditRequestIdCarrier } from "../audit/audit.middleware";
 
 import { OperatorAuthGuard } from "./guards/operator-auth.guard";
 import { LegacyCapabilityPathInterceptor } from "./legacy-capability-path";
@@ -116,10 +119,15 @@ export class ModelAdminController {
    * 仅按需触发，不做周期性主动探活。
    */
   @Post("providers/:providerId/probe")
-  probeProvider(
+  async probeProvider(
     @Param("providerId") providerId: string,
+    @Req() req: AuditRequestIdCarrier,
   ): Promise<ProviderProbeResult> {
-    return this.probe.probeProvider(providerId);
+    const result = await this.probe.probeProvider(providerId);
+    // The audit record of this call and the reqlog row the probe wrote share
+    // this id - see `AuditRequestIdCarrier`.
+    req.auditRequestId = result.probe.requestId;
+    return result;
   }
 
   @Post("providers/:providerId/activate")
@@ -222,10 +230,13 @@ export class ModelAdminController {
    * 哨兵、不扣任何租户配额（设计文档 §12.2）。
    */
   @Post("models/:modelId/probe")
-  probeModel(
+  async probeModel(
     @Param("modelId") modelId: string,
+    @Req() req: AuditRequestIdCarrier,
   ): Promise<ModelProbeResult> {
-    return this.probe.probe(modelId);
+    const result = await this.probe.probe(modelId);
+    req.auditRequestId = result.requestId;
+    return result;
   }
 
   @Post("models/:modelId/activate")

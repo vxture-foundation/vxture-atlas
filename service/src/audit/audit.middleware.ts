@@ -66,6 +66,12 @@ export class AuditMiddleware implements NestMiddleware {
         ...(request.operatorAuth?.actorClientId !== undefined
           ? { actorConsole: request.operatorAuth.actorClientId }
           : {}),
+        // A handler that minted its own request id hands it over on the
+        // request (see `AuditRequestIdCarrier`). Read at `finish`, which is
+        // after the handler ran - reading it any earlier would always miss.
+        ...(request.auditRequestId !== undefined
+          ? { requestId: request.auditRequestId }
+          : {}),
         // The status the client actually got, so a rejected change can never
         // be mistaken for one that landed.
         outcome: status >= 200 && status < 400 ? "success" : "failure",
@@ -76,7 +82,26 @@ export class AuditMiddleware implements NestMiddleware {
   }
 }
 
-interface AuditableRequest {
+/**
+ * What a handler sets when its write produced a request id of its own.
+ *
+ * The probe routes are the case this exists for: `probe-<uuid>` is also the
+ * `reqlog.request_records.request_id` of the row the probe wrote, and that row
+ * is attributed to the platform sentinel - a probe belongs to no tenant, so the
+ * row cannot say who ran it. This record can (`actorId`). Without the id the
+ * two only line up by timestamp, which stops being an answer the moment two
+ * operators probe within the same second. With it, "who spent these tokens"
+ * is a join on one key.
+ *
+ * Deliberately NOT written into the reqlog row's `user_id`: that column is the
+ * customer end user carried by an S2S token, and an operator is a workforce
+ * identity. Mixing the two realms would put probes into end-user usage.
+ */
+export interface AuditRequestIdCarrier {
+  auditRequestId?: string;
+}
+
+interface AuditableRequest extends AuditRequestIdCarrier {
   method?: string;
   url?: string;
   originalUrl?: string;

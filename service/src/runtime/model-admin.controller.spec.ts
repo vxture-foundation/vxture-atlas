@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { METHOD_METADATA, PATH_METADATA } from "@nestjs/common/constants";
 import { RequestMethod } from "@nestjs/common";
 import { legacySegmentOf } from "../capability-route-names";
@@ -226,5 +226,42 @@ describe("renamed operator routes serve both spellings", () => {
       const segment = legacy.split("/")[0] as string;
       expect(legacySegmentOf(`/capability/${segment}`)).toBe(segment);
     }
+  });
+});
+
+/**
+ * A probe's reqlog row is attributed to the platform sentinel, so it cannot say
+ * who ran it; the audit record of the same call can. The request id is the one
+ * key both carry, and only the handler knows it - so the handler must hand it
+ * to the audit middleware, or the two records line up by timestamp alone.
+ */
+describe("probe routes hand their request id to the audit record", () => {
+  it("model probe", async () => {
+    const probe = {
+      probe: vi.fn().mockResolvedValue({ requestId: "probe-m", ok: true }),
+    };
+    const controller = new ModelAdminController({} as never, probe as never);
+    const req: { auditRequestId?: string } = {};
+
+    await controller.probeModel("m-1", req);
+
+    expect(probe.probe).toHaveBeenCalledWith("m-1");
+    expect(req.auditRequestId).toBe("probe-m");
+  });
+
+  it("provider probe carries the id of the model probe it ran", async () => {
+    const probe = {
+      probeProvider: vi.fn().mockResolvedValue({
+        providerId: "prov-1",
+        probe: { requestId: "probe-p" },
+        ok: true,
+      }),
+    };
+    const controller = new ModelAdminController({} as never, probe as never);
+    const req: { auditRequestId?: string } = {};
+
+    await controller.probeProvider("prov-1", req);
+
+    expect(req.auditRequestId).toBe("probe-p");
   });
 });

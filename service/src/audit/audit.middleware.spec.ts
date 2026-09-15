@@ -202,6 +202,36 @@ describe("AuditMiddleware", () => {
     );
   });
 
+  it("carries the request id a handler set, read after the handler ran", () => {
+    // The probe routes set this once the probe has returned, which is after
+    // `use()` - so the middleware must read it at `finish`, not up front.
+    const record = vi.fn().mockResolvedValue(undefined);
+    const middleware = new AuditMiddleware({ record } as unknown as AuditService);
+    const res = makeRes(200);
+    const request: Record<string, unknown> = {
+      method: "POST",
+      originalUrl: "/capability/models/m-1/probe",
+      operatorAuth: { operatorId: "opr_1", actorClientId: "opera" },
+    };
+
+    middleware.use(request as never, res as never, vi.fn());
+    request.auditRequestId = "probe-abc";
+    res.finish();
+
+    expect(record).toHaveBeenCalledWith(
+      expect.objectContaining({ action: "probe", requestId: "probe-abc" }),
+    );
+  });
+
+  it("leaves requestId off a write whose handler minted none", () => {
+    const { record } = run({
+      method: "POST",
+      originalUrl: "/capability/providers/prov-1/deactivate",
+    });
+
+    expect(record.mock.calls[0]?.[0]).not.toHaveProperty("requestId");
+  });
+
   it("records a rejected change as a failure, not a change", () => {
     const { record } = run(
       {
