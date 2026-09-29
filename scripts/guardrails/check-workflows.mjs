@@ -82,7 +82,7 @@ const PINNED_TRIGGERS = new Map([
   ["mirror-image.yml", ["workflow_dispatch"]],
   ["release.yml", ["workflow_dispatch"]],
   ["rollback.yml", ["workflow_dispatch"]],
-  ["secret-scan.yml", ["pull_request", "push"]],
+  ["secret-scan.yml", ["pull_request", "push", "workflow_dispatch"]],
   ["set-env-var.yml", ["workflow_dispatch"]],
   ["sonar.yml", ["pull_request", "push"]],
 ]);
