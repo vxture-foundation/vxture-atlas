@@ -35,8 +35,8 @@ export class ProvisioningWebhookController {
     @Body() body: ProvisioningWebhookPayload,
     @Headers("x-vxture-signature") signature: string | undefined,
   ): Promise<{ status: "ok"; outcome: string }> {
-    // rawBody is populated by Nest (NestFactory.create(..., { rawBody: true })
-    // in main.ts). The signature MUST be verified over these exact bytes, never
+    // rawBody is populated by the JSON parser's verify hook, for this path only
+    // (runtime/request-body.ts, RAW_BODY_PATHS). The signature MUST be verified over these exact bytes, never
     // a re-serialization of the already-parsed `body` - if rawBody is missing,
     // that is a bootstrap misconfiguration, not something to silently paper
     // over with a re-stringify that would verify the wrong bytes.

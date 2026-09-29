@@ -27,7 +27,8 @@ overrides:
   # 2.2.0**, so bumping the parent does not fix it and a major bump would be a
   # much larger change than the one being made. Fixed in 2.3.0, same major.
   # Remove once platform-express floats past it on its own.
-  multer: '>=2.3.0'
+  # Raised to 2.4.0 for GHSA-3pph-fpjx-jg34 (medium), published against 2.3.0.
+  multer: '>=2.4.0'
   # GHSA-3f6p-5ww8-9rcr / -rgwj-5xj2-c3m3: mysql2 3.15.3. Transitive via
   # `prisma` / `@prisma/client`, which bundle every driver — **Atlas is on
   # PostgreSQL, so this driver is never loaded**. The override is here to keep

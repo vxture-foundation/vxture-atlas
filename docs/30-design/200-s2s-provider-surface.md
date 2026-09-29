@@ -74,6 +74,30 @@ The contract-layer-first boundary is
 - Online retrieval (A3, user-triggered) may use either mode; metering records
   the workspace that issued the request.
 
+### 1.4 Request size, and a request the upstream refuses
+
+Applies to every `/v1` surface, generation included.
+
+- **Body ceiling: 16 MiB** (`MAX_REQUEST_BODY_BYTES`, bytes; an unusable value
+  stops the process at startup). It protects this process - the parser buffers
+  the whole body and parses it synchronously - and is not a statement about how
+  much a model can read. It is checked before routing, so it is one number for
+  every route and model. Over it: `413`, `{ "code": "PAYLOAD_TOO_LARGE",
+  "retryable": false }`, the message naming the received size and the limit.
+  An unparseable body: `400 REQUEST_BODY_MALFORMED`. Neither reaches routing,
+  so neither has a `requestId` or a reqlog row.
+- **What a model can read is its context window**, a per-model registry fact.
+  Atlas does not estimate tokens and never truncates input.
+- **The upstream refused the content** (it answered `400`/`413`/`422` - over
+  its context window, over its own size cap, a parameter it rejects) ->
+  `422`, `{ "code": "UPSTREAM_REJECTED_REQUEST", "retryable": false }`, with the
+  vendor's wording (first 300 characters) in `message`. The fallback chain is
+  still tried, since a fallback may have a larger window. It does **not** count
+  toward the circuit breaker: it describes the request, not the model's health,
+  and counting it would let one caller's retries take the model offline for
+  every product. Upstream `401`/`403`/`404` (Atlas's own key or model mapping)
+  and `408`/`429`/`5xx` stay `PROVIDER_UNAVAILABLE` and do count.
+
 ## 2. A1 - Embedding
 
 | Item | Contract |
@@ -93,7 +117,7 @@ The contract-layer-first boundary is
 | Endpoint | `POST /v1/parse` |
 | Request | `{ modelCode, task: "layout"\|"ocr"\|"table"\|"formula", pages: [{ pageIndex, imageRef\|imageBase64, regions?: [...] }], workspaceId, tenantId?, applicationId?, applicationType? }` |
 | Response | shaped by `task`: `layout` -> `blocks: [{bbox, blockType}]`; `ocr` -> `spans: [{bbox, text}]`; `table` -> `{rows, cols, cells: [{rowSpan, colSpan, text, bbox}]}`; `formula` -> `{latex, bbox}` |
-| Batching | one `pages` array carries multiple pages/regions in one request. The adapter still makes one upstream call per page - the round trip is saved for the CALLER, not upstream - and the response carries one entry per page: `{task, pages:[{pageIndex, ...structure}]}`. Until 2026-08-16 the response had no page dimension at all and the adapter returned only the first page while billing for every one; see `ProviderParseResponse` |
+| Batching | one `pages` array carries multiple pages/regions in one request. The adapter still makes one upstream call per page - the round trip is saved for the CALLER, not upstream - and the response carries one entry per page: `{task, pages:[{pageIndex, ...structure}]}`. Until 2026-08-16 the response had no page dimension at all and the adapter returned only the first page while billing for every one; see `ProviderParseResponse`. The whole batch counts against the 16 MiB body ceiling (section 1.4); base64 adds a third to each image, so a batch of scanned pages should use `imageRef` or be split |
 | Deployment affinity | satisfied: Atlas and karda are both allocated to worker-02 on the same tailnet, so parse calls do not cross a public path. Re-confirm if either side moves host |
 | Attribution | `workspaceId` = the library owner |
 

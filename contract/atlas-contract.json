@@ -1,5 +1,5 @@
 {
-  "fingerprint": "c1-d2ecccf5b20d",
+  "fingerprint": "c1-c94aa3edad07",
   "errorCodes": [
     {
       "code": "APPLICATION_ID_REQUIRED",
@@ -90,6 +90,10 @@
       "retryable": false
     },
     {
+      "code": "PAYLOAD_TOO_LARGE",
+      "retryable": false
+    },
+    {
       "code": "PROVIDER_UNAVAILABLE",
       "retryable": true
     },
@@ -100,6 +104,10 @@
     {
       "code": "RATE_LIMITED",
       "retryable": true
+    },
+    {
+      "code": "REQUEST_BODY_MALFORMED",
+      "retryable": false
     },
     {
       "code": "RERANK_CANDIDATES_INVALID",
@@ -164,6 +172,10 @@
     {
       "code": "UPSTREAM_FRAME_UNPARSEABLE",
       "retryable": true
+    },
+    {
+      "code": "UPSTREAM_REJECTED_REQUEST",
+      "retryable": false
     },
     {
       "code": "USAGE_TYPE_INVALID",

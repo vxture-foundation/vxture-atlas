@@ -4,6 +4,7 @@ import { HttpStatus, Logger } from "@nestjs/common";
 import { ModelRuntimeService } from "./runtime.service";
 import { ModelCircuitBreakerService } from "./model-circuit-breaker.service";
 import { UpstreamCallFailure } from "../providers/upstream-failure";
+import { ProviderHttpError } from "../providers/base.provider";
 import { metricsRegistry } from "./metrics.registry";
 import {
   ModelRateLimiterService,
@@ -806,6 +807,113 @@ describe("ModelRuntimeService runtime flow", () => {
       }
 
       expect(circuitBreaker.isTripped("primary-model")).toBe(true);
+    });
+
+    // Liaison 40-2609291955. Once bodies up to MAX_REQUEST_BODY_BYTES get
+    // through, an over-context or over-size request reaches the upstream and
+    // comes back 400/413. Counted as a provider failure and labelled
+    // retryable, one caller's retries would trip the model for every product.
+    it("does not count an upstream content refusal against the breaker, and answers it as non-retryable", async () => {
+      const { service, provider, fallbackProvider, circuitBreaker } =
+        makeRuntime();
+      const refusal = new ProviderHttpError(
+        "primary request failed with status 400",
+        400,
+        "primary",
+        '{"error":{"message":"This model\'s maximum context length is 131072 tokens"}}',
+      );
+      provider.chat.mockRejectedValue(refusal);
+      fallbackProvider.chat.mockRejectedValue(
+        new ProviderHttpError("fallback 413", 413, "fallback", "request too large"),
+      );
+
+      let last: unknown;
+      for (let i = 0; i < 6; i += 1) {
+        last = await service
+          .chat(makeRequest({ modelCode: "primary-model", requestId: `r-${i}` }))
+          .catch((error: unknown) => error);
+      }
+
+      expect(circuitBreaker.isTripped("primary-model")).toBe(false);
+      expect(circuitBreaker.isTripped("fallback-model")).toBe(false);
+      // Still failed over: a fallback with a larger window may take it.
+      expect(fallbackProvider.chat).toHaveBeenCalledTimes(6);
+      expect(last).toBeInstanceOf(ModelRuntimeException);
+      const error = last as ModelRuntimeException;
+      expect(error.getStatus()).toBe(422);
+      expect(error.getResponse()).toMatchObject({
+        code: "UPSTREAM_REJECTED_REQUEST",
+        retryable: false,
+        provider: "fallback",
+      });
+      expect((error.getResponse() as { message: string }).message).toContain(
+        "request too large",
+      );
+    });
+
+    it("keeps the vendor's wording in the message, bounded", async () => {
+      const { service, provider, fallbackProvider } = makeRuntime();
+      provider.chat.mockRejectedValue(
+        new ProviderHttpError("x", 400, "primary", `context length ${"z".repeat(5000)}`),
+      );
+      fallbackProvider.chat.mockRejectedValue(
+        new ProviderHttpError("x", 400, "fallback", `context length ${"z".repeat(5000)}`),
+      );
+
+      const error = (await service
+        .chat(makeRequest({ modelCode: "primary-model", requestId: "r" }))
+        .catch((e: unknown) => e)) as ModelRuntimeException;
+      const { message } = error.getResponse() as { message: string };
+
+      expect(message).toContain("context length");
+      expect(message.length).toBeLessThan(400);
+    });
+
+    it.each([401, 403, 404, 429, 500, 503])(
+      "still counts an upstream %i against the breaker - a platform or capacity fault every caller shares",
+      async (status) => {
+        const { service, provider, circuitBreaker } = makeRuntime();
+        provider.chat.mockRejectedValue(
+          new ProviderHttpError(`status ${status}`, status, "primary", ""),
+        );
+
+        for (let i = 0; i < 5; i += 1) {
+          await service
+            .chat(makeRequest({ modelCode: "primary-model", requestId: `r-${i}` }))
+            .catch(() => undefined);
+        }
+
+        expect(circuitBreaker.isTripped("primary-model")).toBe(true);
+      },
+    );
+
+    it("applies the same rule on the streaming path", async () => {
+      const { service, provider, fallbackProvider, circuitBreaker } =
+        makeRuntime();
+      const refuse = async function* (): AsyncGenerator<StreamEvent> {
+        throw new ProviderHttpError("413", 413, "primary", "payload too large");
+      };
+      provider.chatStream.mockImplementation(refuse);
+      fallbackProvider.chatStream.mockImplementation(refuse);
+
+      let last: unknown;
+      for (let i = 0; i < 6; i += 1) {
+        try {
+          for await (const _ of service.chatStream(
+            makeRequest({ modelCode: "primary-model", requestId: `s-${i}` }),
+          )) {
+            // drain
+          }
+        } catch (error) {
+          last = error;
+        }
+      }
+
+      expect(circuitBreaker.isTripped("primary-model")).toBe(false);
+      expect((last as ModelRuntimeException).getResponse()).toMatchObject({
+        code: "UPSTREAM_REJECTED_REQUEST",
+        retryable: false,
+      });
     });
 
     it("resets the breaker on a successful call, not just leaving the failure count as-is", async () => {

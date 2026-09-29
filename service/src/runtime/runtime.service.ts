@@ -50,6 +50,19 @@ import type {
 } from "../types/runtime.types";
 
 /**
+ * Upstream statuses that refuse the request's content rather than signal an
+ * unhealthy service: 400 (context too long, parameter refused), 413 (payload
+ * over the vendor's cap), 422 (well-formed but unprocessable). Deliberately
+ * absent: 401/403/404, which mean Atlas's own key or model mapping is wrong -
+ * a platform fault every caller shares, so it SHOULD trip the breaker - and
+ * 408/429/5xx, which are the upstream's capacity.
+ */
+const UPSTREAM_REJECTS_REQUEST: ReadonlySet<number> = new Set([400, 413, 422]);
+
+/** Enough of the vendor's error body to name the cause, not to echo a prompt back. */
+const UPSTREAM_DETAIL_MAX_CHARS = 300;
+
+/**
  * TD-049. What every step of one chat request needs to know about it.
  *
  * `chat()` and `chatStream()` used to pass these five names as a fresh object
@@ -806,6 +819,24 @@ export class ModelRuntimeService {
       });
     }
 
+    if (
+      error instanceof ProviderHttpError &&
+      UPSTREAM_REJECTS_REQUEST.has(error.status)
+    ) {
+      // The vendor's own wording is the diagnosis ("context length exceeded",
+      // "request too large") and only exists in its body, so a bounded slice
+      // goes into `message`. The code stays Atlas's: vendor codes differ per
+      // provider, and a caller must not branch on which one served the call.
+      const detail = (error.responseBody ?? "").replace(/\s+/gu, " ").trim();
+      return new ModelRuntimeException(
+        HttpStatus.UNPROCESSABLE_ENTITY,
+        "UPSTREAM_REJECTED_REQUEST",
+        `${model.provider} rejected the request with status ${error.status}` +
+          (detail ? `: ${detail.slice(0, UPSTREAM_DETAIL_MAX_CHARS)}` : ""),
+        { requestId, modelCode: model.modelCode, provider: model.provider },
+      );
+    }
+
     const message =
       error instanceof ProviderHttpError
         ? `${model.provider} provider returned status ${error.status}`
@@ -1081,7 +1112,14 @@ export class ModelRuntimeService {
     event: string,
   ): Promise<ModelRuntimeException> {
     const normalised = this.toProviderUnavailableError(error, model, ctx.requestId);
-    this.circuitBreaker.recordFailure(model.modelCode);
+    // A request the upstream refused for its CONTENT says nothing about the
+    // model's health. Counting it would let one caller retrying an oversized
+    // request trip the breaker and take the model offline for everyone.
+    // The candidate loop still moves on to the next model: a fallback with a
+    // larger context window may accept what this one refused.
+    if (normalised.code !== "UPSTREAM_REJECTED_REQUEST") {
+      this.circuitBreaker.recordFailure(model.modelCode);
+    }
     const latencyMs = Date.now() - startedAt;
     this.logAttempt(ctx, model, fallbackAttempt, event, "provider_error", {
       latencyMs,
