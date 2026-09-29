@@ -123,8 +123,9 @@ B - tenderforge is waiting on these:
 - [ ] B5b. ADR-009 accepted, then code: `thinking: "off"|"on"`, per-model
       `config.wire.thinking` fragments, `THINKING_MODE_UNSUPPORTED`,
       `thinkingModes` on `/v1/model-routes`, applied mode echoed
-- [ ] B5c. Confirm on the dev stack with real requests that the upstream
-      default is ON and `off` yields no reasoning content, then fill
+- [ ] B5c. Upstream default ON: confirmed for Doubao (2026-09-30, real
+      request; production's `chat/fast` primary thinks today), DeepSeek not
+      yet observed. After B5b: confirm `off` yields no reasoning, then fill
       `config.wire.thinking` for the routed models; reply in #69
 - [ ] B6. Call deadline: pass the caller's timeout to the upstream as a
       total deadline (today only a time-to-first-byte guard exists)

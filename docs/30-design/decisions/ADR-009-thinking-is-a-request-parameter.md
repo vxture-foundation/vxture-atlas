@@ -20,7 +20,11 @@ What production shows (B1, 2026-09-30):
   defaults to `enabled`; Doubao Seed: thinking-capable models default to
   enabled). So `chat/deterministic` and `chat/fast` very likely run with
   thinking on - the opposite of what letter 30 asks, paid for in reasoning
-  tokens and latency. Documented defaults, not yet confirmed by a real request.
+  tokens and latency. **Confirmed for Doubao** by a real request on the dev
+  stack (2026-09-30): `doubao-seed-2-0-lite-260428` - production's
+  `chat/fast` primary - with no thinking field returned a reasoning envelope,
+  and a three-character answer cost 75 completion tokens. DeepSeek's default
+  is documented, not yet observed (no dev grant).
 - `chat/deterministic` (wants off) and `chat/reasoning` (wants on) share the
   primary `deepseek-v4-pro`. A per-model switch cannot tell them apart; only a
   second model row for the same upstream could, and that is a route/registry
