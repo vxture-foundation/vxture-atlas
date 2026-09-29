@@ -81,44 +81,70 @@ Gateway capabilities ([ADR-004](../30-design/decisions/ADR-004-reject-portkey-ga
       remains the honest answer for those
 
 Request size and model capacity (tenderforge liaison
-`vx-agent-bid/docs/80-liaison/40-2609291955`, opened 2026-09-29):
+`vx-agent-bid/docs/80-liaison/40-2609291955`, opened 2026-09-29; reply thread
+`vx-agent-tenderforge`#69):
 
-- [x] Body ceiling 16 MiB (`MAX_REQUEST_BODY_BYTES`), X-1 codes
-      `PAYLOAD_TOO_LARGE` / `REQUEST_BODY_MALFORMED`, and an upstream
-      400/413/422 answered as `UPSTREAM_REJECTED_REQUEST` without tripping the
-      circuit breaker - merged in #60. Design: `docs/30-design/200-s2s-provider-surface.md` section 1.4
-- [x] Released as v0.7.6 (2026-09-29): dev stack first, then production;
-      the letter's probes sent to production (a ~2 MB body passes the parser,
-      a 17 MB body gets the 413 envelope)
-- [ ] Verify `UPSTREAM_REJECTED_REQUEST` against a real upstream (an
-      over-context request): unit tests only so far
-- [ ] Confirm nothing in front of Atlas caps the body on tenderforge's
-      production path (e.g. nginx `client_max_body_size`, 1 MB default). The
-      direct tailnet path to `:3100` is clear (a 17 MB body reached Atlas);
-      whether tenderforge uses that path is theirs to confirm, asked in
-      `vx-agent-tenderforge`#69
-- [ ] Measure the request-size limits of the domestic upstreams (Doubao,
-      Zhipu, DeepSeek, MiniMax): none publishes one
-- [ ] Letter 30 (`30-2609142131`), never answered: read from production which
-      models serve `chat/deterministic` / `chat/fast` / `chat/default` /
-      `chat/reasoning`, and their context window, max output, thinking and
-      temperature, against the floors the letter asks for
-- [ ] Letter 40 item 4: fill `contextWindow` / `maxOutputTokens` for the
-      routed models, then publish per-route capacity on `/v1/model-routes`
-      (`contextWindow`, `maxOutputTokens`: the minimum across the fallback
-      chain; `maxRequestBytes`). Data before fields: a published `null` is
-      configured-but-inert
-- [ ] Letter 40 item 3: ADR, then code - recognise each provider's
-      context-overflow refusal and answer it with a structured code, fallback
-      first. No token estimation in the gateway, no truncation
-- [ ] Refusals before routing (`PAYLOAD_TOO_LARGE`,
-      `REQUEST_BODY_MALFORMED`) leave no reqlog row: add a counter metric
-- [x] Reply to letter 40: `vx-agent-tenderforge`#69 (2026-09-29), an issue
-      in the repo that has to act (`docs/80-liaison/` is a frozen archive).
-      Items 3-5 are stated there as open
-- [ ] Follow up in `vx-agent-tenderforge`#69: letter 30's model floors, and
-      items 3 and 4 as they land; their production re-run of the failed
-      interpretation
+Done:
+
+- [x] Body ceiling 16 MiB (`MAX_REQUEST_BODY_BYTES`); X-1 codes
+      `PAYLOAD_TOO_LARGE` / `REQUEST_BODY_MALFORMED`; raw body kept for the
+      webhook only; an upstream 400/413/422 answered as
+      `UPSTREAM_REJECTED_REQUEST` without tripping the circuit breaker (#60).
+      Design: `docs/30-design/200-s2s-provider-surface.md` section 1.4
+- [x] Released as v0.7.6 (2026-09-29), dev stack first; the letter's probes
+      sent to production (~2 MB passes the parser, 17 MB gets the 413 envelope)
+- [x] No input truncation anywhere on the chat path (checked 2026-09-29)
+- [x] Letter 40 answered in `vx-agent-tenderforge`#69 - an issue in the repo
+      that has to act; `docs/80-liaison/` is a frozen archive
+
+A - missed by the first pass:
+
+- [x] A1. Design doc section 1.4: state that the body is parsed BEFORE S2S
+      auth, so an unauthenticated caller can make the process buffer up to the
+      ceiling, and why that is accepted (tailnet-only)
+- [x] A2. X-1 registration for `PAYLOAD_TOO_LARGE`, `REQUEST_BODY_MALFORMED`,
+      `UPSTREAM_REJECTED_REQUEST`: none needed (checked 2026-09-29).
+      product_251 is archived into the platform's integration rules, which
+      keep no per-product code table - Atlas's published contract artifact is
+      the list, and the platform conformance guard counts only `retryable`
+      and the four refusal codes. X-4 vocabulary search: no existing spelling
+      to collide with - platform's `VALIDATION_TOO_LARGE` is a single field's
+      value, not the request body; runos has neither
+
+B - tenderforge is waiting on these:
+
+- [ ] B1. Letter 30 (`30-2609142131`), never answered: read from production
+      which models serve `chat/deterministic` / `chat/fast` / `chat/default`
+      / `chat/reasoning` and their context window, max output, thinking and
+      temperature, against the letter's floors; answer in #69
+- [ ] B2. Letter 40 item 4: settle how `model_policies.max_context_tokens`
+      relates to `models.context_window` (one fact, one writable place), fill
+      the data for the routed models, then publish per-route
+      `contextWindow` / `maxOutputTokens` (minimum across the fallback chain)
+      and `maxRequestBytes` on `/v1/model-routes`. Data before fields: a
+      published `null` is configured-but-inert
+- [ ] B3. Letter 40 item 3: ADR, then code - recognise each provider's
+      context-overflow refusal, answer it with a structured code, fallback
+      first. No token estimation in the gateway
+- [ ] B4. tenderforge's production re-run of the failed interpretation, and
+      whether their path to Atlas has a proxy capping the body (asked in #69)
+
+C - verification:
+
+- [ ] C1. `UPSTREAM_REJECTED_REQUEST` against a real upstream (an
+      over-context request): no breaker count, fallback tried. Unit tests only
+      so far
+- [ ] C2. Measure the request-size limits of Doubao, Zhipu, DeepSeek and
+      MiniMax - none publishes one
+- [ ] C3. Refusals before routing leave no reqlog row: add a counter metric
+
+D - raised during this work:
+
+- [ ] D1. After the repo returns to private: run
+      `pnpm audit:run --only platform-claims` and confirm branch protection
+      and the production approval gate against the live state
+- [ ] D2. Owner decision: review repository content for anything that
+      should not have been public during the 2026-09-29 visibility change
 
 Platform-side, not this repo's write-scope:
 
