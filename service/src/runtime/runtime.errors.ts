@@ -71,6 +71,13 @@ export type ModelRuntimeErrorCode =
    * request takes the model offline for every other product.
    */
   | "UPSTREAM_REJECTED_REQUEST"
+  /**
+   * The narrower case of the above: the upstream refused because the input
+   * does not fit the model's context window (ADR-008). Recognised from the
+   * vendor's own refusal, never estimated. The caller's move is to split the
+   * input; an unrecognised overflow still arrives as UPSTREAM_REJECTED_REQUEST.
+   */
+  | "CONTEXT_LENGTH_EXCEEDED"
   // --- request body ---
   // Raised by the JSON parser, before routing, auth, or any /v1 surface code
   // runs - so no requestId exists yet and no reqlog row is written.
@@ -162,6 +169,7 @@ const RETRYABLE: Record<ModelRuntimeErrorCode, boolean> = {
   // The identical request is refused identically; the caller has to shrink or
   // split it. The same reasoning covers both body codes below.
   UPSTREAM_REJECTED_REQUEST: false,
+  CONTEXT_LENGTH_EXCEEDED: false,
   PAYLOAD_TOO_LARGE: false,
   REQUEST_BODY_MALFORMED: false,
   // A token problem is never fixed by repeating the same request. The caller's

@@ -15,6 +15,7 @@ import {
 import { randomUUID } from "node:crypto";
 
 import { ProviderHttpError } from "../providers/base.provider";
+import { isContextOverflow } from "../providers/context-overflow";
 import {
   usageColumns,
   usageFromError,
@@ -58,6 +59,12 @@ import type {
  * 408/429/5xx, which are the upstream's capacity.
  */
 const UPSTREAM_REJECTS_REQUEST: ReadonlySet<number> = new Set([400, 413, 422]);
+
+/** Refusals of the request's content - never the model's health, so never the breaker. */
+const CONTENT_REFUSALS: ReadonlySet<ModelRuntimeErrorCode> = new Set([
+  "UPSTREAM_REJECTED_REQUEST",
+  "CONTEXT_LENGTH_EXCEEDED",
+]);
 
 /** Enough of the vendor's error body to name the cause, not to echo a prompt back. */
 const UPSTREAM_DETAIL_MAX_CHARS = 300;
@@ -828,9 +835,12 @@ export class ModelRuntimeService {
       // goes into `message`. The code stays Atlas's: vendor codes differ per
       // provider, and a caller must not branch on which one served the call.
       const detail = (error.responseBody ?? "").replace(/\s+/gu, " ").trim();
+      // ADR-008: the narrower code when the vendor's refusal is recognisably a
+      // context overflow; same status, same handling, only the code differs.
+      const overflow = isContextOverflow(error.status, error.responseBody);
       return new ModelRuntimeException(
         HttpStatus.UNPROCESSABLE_ENTITY,
-        "UPSTREAM_REJECTED_REQUEST",
+        overflow ? "CONTEXT_LENGTH_EXCEEDED" : "UPSTREAM_REJECTED_REQUEST",
         `${model.provider} rejected the request with status ${error.status}` +
           (detail ? `: ${detail.slice(0, UPSTREAM_DETAIL_MAX_CHARS)}` : ""),
         { requestId, modelCode: model.modelCode, provider: model.provider },
@@ -1117,7 +1127,7 @@ export class ModelRuntimeService {
     // request trip the breaker and take the model offline for everyone.
     // The candidate loop still moves on to the next model: a fallback with a
     // larger context window may accept what this one refused.
-    if (normalised.code !== "UPSTREAM_REJECTED_REQUEST") {
+    if (!CONTENT_REFUSALS.has(normalised.code)) {
       this.circuitBreaker.recordFailure(model.modelCode);
     }
     const latencyMs = Date.now() - startedAt;

@@ -1,5 +1,5 @@
 {
-  "fingerprint": "c1-c94aa3edad07",
+  "fingerprint": "c1-1b04b367adc0",
   "errorCodes": [
     {
       "code": "APPLICATION_ID_REQUIRED",
@@ -31,6 +31,10 @@
     },
     {
       "code": "CLIENT_ABORTED",
+      "retryable": false
+    },
+    {
+      "code": "CONTEXT_LENGTH_EXCEEDED",
       "retryable": false
     },
     {

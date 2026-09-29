@@ -851,6 +851,35 @@ describe("ModelRuntimeService runtime flow", () => {
       );
     });
 
+    // ADR-008: the narrower code when the refusal is recognisably a context
+    // overflow - same status, same handling, only the code differs.
+    it("answers a recognised context overflow as CONTEXT_LENGTH_EXCEEDED, with the same handling", async () => {
+      const { service, provider, fallbackProvider, circuitBreaker } = makeRuntime();
+      const overflow = new ProviderHttpError(
+        "status 400",
+        400,
+        "primary",
+        JSON.stringify({ error: { code: "context_length_exceeded", message: "maximum context length is 131072 tokens" } }),
+      );
+      provider.chat.mockRejectedValue(overflow);
+      fallbackProvider.chat.mockRejectedValue(overflow);
+
+      let last: unknown;
+      for (let i = 0; i < 6; i += 1) {
+        last = await service
+          .chat(makeRequest({ modelCode: "primary-model", requestId: `o-${i}` }))
+          .catch((error: unknown) => error);
+      }
+
+      expect(circuitBreaker.isTripped("primary-model")).toBe(false);
+      expect(fallbackProvider.chat).toHaveBeenCalledTimes(6);
+      expect((last as ModelRuntimeException).getStatus()).toBe(422);
+      expect((last as ModelRuntimeException).getResponse()).toMatchObject({
+        code: "CONTEXT_LENGTH_EXCEEDED",
+        retryable: false,
+      });
+    });
+
     it("keeps the vendor's wording in the message, bounded", async () => {
       const { service, provider, fallbackProvider } = makeRuntime();
       provider.chat.mockRejectedValue(

@@ -129,9 +129,10 @@ B - tenderforge is waiting on these:
 - [x] B3a. Letter 40 item 3 designed: ADR-008 (Proposed) - recognise each
       provider's refusal, no gateway token estimation, unrecognised overflow
       degrades to `UPSTREAM_REJECTED_REQUEST`
-- [ ] B3b. Owner accepts ADR-008, then code: `CONTEXT_LENGTH_EXCEEDED` with
-      a signature table pinned by recorded vendor bodies. Doubao's signature
-      needs C1's real over-context request
+- [x] B3b. ADR-008 accepted (owner, 2026-09-29); `CONTEXT_LENGTH_EXCEEDED`
+      with a code-kept signature table pinned by recorded vendor bodies.
+      Doubao's signature still needs C1's real over-context request
+- [ ] B3c. Move the signatures to per-provider configuration (TD-055)
 - [ ] B4. tenderforge's production re-run of the failed interpretation, and
       whether their path to Atlas has a proxy capping the body (asked in #69)
 

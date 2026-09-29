@@ -104,7 +104,10 @@ Applies to every `/v1` surface, generation included.
   still tried, since a fallback may have a larger window. It does **not** count
   toward the circuit breaker: it describes the request, not the model's health,
   and counting it would let one caller's retries take the model offline for
-  every product. Upstream `401`/`403`/`404` (Atlas's own key or model mapping)
+  every product. When the refusal is recognisably a context-window overflow
+  (per-vendor signatures, ADR-008), the code is the narrower
+  `CONTEXT_LENGTH_EXCEEDED` - same status, same handling - and the caller
+  should split its input. Upstream `401`/`403`/`404` (Atlas's own key or model mapping)
   and `408`/`429`/`5xx` stay `PROVIDER_UNAVAILABLE` and do count.
 
 ## 2. A1 - Embedding
