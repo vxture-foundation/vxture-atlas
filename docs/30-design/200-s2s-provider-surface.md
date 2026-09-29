@@ -86,6 +86,13 @@ Applies to every `/v1` surface, generation included.
   "retryable": false }`, the message naming the received size and the limit.
   An unparseable body: `400 REQUEST_BODY_MALFORMED`. Neither reaches routing,
   so neither has a `requestId` or a reqlog row.
+- **The body is read before S2S auth.** Parsing is HTTP middleware, the token
+  check is a route guard, so a caller with no token can still make the
+  process buffer and parse up to the ceiling. A body declared larger than the
+  ceiling (`Content-Length`) is refused before it is read. Accepted because
+  Atlas is reachable only inside the tailnet, so every caller that can reach
+  it is already a known host; if Atlas ever gets a public host
+  (`atlas.vxture.com` is reserved, not bound), this has to be revisited.
 - **What a model can read is its context window**, a per-model registry fact.
   Atlas does not estimate tokens and never truncates input.
 - **The upstream refused the content** (it answered `400`/`413`/`422` - over
