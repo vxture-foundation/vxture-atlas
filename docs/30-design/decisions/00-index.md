@@ -16,3 +16,4 @@ restating its reasoning.
 | ADR-005 | [ACR primary, GHCR fallback for worker-02](ADR-005-acr-primary-ghcr-fallback.md) | Accepted | 2026-07-26 |
 | ADR-006 | [The DDL is one create-once baseline; increment history is folded away](ADR-006-clean-rebaseline.md) | Accepted | 2026-08-17 |
 | ADR-007 | [The audit runs before a release, not in CI](ADR-007-audit-runs-before-release-not-in-ci.md) | Accepted | 2026-08-26 |
+| ADR-008 | [Context overflow is recognised from the upstream's refusal, not estimated](ADR-008-context-overflow-from-upstream-refusal.md) | Proposed | 2026-09-29 |
