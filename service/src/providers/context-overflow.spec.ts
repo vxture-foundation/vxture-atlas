@@ -47,6 +47,18 @@ const OVERFLOWS: Array<[string, string]> = [
     JSON.stringify({ error: { code: "1261", message: "Prompt 超长" } }),
   ],
   [
+    "Doubao (recorded 2026-09-30 from a real over-context request)",
+    JSON.stringify({
+      error: {
+        code: "InvalidParameter",
+        message:
+          "Total tokens of multi-modal content and text exceed max message tokens. Request id: <redacted>",
+        param: "",
+        type: "BadRequest",
+      },
+    }),
+  ],
+  [
     "Claude",
     JSON.stringify({
       type: "error",
@@ -64,6 +76,13 @@ const LOOKALIKES: Array<[string, number, string]> = [
     "DeepSeek's REAL quota error - same code, no overflow wording",
     400,
     JSON.stringify({ message: "quota exhausted", code: "quota_limit_reached" }),
+  ],
+  [
+    "Doubao's generic InvalidParameter for some other parameter",
+    400,
+    JSON.stringify({
+      error: { code: "InvalidParameter", message: "The parameter `temperature` specified in the request is not valid", type: "BadRequest" },
+    }),
   ],
   [
     "Zhipu 1210 parameter error",

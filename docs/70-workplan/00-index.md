@@ -138,11 +138,17 @@ B - tenderforge is waiting on these:
 
 C - verification:
 
-- [ ] C1. `UPSTREAM_REJECTED_REQUEST` against a real upstream (an
-      over-context request): no breaker count, fallback tried. Unit tests only
-      so far
-- [ ] C2. Measure the request-size limits of Doubao, Zhipu, DeepSeek and
-      MiniMax - none publishes one
+- [x] C1 (Doubao). Real over-context request through the dev stack
+      (2026-09-30): Doubao answers 400 `InvalidParameter` "...exceed max
+      message tokens" - now a signature. Six overflows in a row, then a normal
+      call is still served: the breaker exemption holds on the real path
+- [ ] C1 (rest). Zhipu: the dev key answers 401, so its overflow is
+      untested. DeepSeek: no grant for the dev product. Claude: no usable
+      model in dev - its signature is still observed wording, not recorded
+- [x] C2 (Doubao). 8 MB and 15 MB bodies both reached tokenization (400
+      overflow, not 413): Doubao's byte cap is above 15 MB, so the 16 MiB
+      ceiling does not cut in ahead of it
+- [ ] C2 (rest). Zhipu, DeepSeek, MiniMax - same blockers as C1
 - [x] C3. Refusals before routing are counted in the existing
       `model_request_rejections_total{code, product="unknown"}` rather than
       a second metric for the same fact

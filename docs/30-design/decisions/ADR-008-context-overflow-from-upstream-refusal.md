@@ -35,7 +35,7 @@ caller's next move: split the input, or fix the request.
 | DeepSeek | 400 | Two forms: the OpenAI-style message, **and** `"Input token exceed the limit"` with `code: "quota_limit_reached"` | public issue trackers |
 | Zhipu | 400 | business code `1261`, "Prompt 超长" | docs.bigmodel.cn error-code table |
 | Claude | 400 | `invalid_request_error` only; the message text is the sole distinguisher | platform.claude.com errors page (wording not documented) |
-| Doubao (Ark) | ? | not documented in any page reachable 2026-09-29 | - |
+| Doubao (Ark) | 400 | `error.code = "InvalidParameter"` (generic) **and** "Total tokens of multi-modal content and text exceed max message tokens" | not documented; recorded from a real over-context request 2026-09-30 |
 
 There is no shared signal. One vendor documents nothing. And one vendor's
 overflow arrives spelled as a **quota** error: a classifier keyed on
