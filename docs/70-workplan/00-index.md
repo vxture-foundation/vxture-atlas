@@ -120,9 +120,11 @@ B - tenderforge is waiting on these:
       configured on any route - see B5
 - [x] B5a. Thinking analysed (owner, 2026-09-30): a per-call request
       parameter, not a route - ADR-009 (Proposed)
-- [ ] B5b. ADR-009 accepted, then code: `thinking: "off"|"on"`, per-model
-      `config.wire.thinking` fragments, `THINKING_MODE_UNSUPPORTED`,
-      `thinkingModes` on `/v1/model-routes`, applied mode echoed
+- [x] B5b. ADR-009 accepted (owner, 2026-09-30); `thinking: "off"|"on"`,
+      per-model `config.wire.thinking` (wire schema 3),
+      `THINKING_MODE_UNSUPPORTED` / `CHAT_THINKING_INVALID`,
+      `thinkingModes` on `/v1/model-routes`, applied mode echoed on both
+      response paths
 - [ ] B5c. Upstream default ON: confirmed for Doubao (2026-09-30, real
       request; production's `chat/fast` primary thinks today), DeepSeek not
       yet observed. After B5b: confirm `off` yields no reasoning, then fill

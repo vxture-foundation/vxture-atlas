@@ -7,7 +7,7 @@ import type {
   OpenAiUsage,
 } from "./openai-compatible.types";
 import { openSseRequest, readSseMessages } from "./sse";
-import { OPENAI_WIRE_DEFAULTS } from "./wire";
+import { OPENAI_WIRE_DEFAULTS, thinkingFragment } from "./wire";
 import type { ResolvedWire } from "./wire";
 import { errorFrame } from "../types/runtime.types";
 import type {
@@ -43,6 +43,9 @@ export function buildOpenAiCompatibleBody(
   // （wire.ts RESERVED_BODY_KEYS），这里的顺序是第二道保险，不是第一道。
   const body: Record<string, unknown> = {
     ...wire.extraBody,
+    // ADR-009: the per-call thinking fragment beats the per-model extraBody
+    // default and never the adapter's own keys below.
+    ...thinkingFragment(wire, request.thinking),
     model: resolveUpstreamModel(request),
     messages: request.messages.map(toWireMessage),
     stream,

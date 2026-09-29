@@ -93,6 +93,7 @@ const VALUE_ONLY = Object.freeze({
   APPLICATION_TYPE_INVALID: "value outside the enum; absence is APPLICATION_TYPE_REQUIRED",
   USAGE_TYPE_INVALID: "optional field, value outside the enum",
   CHAT_MESSAGES_INVALID: "messages arrived malformed; absence is CHAT_MESSAGES_REQUIRED",
+  CHAT_THINKING_INVALID: "thinking is optional; this refuses a value outside off/on, absence means the upstream default (ADR-009)",
   EMBED_TEXTS_INVALID: "texts arrived malformed; absence is EMBED_TEXTS_REQUIRED",
   RERANK_CANDIDATES_INVALID: "candidates arrived malformed; absence is RERANK_CANDIDATES_REQUIRED",
   CANDIDATE_POOL_TOO_LARGE: "a ceiling on an accepted value, not a missing field",

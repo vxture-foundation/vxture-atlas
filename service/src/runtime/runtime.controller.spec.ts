@@ -107,6 +107,7 @@ describe("ModelRuntimeController.listEndpoints", () => {
       category: "chat",
       state: "active" as const,
       contextWindow: 131072,
+      thinkingModes: ["off", "on"] as ("off" | "on")[],
       maxOutputTokens: 16384,
     };
     const { controller } = makeController([row]);

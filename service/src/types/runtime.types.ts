@@ -133,6 +133,12 @@ export interface ChatRequest {
   temperature?: number;
   maxTokens?: number;
   topP?: number;
+  /**
+   * ADR-009. Omitted means the upstream's own default - today's behaviour, so
+   * no existing caller changes. A mode the routed model cannot honour is
+   * refused (`THINKING_MODE_UNSUPPORTED`), never silently dropped.
+   */
+  thinking?: ThinkingMode;
   tools?: ToolDefinition[];
   toolChoice?: ToolChoice;
   stream?: boolean;
@@ -154,6 +160,15 @@ export interface ChatRequest {
   usageType?: "normal" | "retry" | "test";
 }
 
+/**
+ * A per-call thinking mode (ADR-009). Vendor-neutral on purpose: each model
+ * translates it through `config.wire.thinking`, so a caller never spells a
+ * vendor's field and never has to know which model served it.
+ */
+export type ThinkingMode = "off" | "on";
+
+export const THINKING_MODES: readonly ThinkingMode[] = ["off", "on"];
+
 export interface ChatResponse {
   id: string;
   modelCode: string;
@@ -161,6 +176,11 @@ export interface ChatResponse {
   usage: TokenUsage;
   latencyMs: number;
   finishReason?: FinishReason;
+  /**
+   * The mode this call ran with: the one asked for, or `null` when none was
+   * asked and the upstream's own default applied (ADR-009 decision 5).
+   */
+  thinking: ThinkingMode | null;
 }
 
 /**
@@ -184,6 +204,8 @@ export type StreamEvent =
       type: "done";
       usage?: TokenUsage;
       finishReason?: FinishReason;
+      /** Stamped by `runtime.service`, like `modelCode` below; see `ChatResponse.thinking`. */
+      thinking?: ThinkingMode | null;
       /**
        * Which model actually answered.
        *
@@ -407,6 +429,8 @@ export interface ProviderChatRequest {
   temperature?: number;
   maxTokens?: number;
   topP?: number;
+  /** Already checked against the model by the runtime; the adapter only spreads its fragment. */
+  thinking?: ThinkingMode;
   tools?: ToolDefinition[];
   toolChoice?: ToolChoice;
   config?: ModelConfig;

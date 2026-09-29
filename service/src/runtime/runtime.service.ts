@@ -16,6 +16,7 @@ import { randomUUID } from "node:crypto";
 
 import { ProviderHttpError } from "../providers/base.provider";
 import { isContextOverflow } from "../providers/context-overflow";
+import { resolveWireFor, supportedThinkingModes } from "../providers/wire";
 import {
   usageColumns,
   usageFromError,
@@ -47,8 +48,10 @@ import type {
   ChatResponse,
   ProviderChatRequest,
   StreamEvent,
+  ThinkingMode,
   TokenUsage,
 } from "../types/runtime.types";
+import { THINKING_MODES } from "../types/runtime.types";
 
 /**
  * Upstream statuses that refuse the request's content rather than signal an
@@ -59,6 +62,17 @@ import type {
  * 408/429/5xx, which are the upstream's capacity.
  */
 const UPSTREAM_REJECTS_REQUEST: ReadonlySet<number> = new Set([400, 413, 422]);
+
+/** Can this model run with `mode`? Read from the same wire the adapter will use. */
+function honoursThinking(model: AiModelRecord, mode: ThinkingMode): boolean {
+  return supportedThinkingModes(
+    resolveWireFor({
+      protocol: model.protocol,
+      providerConfig: model.providerConfig,
+      config: model.config,
+    }),
+  ).includes(mode);
+}
 
 /** Refusals of the request's content - never the model's health, so never the breaker. */
 const CONTENT_REFUSALS: ReadonlySet<ModelRuntimeErrorCode> = new Set([
@@ -203,6 +217,7 @@ export class ModelRuntimeService {
           return {
             id: requestId,
             modelCode: model.modelCode,
+            thinking: request.thinking ?? null,
             message: {
               role: "assistant",
               content: providerResponse.content,
@@ -385,7 +400,11 @@ export class ModelRuntimeService {
             // a failover this is the candidate that actually served, which is
             // the fact worth reporting - not the one that was tried first.
             yield event.type === "done"
-              ? { ...event, modelCode: model.modelCode }
+              ? {
+                  ...event,
+                  modelCode: model.modelCode,
+                  thinking: request.thinking ?? null,
+                }
               : event;
           }
 
@@ -649,6 +668,20 @@ export class ModelRuntimeService {
       );
     }
 
+    // ADR-009. A value outside the vocabulary is refused here rather than
+    // treated as "not asked": dropping it would serve the upstream default,
+    // which is exactly the call the caller was trying not to make.
+    if (
+      request.thinking !== undefined &&
+      !THINKING_MODES.includes(request.thinking)
+    ) {
+      throw new ModelRuntimeException(
+        HttpStatus.BAD_REQUEST,
+        "CHAT_THINKING_INVALID",
+        `thinking must be one of: ${THINKING_MODES.join(", ")}`,
+      );
+    }
+
     const validApplicationTypes = new Set([
       "agent",
       "workflow",
@@ -795,8 +828,20 @@ export class ModelRuntimeService {
   private async resolveCandidateModels(
     modelCode: string,
     routeFallbacks: string[] | null = null,
+    thinking?: ThinkingMode,
   ): Promise<AiModelRecord[]> {
     const primary = await this.registry.getActiveModel(modelCode);
+    // ADR-009 decision 3: the primary must honour the requested mode or the
+    // request is refused - serving it anyway would bill the caller for the
+    // behaviour it asked to avoid, and say nothing.
+    if (thinking !== undefined && !honoursThinking(primary, thinking)) {
+      throw new ModelRuntimeException(
+        HttpStatus.UNPROCESSABLE_ENTITY,
+        "THINKING_MODE_UNSUPPORTED",
+        `model ${primary.modelCode} cannot run with thinking "${thinking}"`,
+        { modelCode: primary.modelCode, provider: primary.provider },
+      );
+    }
     const fallbackCodes = (
       routeFallbacks ??
       readStringArrayConfig(primary.config, "fallbackModelCodes")
@@ -805,7 +850,11 @@ export class ModelRuntimeService {
     const fallbacks: AiModelRecord[] = [];
     for (const fallbackCode of fallbackCodes) {
       try {
-        fallbacks.push(await this.registry.getActiveModel(fallbackCode));
+        const fallback = await this.registry.getActiveModel(fallbackCode);
+        // Skipped, not refused: the primary can serve this mode, and a
+        // fallback that cannot is as unusable for this call as a missing one.
+        if (thinking !== undefined && !honoursThinking(fallback, thinking)) continue;
+        fallbacks.push(fallback);
       } catch {
         // fallback 配置错误不能阻断主模型调用；主模型失败后只尝试可用 fallback。
       }
@@ -1011,6 +1060,7 @@ export class ModelRuntimeService {
       return await this.resolveCandidateModels(
         ctx.modelCode,
         ctx.routed.fallbackModelCodes,
+        ctx.request.thinking,
       );
     } catch (error) {
       this.logRuntimeEvent(failedEvent, {
@@ -1212,6 +1262,7 @@ export class ModelRuntimeService {
         ? { maxTokens: request.maxTokens }
         : {}),
       ...(request.topP !== undefined ? { topP: request.topP } : {}),
+      ...(request.thinking !== undefined ? { thinking: request.thinking } : {}),
       ...(request.tools !== undefined ? { tools: request.tools } : {}),
       ...(request.toolChoice !== undefined
         ? { toolChoice: request.toolChoice }
