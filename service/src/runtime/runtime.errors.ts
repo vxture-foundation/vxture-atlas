@@ -62,6 +62,22 @@ export type ModelRuntimeErrorCode =
    * never declared or documented, so no caller could have been branching on it.
    */
   | "UPSTREAM_FRAME_UNPARSEABLE"
+  /**
+   * The upstream answered 400/413/422: it refused THIS request's content (too
+   * long for the model's context, a payload over its size cap, a parameter it
+   * rejects), not the service. Kept apart from PROVIDER_UNAVAILABLE because the
+   * two need opposite handling - that one is retryable and trips the circuit
+   * breaker; this one must do neither, or one caller retrying an oversized
+   * request takes the model offline for every other product.
+   */
+  | "UPSTREAM_REJECTED_REQUEST"
+  // --- request body ---
+  // Raised by the JSON parser, before routing, auth, or any /v1 surface code
+  // runs - so no requestId exists yet and no reqlog row is written.
+  /** Body over MAX_REQUEST_BODY_BYTES. The message names both sizes. */
+  | "PAYLOAD_TOO_LARGE"
+  /** Body is not parseable JSON (or form data), or its encoding is unsupported. */
+  | "REQUEST_BODY_MALFORMED"
   // --- transport auth ---
   // Rejected by S2sAuthGuard before any runtime code runs, but still delivered
   // to the same caller on the same surface, so they belong to the same
@@ -143,6 +159,11 @@ const RETRYABLE: Record<ModelRuntimeErrorCode, boolean> = {
   PROVIDER_UNAVAILABLE: true,
   MODEL_RUNTIME_STREAM_FAILED: true,
   UPSTREAM_FRAME_UNPARSEABLE: true,
+  // The identical request is refused identically; the caller has to shrink or
+  // split it. The same reasoning covers both body codes below.
+  UPSTREAM_REJECTED_REQUEST: false,
+  PAYLOAD_TOO_LARGE: false,
+  REQUEST_BODY_MALFORMED: false,
   // A token problem is never fixed by repeating the same request. The caller's
   // move is to re-mint and call again, which is standard 401 handling and a
   // different thing from the back-off `retryable` describes.
