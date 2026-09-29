@@ -107,7 +107,9 @@ wait for a reset that will never help.
 
 - **Pre-flight estimation** (the letter's proposal): see decision 1.
 - **Signatures as provider config now**: deferred, not rejected (decision 3,
-  TD-055). The configuration needs validation that refuses a signature
+  TD-055). Atlas's half landed 2026-09-30 as `config.wire.contextOverflow`
+  (literal substrings, layers concatenate with the built-in list); the
+  editor on opera's side is `vxture-platform`#542. The configuration needs validation that refuses a signature
   declaring no field - one such entry would relabel every content refusal as
   an overflow - and that is its own piece of work.
 - **Matching `code` only**: misfiles DeepSeek's `quota_limit_reached`.

@@ -156,7 +156,10 @@ B - tenderforge is waiting on these:
 - [x] B3b. ADR-008 accepted (owner, 2026-09-29); `CONTEXT_LENGTH_EXCEEDED`
       with a code-kept signature table pinned by recorded vendor bodies.
       Doubao's signature still needs C1's real over-context request
-- [ ] B3c. Move the signatures to per-provider configuration (TD-055)
+- [x] B3c. Atlas side of TD-055: `config.wire.contextOverflow` (wire
+      schema 4) - literal substrings, concatenated with the built-in list
+- [ ] B3d. Opera editor for `wire.contextOverflow` (with `wire.thinking`,
+      `vxture-platform`#542)
 - [x] Released as v0.7.7 (2026-09-30, first release through the production
       approval gate): #65, #67, #68, #69; verified in production and on the
       dev stack against a real Doubao upstream; tenderforge told in #69

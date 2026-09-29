@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   CONTEXT_OVERFLOW_SIGNATURES,
   isContextOverflow,
+  signaturesFromConfig,
 } from "./context-overflow";
 
 /**
@@ -123,5 +124,23 @@ describe("isContextOverflow", () => {
     for (const signature of CONTEXT_OVERFLOW_SIGNATURES) {
       expect(signature.code !== undefined || signature.message !== undefined).toBe(true);
     }
+  });
+});
+
+// TD-055: signatures an operator adds in provider/model config.
+describe("configured signatures", () => {
+  it("match their message literally - metacharacters are not a pattern", () => {
+    const [signature] = signaturesFromConfig([{ message: "tokens (max) exceeded." }]);
+    const body = (message: string) => JSON.stringify({ error: { message } });
+
+    expect(isContextOverflow(400, body("Input tokens (max) exceeded."), [signature!])).toBe(true);
+    expect(isContextOverflow(400, body("tokens max exceededX"), [signature!])).toBe(false);
+  });
+
+  it("require every declared field, like the built-ins", () => {
+    const signatures = signaturesFromConfig([{ code: "E42", message: "too long" }]);
+
+    expect(isContextOverflow(400, JSON.stringify({ error: { code: "E42", message: "input too long" } }), signatures)).toBe(true);
+    expect(isContextOverflow(400, JSON.stringify({ error: { code: "E42", message: "bad temperature" } }), signatures)).toBe(false);
   });
 });

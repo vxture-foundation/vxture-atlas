@@ -129,3 +129,35 @@ describe("the fragment's position in the upstream body", () => {
     expect(body["model"]).toBe("m");
   });
 });
+
+// TD-055 lives in the same wire descriptor; its resolution and write rules.
+describe("config.wire.contextOverflow", () => {
+  it("concatenates provider and model entries - each layer adds, none removes", () => {
+    const wire = resolveWire(
+      OPENAI_WIRE_DEFAULTS,
+      { wire: { contextOverflow: [{ code: "P1" }] } },
+      { wire: { contextOverflow: [{ message: "too long" }] } },
+    );
+    expect(wire.contextOverflow).toEqual([{ code: "P1" }, { message: "too long" }]);
+  });
+
+  it("drops an entry with neither field at runtime - it would match every 400", () => {
+    const wire = resolveWire(OPENAI_WIRE_DEFAULTS, null, { wire: { contextOverflow: [{}, { code: "X" }] } });
+    expect(wire.contextOverflow).toEqual([{ code: "X" }]);
+  });
+
+  it.each([
+    [{ contextOverflow: {} }, "must be an array"],
+    [{ contextOverflow: ["x"] }, "must be an object"],
+    [{ contextOverflow: [{}] }, "declares neither code nor message"],
+    [{ contextOverflow: [{ code: "" }] }, "code must be a non-empty string"],
+    [{ contextOverflow: [{ message: "x".repeat(201) }] }, "longer than 200"],
+    [{ contextOverflow: [{ code: "A", regex: ".*" }] }, "is not a known field"],
+  ])("refuses %j on write", (wire, problem) => {
+    expect(validateWire(wire).join(" ")).toContain(problem);
+  });
+
+  it("accepts a well-formed list", () => {
+    expect(validateWire({ contextOverflow: [{ code: "E42", message: "too long" }] })).toEqual([]);
+  });
+});

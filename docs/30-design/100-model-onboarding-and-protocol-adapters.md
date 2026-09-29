@@ -76,7 +76,7 @@ this layer costs **zero DDL**. A `wire` sub-object carries the quirks:
 // model_providers.config - provider-level defaults
 {
   "wire": {
-    "schemaVersion": 3,
+    "schemaVersion": 4,
     "chatPath": "/chat/completions",
     "auth": { "style": "bearer" },          // bearer | x-api-key | header
     "streamUsage": "stream_options",        // stream_options | native | none
@@ -88,7 +88,10 @@ this layer costs **zero DDL**. A `wire` sub-object carries the quirks:
     "thinking": {                               // per-call mode -> body fragment (ADR-009)
       "off": { "thinking": { "type": "disabled" } },
       "on":  { "thinking": { "type": "enabled" } }
-    }
+    },
+    "contextOverflow": [                        // this vendor's "input too long" (TD-055)
+      { "code": "InvalidParameter", "message": "exceed max message tokens" }
+    ]
   }
 }
 
@@ -124,6 +127,16 @@ replaces its provider's; the fragment is spread after `extraBody` (a per-call
 choice beats a per-model default) and under the adapter's reserved keys, which
 it cannot touch - rejected on write like `extraBody`'s.
 
+`contextOverflow` teaches Atlas a vendor's "input too long" refusal without
+a release (ADR-008, TD-055). Each entry matches when every field it declares
+matches: `code` against the body's error code, `message` as a case-insensitive
+**substring** - never a regular expression, because an operator-typed pattern
+run against every upstream error body is a denial-of-service and a
+correctness trap. An entry must declare at least one field (one with neither
+would relabel every refusal as an overflow). Layers concatenate - built-in list,
+then provider, then model - so configuration can add recognition, never remove
+the built-in.
+
 **`wire` is a closed schema, not a free dictionary.** Unknown keys are rejected
 on write - otherwise this becomes a second dumping ground. Validation lives on
 the `/capability/providers` and `/capability/models` write paths, not at
@@ -132,8 +145,8 @@ runtime.
 **Strict on write, lenient at runtime.** Operators change configuration faster
 than the service ships, so an older service reading a newer key must ignore it
 and warn, never take a running model out of service. `wire.schemaVersion` is
-the carrier of that rule: an optional integer, currently `3` (`2` added
-`extraBody`, `3` added `thinking`). Write validation
+the carrier of that rule: an optional integer, currently `4` (`2` added
+`extraBody`, `3` added `thinking`, `4` added `contextOverflow`). Write validation
 checks it only when it is present - it must be an integer, and a version newer
 than the running build is rejected - so a `wire` written without the key is
 accepted and resolves to the adapter's base version. At runtime an adapter
