@@ -113,19 +113,25 @@ A - missed by the first pass:
 
 B - tenderforge is waiting on these:
 
-- [ ] B1. Letter 30 (`30-2609142131`), never answered: read from production
-      which models serve `chat/deterministic` / `chat/fast` / `chat/default`
-      / `chat/reasoning` and their context window, max output, thinking and
-      temperature, against the letter's floors; answer in #69
+- [x] B1. Letter 30 checked against production (2026-09-30) and answered
+      in #69: every context and output floor is met (smallest across each
+      chain: 128000 on `chat/default`, 256000 on the other three; output
+      128000). Temperature is the caller's to send. Thinking is not
+      configured on any route - see B5
+- [ ] B5. Thinking per route: no route sets it, so each upstream's default
+      applies, and `chat/deterministic` (letter 30: off) and
+      `chat/reasoning` (on) share the primary `deepseek-v4-pro`, so a
+      per-model switch cannot tell them apart. Operator/owner decision:
+      a second model row for the same upstream with its own
+      `config.wire.extraBody`, or accept the vendor default. Reply in #69
 - [x] B2a. `max_context_tokens` vs `context_window` settled: the policy
       column is enforced by nothing (TD-054); capacity is published from the
       model's own columns
 - [x] B2b. `/v1/model-routes` publishes per-route `contextWindow` /
       `maxOutputTokens` (smallest across the chain, `null` = unknown) and a
       top-level `maxRequestBytes` - code merged, not yet released
-- [ ] B2c. Before releasing B2b: fill `context_window` / `max_output_tokens`
-      for the models behind tenderforge's four routes (needs B1's production
-      read), so the first release publishes numbers, not `null`
+- [x] B2c. No fill needed: B1 found both columns set on all eight models
+      behind tenderforge's four routes, so v0.7.7 publishes numbers
 - [x] B3a. Letter 40 item 3 designed: ADR-008 (Proposed) - recognise each
       provider's refusal, no gateway token estimation, unrecognised overflow
       degrades to `UPSTREAM_REJECTED_REQUEST`
@@ -133,6 +139,9 @@ B - tenderforge is waiting on these:
       with a code-kept signature table pinned by recorded vendor bodies.
       Doubao's signature still needs C1's real over-context request
 - [ ] B3c. Move the signatures to per-provider configuration (TD-055)
+- [x] Released as v0.7.7 (2026-09-30, first release through the production
+      approval gate): #65, #67, #68, #69; verified in production and on the
+      dev stack against a real Doubao upstream; tenderforge told in #69
 - [ ] B4. tenderforge's production re-run of the failed interpretation, and
       whether their path to Atlas has a proxy capping the body (asked in #69)
 
