@@ -15,7 +15,11 @@ import {
 import { randomUUID } from "node:crypto";
 
 import { ProviderHttpError } from "../providers/base.provider";
-import { isContextOverflow } from "../providers/context-overflow";
+import {
+  CONTEXT_OVERFLOW_SIGNATURES,
+  isContextOverflow,
+  signaturesFromConfig,
+} from "../providers/context-overflow";
 import { resolveWireFor, supportedThinkingModes } from "../providers/wire";
 import {
   usageColumns,
@@ -947,7 +951,17 @@ export class ModelRuntimeService {
       const detail = (error.responseBody ?? "").replace(/\s+/gu, " ").trim();
       // ADR-008: the narrower code when the vendor's refusal is recognisably a
       // context overflow; same status, same handling, only the code differs.
-      const overflow = isContextOverflow(error.status, error.responseBody);
+      // TD-055: the built-in signatures plus any this provider/model declares.
+      const overflow = isContextOverflow(error.status, error.responseBody, [
+        ...CONTEXT_OVERFLOW_SIGNATURES,
+        ...signaturesFromConfig(
+          resolveWireFor({
+            protocol: model.protocol,
+            providerConfig: model.providerConfig,
+            config: model.config,
+          }).contextOverflow,
+        ),
+      ]);
       return new ModelRuntimeException(
         HttpStatus.UNPROCESSABLE_ENTITY,
         overflow ? "CONTEXT_LENGTH_EXCEEDED" : "UPSTREAM_REJECTED_REQUEST",

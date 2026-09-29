@@ -27,8 +27,10 @@ const logger = new Logger("ModelWire");
  *
  * 3 (2026-09-30) 加入 `thinking`（ADR-009）。同一条理由：没认识它的旧服务
  * 读到它只会 WARN，版本号不动就连 WARN 都没有。
+ *
+ * 4 (2026-09-30) 加入 `contextOverflow`（TD-055）。
  */
-export const WIRE_SCHEMA_VERSION = 3;
+export const WIRE_SCHEMA_VERSION = 4;
 
 export type WireAuthStyle = "bearer" | "x-api-key" | "none";
 
@@ -79,6 +81,15 @@ export interface ResolvedWire {
    * and before the adapter's own keys, which it can never override.
    */
   thinking: Readonly<Partial<Record<ThinkingMode, Readonly<Record<string, unknown>>>>>;
+  /**
+   * TD-055: extra context-overflow signatures for this provider/model, added
+   * to the built-in list (providers/context-overflow.ts), never replacing it.
+   * `message` is a case-insensitive SUBSTRING, not a regex: an operator-typed
+   * pattern run against every upstream error body is a ReDoS and a
+   * correctness trap (`.`, `(` mean something). Every declared field must
+   * match, as with the built-ins.
+   */
+  contextOverflow: ReadonlyArray<Readonly<{ code?: string; message?: string }>>;
 }
 
 const KNOWN_KEYS = new Set([
@@ -91,6 +102,7 @@ const KNOWN_KEYS = new Set([
   "paramMap",
   "extraBody",
   "thinking",
+  "contextOverflow",
 ]);
 
 const KNOWN_SUPPORTS = new Set<keyof WireSupports>([
@@ -146,6 +158,7 @@ export const OPENAI_WIRE_DEFAULTS: ResolvedWire = Object.freeze({
   paramMap: Object.freeze({}),
   extraBody: Object.freeze({}),
   thinking: Object.freeze({}),
+  contextOverflow: Object.freeze([]),
 });
 
 /** `anthropic-messages` 的默认怪癖。Anthropic 原生就在流里回 usage。 */
@@ -164,6 +177,7 @@ export const ANTHROPIC_WIRE_DEFAULTS: ResolvedWire = Object.freeze({
   paramMap: Object.freeze({}),
   extraBody: Object.freeze({}),
   thinking: Object.freeze({}),
+  contextOverflow: Object.freeze([]),
 });
 
 /**
@@ -227,7 +241,41 @@ function applyOverlay(
     paramMap: mergeStringMap(base.paramMap, overlay["paramMap"], "paramMap"),
     extraBody: mergeExtraBody(base.extraBody, overlay["extraBody"]),
     thinking: mergeThinking(base.thinking, overlay["thinking"]),
+    contextOverflow: mergeContextOverflow(
+      base.contextOverflow,
+      overlay["contextOverflow"],
+    ),
   };
+}
+
+/** Concatenated across layers: each layer adds knowledge, none removes it. */
+function mergeContextOverflow(
+  base: ResolvedWire["contextOverflow"],
+  raw: unknown,
+): ResolvedWire["contextOverflow"] {
+  if (!Array.isArray(raw)) return base;
+  const added: Array<Readonly<{ code?: string; message?: string }>> = [];
+  for (const entry of raw) {
+    if (typeof entry !== "object" || entry === null || Array.isArray(entry)) {
+      logger.warn("ignoring a config.wire.contextOverflow entry: expected an object");
+      continue;
+    }
+    const code = readString((entry as Record<string, unknown>)["code"]);
+    const message = readString((entry as Record<string, unknown>)["message"]);
+    // An entry declaring neither field would match every 400 and relabel all
+    // content refusals as overflows - dropped here, refused on write.
+    if (code === undefined && message === undefined) {
+      logger.warn("ignoring a config.wire.contextOverflow entry with neither code nor message");
+      continue;
+    }
+    added.push(
+      Object.freeze({
+        ...(code !== undefined ? { code } : {}),
+        ...(message !== undefined ? { message } : {}),
+      }),
+    );
+  }
+  return Object.freeze([...base, ...added]);
 }
 
 /**
@@ -455,7 +503,44 @@ export function validateWire(raw: unknown): string[] {
   problems.push(...validateStringMap(wire["paramMap"], "paramMap"));
   problems.push(...validateExtraBody(wire["extraBody"]));
   problems.push(...validateThinking(wire["thinking"]));
+  problems.push(...validateContextOverflow(wire["contextOverflow"]));
 
+  return problems;
+}
+
+/** Bound on a configured message fragment - it is a substring, not a document. */
+const CONTEXT_OVERFLOW_MESSAGE_MAX = 200;
+
+function validateContextOverflow(raw: unknown): string[] {
+  if (raw === undefined) return [];
+  if (!Array.isArray(raw)) return ["config.wire.contextOverflow must be an array"];
+  const problems: string[] = [];
+  raw.forEach((entry, index) => {
+    const at = `config.wire.contextOverflow[${index}]`;
+    if (typeof entry !== "object" || entry === null || Array.isArray(entry)) {
+      problems.push(`${at} must be an object`);
+      return;
+    }
+    const record = entry as Record<string, unknown>;
+    for (const key of Object.keys(record)) {
+      if (key !== "code" && key !== "message") {
+        problems.push(`${at}.${key} is not a known field (allowed: code, message)`);
+      }
+    }
+    const code = record["code"];
+    const message = record["message"];
+    if (code !== undefined && (typeof code !== "string" || !code.trim())) {
+      problems.push(`${at}.code must be a non-empty string`);
+    }
+    if (message !== undefined && (typeof message !== "string" || !message.trim())) {
+      problems.push(`${at}.message must be a non-empty string`);
+    } else if (typeof message === "string" && message.length > CONTEXT_OVERFLOW_MESSAGE_MAX) {
+      problems.push(`${at}.message is longer than ${CONTEXT_OVERFLOW_MESSAGE_MAX} characters`);
+    }
+    if (code === undefined && message === undefined) {
+      problems.push(`${at} declares neither code nor message - it would match every 400`);
+    }
+  });
   return problems;
 }
 

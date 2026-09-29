@@ -865,10 +865,12 @@ cost of a missing entry is a less specific code, not a wrong action. The list
 is kept as plain data objects so that moving it is moving data.
 
 **Recovery:**
-1. Atlas: a `contextOverflow` list in provider config (same shape as the
-   in-code entries: optional `code`, optional `message` pattern), validated on
-   the write path - refuse an entry declaring neither field, refuse a pattern
-   that does not compile - and merged with the built-in list at request time.
-2. The provider page that edits it is the operator console's; open an issue
-   there once step 1 has shipped, with the field's shape and validation rules.
+1. ~~Atlas: a `contextOverflow` list in provider config~~ **Done 2026-09-30**
+   (wire schema 4): optional `code`, optional `message` - a literal,
+   case-insensitive substring rather than the pattern first planned, since an
+   operator-typed regex is a ReDoS and correctness risk. Refused on write when
+   an entry declares neither field; concatenated with the built-in list.
+2. The page that edits it is the operator console's: raised on
+   `vxture-platform`#542 alongside `wire.thinking`. This entry closes when
+   that ships.
 

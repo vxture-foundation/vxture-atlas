@@ -1047,6 +1047,38 @@ describe("ModelRuntimeService runtime flow", () => {
       });
     });
 
+    // TD-055: a provider's own wording, added in config, with no release.
+    it("recognises an overflow by a signature from the model's provider config", async () => {
+      const refusal = () =>
+        new ProviderHttpError("400", 400, "primary", JSON.stringify({ error: { code: "NEWVENDOR_TOO_LONG", message: "x" } }));
+      const withSignature = makeModel({
+        modelCode: "primary-model",
+        provider: "primary",
+        config: { managedKeyAlias: "test-key" },
+        providerConfig: { wire: { contextOverflow: [{ code: "NEWVENDOR_TOO_LONG" }] } },
+      });
+      const { service, provider } = makeRuntime({
+        registry: { getActiveModel: vi.fn(() => Promise.resolve(withSignature)) },
+      });
+      provider.chat.mockRejectedValue(refusal());
+
+      const error = (await service
+        .chat(makeRequest({ modelCode: "primary-model", requestId: "cfg-1" }))
+        .catch((e: unknown) => e)) as ModelRuntimeException;
+
+      expect(error.getResponse()).toMatchObject({ code: "CONTEXT_LENGTH_EXCEEDED" });
+
+      // Same refusal without the configured signature: the generic code.
+      const bare = makeRuntime({
+        registry: { getActiveModel: vi.fn(() => Promise.resolve({ ...withSignature, providerConfig: null })) },
+      });
+      bare.provider.chat.mockRejectedValue(refusal());
+      const plain = (await bare.service
+        .chat(makeRequest({ modelCode: "primary-model", requestId: "cfg-2" }))
+        .catch((e: unknown) => e)) as ModelRuntimeException;
+      expect(plain.getResponse()).toMatchObject({ code: "UPSTREAM_REJECTED_REQUEST" });
+    });
+
     it("keeps the vendor's wording in the message, bounded", async () => {
       const { service, provider, fallbackProvider } = makeRuntime();
       provider.chat.mockRejectedValue(

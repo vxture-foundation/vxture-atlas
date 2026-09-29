@@ -85,6 +85,27 @@ function fieldsOf(responseBody: string): UpstreamErrorFields {
   }
 }
 
+/** Every regex metacharacter made literal. */
+function escapeRegExp(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+}
+
+/**
+ * Configured entries (TD-055) as signatures: `message` is matched literally,
+ * case-insensitively - escaped, never compiled as the operator typed it.
+ */
+export function signaturesFromConfig(
+  entries: ReadonlyArray<Readonly<{ code?: string; message?: string }>>,
+): ContextOverflowSignature[] {
+  return entries.map((entry) => ({
+    vendor: "configured",
+    ...(entry.code !== undefined ? { code: entry.code } : {}),
+    ...(entry.message !== undefined
+      ? { message: new RegExp(escapeRegExp(entry.message), "iu") }
+      : {}),
+  }));
+}
+
 /** Is this upstream refusal a context-window overflow? Only a 400 can be. */
 export function isContextOverflow(
   status: number,
