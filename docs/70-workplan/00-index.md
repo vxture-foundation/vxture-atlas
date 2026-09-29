@@ -142,7 +142,9 @@ C - verification:
       so far
 - [ ] C2. Measure the request-size limits of Doubao, Zhipu, DeepSeek and
       MiniMax - none publishes one
-- [ ] C3. Refusals before routing leave no reqlog row: add a counter metric
+- [x] C3. Refusals before routing are counted in the existing
+      `model_request_rejections_total{code, product="unknown"}` rather than
+      a second metric for the same fact
 
 D - raised during this work:
 

@@ -85,7 +85,9 @@ Applies to every `/v1` surface, generation included.
   every route and model. Over it: `413`, `{ "code": "PAYLOAD_TOO_LARGE",
   "retryable": false }`, the message naming the received size and the limit.
   An unparseable body: `400 REQUEST_BODY_MALFORMED`. Neither reaches routing,
-  so neither has a `requestId` or a reqlog row.
+  so neither has a `requestId` or a reqlog row; both are counted in
+  `model_request_rejections_total{code, product="unknown"}` (the product is
+  unknown because the token has not been read yet).
 - **The body is read before S2S auth.** Parsing is HTTP middleware, the token
   check is a route guard, so a caller with no token can still make the
   process buffer and parse up to the ceiling. A body declared larger than the

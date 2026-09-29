@@ -12,6 +12,7 @@ import {
   resolveMaxRequestBodyBytes,
   toRequestBodyError,
 } from "./request-body";
+import { metricsRegistry } from "./metrics.registry";
 import { RetryAfterFilter } from "./retry-after.filter";
 import { ModelRuntimeException } from "./runtime.errors";
 
@@ -144,6 +145,44 @@ describe("request body limit, over HTTP", () => {
       rawBodyLength: Buffer.byteLength(body),
     });
     expect(await chat.json()).toEqual({ paddingLength: 1, hasRawBody: false });
+  });
+});
+
+/** The rejection counter's value for one code, from a real scrape. */
+async function rejections(code: string): Promise<number> {
+  const line = (await metricsRegistry.scrape())
+    .split("\n")
+    .find(
+      (l) =>
+        l.startsWith("model_request_rejections_total{") &&
+        l.includes(`code="${code}"`) &&
+        l.includes('product="unknown"'),
+    );
+  return line === undefined ? 0 : Number(line.split(" ").pop());
+}
+
+// Workplan C3: these refusals happen before routing, so no reqlog row exists
+// for them. The rejection counter is their only record.
+describe("refusals before routing are counted", () => {
+  it("counts an oversized body and a malformed body, under product=unknown", async () => {
+    const base = await boot(4096);
+    const tooLarge = await rejections("PAYLOAD_TOO_LARGE");
+    const malformed = await rejections("REQUEST_BODY_MALFORMED");
+
+    await post(base, "/v1/chat", bodyOfSize(4097));
+    await post(base, "/v1/chat", '{"endpointCode": ');
+
+    expect(await rejections("PAYLOAD_TOO_LARGE")).toBe(tooLarge + 1);
+    expect(await rejections("REQUEST_BODY_MALFORMED")).toBe(malformed + 1);
+  });
+
+  it("does not count a body it accepted", async () => {
+    const base = await boot(4096);
+    const before = await rejections("PAYLOAD_TOO_LARGE");
+
+    await post(base, "/v1/chat", bodyOfSize(4096));
+
+    expect(await rejections("PAYLOAD_TOO_LARGE")).toBe(before);
   });
 });
 

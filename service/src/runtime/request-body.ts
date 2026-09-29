@@ -40,6 +40,7 @@ import { json, urlencoded } from "express";
 import type { NextFunction, Request, RequestHandler, Response } from "express";
 import type { IncomingMessage } from "node:http";
 
+import { recordRejection } from "./pre-log-rejection";
 import { ModelRuntimeException } from "./runtime.errors";
 
 /**
@@ -148,7 +149,12 @@ export function toRequestBodyError(error: unknown): unknown {
 function translated(parser: RequestHandler): RequestHandler {
   return (req: Request, res: Response, next: NextFunction) => {
     parser(req, res, (error?: unknown) => {
-      next(error === undefined ? undefined : toRequestBodyError(error));
+      if (error === undefined) return next();
+      const refused = toRequestBodyError(error);
+      // No reqlog row exists for these - they never reach routing - so the
+      // rejection counter is their only record (workplan C3).
+      recordRejection(refused, undefined, undefined);
+      next(refused);
     });
   };
 }
