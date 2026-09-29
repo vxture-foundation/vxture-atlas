@@ -14,7 +14,7 @@ file is the local view.
 | Public domain | `atlas.vxture.com` - reserved, not bound. Atlas is tailnet-only and has no browser surface, so no edge vhost is scaffolded |
 | Tailnet | class 2 (product_230 D1) |
 | ACR namespace | `ALIYUN_ACR_NAMESPACE=vx-foundation`; `ALIYUN_ACR_REGISTRY` and credentials are org-level |
-| Environments | `production` (required reviewer). No `beta` - see TD-001 |
+| Environments | `production` (required reviewer only while the repo is public - see "approval gate" below). No `beta` - see TD-001 |
 
 Registry order is ACR primary, GHCR fallback -
 [ADR-005](../30-design/decisions/ADR-005-acr-primary-ghcr-fallback.md). Builds
@@ -112,17 +112,21 @@ inspect it from the host (`curl` against the published port, `docker logs`,
 Merging to `main` deploys nothing. `dev-*` and `varda-*` tags are
 platform-repo-only.
 
-**There is no approval gate on production today, and this file used to say
-there was.** The `production` GitHub Environment exists with **zero protection
-rules** - verified 2026-08-25 against
-`GET /repos/{owner}/{repo}/environments/production`, which returns
-`protection_rules: []`. Same root cause as the missing branch protection
-(CLAUDE.md): a Free-plan org on a private repo cannot configure them. A required
-reviewer is the design intent for when the plan allows it, not a description of
-what happens when you dispatch a deploy.
+**Whether production has an approval gate depends on the repo's visibility.**
+Same root cause as branch protection (CLAUDE.md): on a Free-plan org, an
+Environment required reviewer exists only on a public repo.
 
-So: **dispatching a deploy changes production immediately, and nothing pauses
-to ask.** Treat the dispatch itself as the decision.
+- **Private** (the normal state; verified 2026-08-25): the `production`
+  Environment has **zero protection rules** (`protection_rules: []` from
+  `GET /repos/{owner}/{repo}/environments/production`). **Dispatching a deploy
+  changes production immediately, and nothing pauses to ask** - treat the
+  dispatch itself as the decision.
+- **Public** (2026-09-29, temporarily): the owner is the required reviewer and
+  `can_admins_bypass` is `false`, so every deploy job waits for approval in the
+  run's page.
+
+Read the live state before relying on either: `pnpm audit:run`'s
+`platform-claims` dimension checks it against the current visibility.
 
 ## Workflows
 

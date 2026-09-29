@@ -32,14 +32,15 @@
  */
 
 import { execFileSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 
 export const meta = {
   id: "platform-claims",
   title: "CLAUDE.md 对平台的声称 vs 平台本身",
   covered: [
     "合并方式：squash-only、禁用 merge commit 与 rebase、合并后删分支",
-    "分支保护：Rulesets 与 legacy protection 是否如文档所称在本仓不可用（403）",
-    "production Environment 是否如文档所称零保护规则（此前文档说有审批门，是假的）",
+    "分支保护与可见性一致：私有时 Rulesets 与 legacy 都回 403；公开时 main-protection 生效、零绕过、必需检查与 main-ruleset.json 一致",
+    "production Environment 与可见性一致：私有时零保护规则；公开时有必需审批人且管理员不可绕过",
     "release.yml 是否自己派发 deploy.yml（此前文档说只建 tag，是假的）",
   ],
   notCovered: [
@@ -59,6 +60,92 @@ function gh(args) {
   }
 }
 
+/** The ruleset CLAUDE.md names as authoritative - compared, never restated. */
+const RULESET = JSON.parse(
+  readFileSync(new URL("../../../docs/50-deployment/rebuild/main-ruleset.json", import.meta.url), "utf8"),
+);
+
+function requiredChecksOf(ruleset) {
+  const rule = (ruleset.rules ?? []).find((r) => r.type === "required_status_checks");
+  return (rule?.parameters?.required_status_checks ?? []).map((c) => c.context).sort();
+}
+
+/**
+ * The HTTP status a gh call answered, or null when there was none to read.
+ *
+ * null is the whole point. The first version of the branch-protection probe
+ * asked only "did both calls fail?" and called that a 403. On 2026-09-29 a
+ * TLS timeout on one call and a 404 on the other came back `match` - a
+ * network failure scored as confirmation, the exact shape this file's header
+ * says never happens. A verdict may rest on a status; it may not rest on the
+ * absence of a success.
+ */
+export function httpStatusOf(r) {
+  if (r.ok) return 200;
+  const m = /HTTP (\d{3})/u.exec(r.body ?? "");
+  return m ? Number(m[1]) : null;
+}
+
+function repoVisibility() {
+  const r = gh(["api", `repos/${REPO}`, "--jq", ".visibility"]);
+  return r.ok ? r.body.trim() : null;
+}
+
+/**
+ * Branch protection is available on this Free-plan org only while the repo is
+ * public, so the claim is visibility-dependent and so is the verdict.
+ * Pure: every input is a raw platform answer, so selftest.mjs can replay the
+ * answers that once fooled it.
+ */
+export function judgeBranchProtection({ visibility, rulesetsStatus, legacyStatus, ruleset, expectedChecks }) {
+  const saw = `visibility=${visibility ?? "?"}; rulesets: ${rulesetsStatus ?? "no status"}; legacy: ${legacyStatus ?? "no status"}`;
+  if (visibility === "private") {
+    if (rulesetsStatus === 403 && legacyStatus === 403) return { verdict: "match", saw };
+    if (rulesetsStatus === 200 || legacyStatus === 200 || legacyStatus === 404) {
+      return { verdict: "mismatch", saw: `${saw} - 私有却可用分支保护，CLAUDE.md 的前提需要重写` };
+    }
+    return { verdict: "unknown", saw };
+  }
+  if (visibility === "public") {
+    if (rulesetsStatus !== 200) return { verdict: "unknown", saw };
+    if (ruleset === undefined) return { verdict: "unknown", saw: `${saw}; ruleset 详情读取失败` };
+    if (ruleset === null) {
+      return { verdict: "mismatch", saw: `${saw} - 公开但没有 ${RULESET.name} 规则集` };
+    }
+    const problems = [];
+    if (ruleset.enforcement !== "active") problems.push(`enforcement=${ruleset.enforcement}`);
+    if ((ruleset.bypass_actors ?? []).length !== 0) problems.push(`bypass_actors=${ruleset.bypass_actors.length}`);
+    const live = requiredChecksOf(ruleset).join(",");
+    if (live !== expectedChecks.join(",")) problems.push(`checks=${live} (应为 ${expectedChecks.join(",")})`);
+    return problems.length === 0
+      ? { verdict: "match", saw: `${saw}; ${ruleset.name} active, bypass 0, checks=${live}` }
+      : { verdict: "mismatch", saw: `${saw}; ${problems.join("; ")}` };
+  }
+  return { verdict: "unknown", saw };
+}
+
+/** Same availability rule, applied to the production Environment's reviewer. */
+export function judgeProductionGate({ visibility, status, env }) {
+  if (status !== 200 || env === null) {
+    return { verdict: "unknown", saw: `visibility=${visibility ?? "?"}; environment: ${status ?? "no status"}` };
+  }
+  const reviewers = (env.protection_rules ?? [])
+    .filter((r) => r.type === "required_reviewers")
+    .flatMap((r) => r.reviewers ?? []);
+  const saw = `visibility=${visibility}; protection_rules=${(env.protection_rules ?? []).length}; reviewers=${reviewers.length}; can_admins_bypass=${env.can_admins_bypass}`;
+  if (visibility === "private") {
+    return (env.protection_rules ?? []).length === 0
+      ? { verdict: "match", saw }
+      : { verdict: "mismatch", saw: `${saw} - 私有却有保护规则，部署会停在审批上` };
+  }
+  if (visibility === "public") {
+    return reviewers.length > 0 && env.can_admins_bypass === false
+      ? { verdict: "match", saw }
+      : { verdict: "mismatch", saw: `${saw} - 公开却没有不可绕过的审批门` };
+  }
+  return { verdict: "unknown", saw };
+}
+
 /** Each probe returns "match" | "mismatch" | "unknown" plus what it saw. */
 const PROBES = [
   {
@@ -72,32 +159,40 @@ const PROBES = [
     },
   },
   {
-    claim: "分支保护在本仓不可用（Rulesets 与 legacy 都回 403：Free 组织 + 私有仓）",
+    claim: "分支保护与仓库可见性一致（CLAUDE.md, Branch protection）",
     source: "CLAUDE.md, Branch protection",
     probe() {
+      const visibility = repoVisibility();
       const rs = gh(["api", `repos/${REPO}/rulesets`]);
       const legacy = gh(["api", `repos/${REPO}/branches/main/protection`]);
-      if (rs.ok && legacy.ok) {
-        return { verdict: "mismatch", saw: "两个端点都成功返回了 —— 分支保护现在可用，CLAUDE.md 的整段前提需要重写" };
+      let ruleset = null;
+      if (rs.ok) {
+        const summary = JSON.parse(rs.body).find((r) => r.name === RULESET.name);
+        if (summary) {
+          const detail = gh(["api", `repos/${REPO}/rulesets/${summary.id}`]);
+          ruleset = detail.ok ? JSON.parse(detail.body) : undefined;
+        }
       }
-      const both403 = !rs.ok && rs.status === 1 && !legacy.ok;
-      return {
-        verdict: both403 ? "match" : "unknown",
-        saw: `rulesets: ${rs.ok ? "200" : (rs.body.match(/HTTP \d+/) ?? ["err"])[0]}; legacy: ${legacy.ok ? "200" : (legacy.body.match(/HTTP \d+/) ?? ["err"])[0]}`,
-      };
+      return judgeBranchProtection({
+        visibility,
+        rulesetsStatus: httpStatusOf(rs),
+        legacyStatus: httpStatusOf(legacy),
+        ruleset,
+        expectedChecks: requiredChecksOf(RULESET),
+      });
     },
   },
   {
-    claim: "production Environment 零保护规则（没有必需审批人）",
-    source: "docs/50-deployment/00-index.md，2026-08-25 更正后的说法",
+    claim: "production Environment 的审批门与仓库可见性一致",
+    source: "docs/50-deployment/00-index.md, approval gate",
     probe() {
-      const r = gh(["api", `repos/${REPO}/environments/production`, "--jq", "(.protection_rules|length)"]);
-      if (!r.ok) return { verdict: "unknown", saw: r.body.trim().slice(0, 200) };
-      const n = Number(r.body.trim());
-      return {
-        verdict: n === 0 ? "match" : "mismatch",
-        saw: `protection_rules = ${n}${n > 0 ? "（文档说零，实际有 —— 部署会停在审批上）" : ""}`,
-      };
+      const visibility = repoVisibility();
+      const r = gh(["api", `repos/${REPO}/environments/production`]);
+      return judgeProductionGate({
+        visibility,
+        status: httpStatusOf(r),
+        env: r.ok ? JSON.parse(r.body) : null,
+      });
     },
   },
   {

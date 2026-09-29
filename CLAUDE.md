@@ -237,15 +237,16 @@ Always branch off `origin/main`, never off a stale local branch.
    If a step genuinely cannot run here - the image build needs a token this
    machine does not have - **say so plainly** and name what was verified
    instead. Never imply a local run that did not happen.
-4. Open a PR into `main`. On `vxture-foundation`'s current plan (private repo,
-   Free), **nothing technically blocks a direct `git push origin main`** - see
-   the Branch protection section below. Going through a PR here is discipline,
-   not enforcement; a direct push still lands, silently, except for the
-   `direct-push-audit` workflow flagging it after the fact.
+4. Open a PR into `main`. Whether anything technically blocks a direct
+   `git push origin main` depends on the repo's visibility - see the Branch
+   protection section below. Going through a PR is the rule either way.
 5. CI runs on the PR. Squash-merge once green; the branch is auto-deleted on
    merge. This does not deploy anything.
-6. When ready to release, cut a tag from the commit you want deployed and push it.
-   Deploying to ANY environment - dev included - follows step 3 first, and that
+6. When ready to release, run `release.yml` (`gh workflow run release.yml
+   -f version=vX.Y.Z`); it verifies the required checks on `main` HEAD, creates
+   the tag and dispatches `deploy.yml`, which waits for the `production`
+   reviewer when one is configured (visibility-dependent, see Branch
+   protection) and otherwise deploys straight away. Do not push tags by hand. Deploying to ANY environment - dev included - follows step 3 first, and that
    now includes `pnpm audit:run`. A release is the moment the checks matter
    most and the moment nobody re-verifies them, which is why the step lives on
    this path rather than in a document nobody opens before a deploy.
@@ -265,50 +266,44 @@ import would block that import.
 
 ## Branch protection (GitHub Rulesets, not legacy protection)
 
-**Not currently applied on this fork - confirmed unavailable, not just
-unconfigured.** Both `gh api repos/vxture-foundation/vxture-atlas/rulesets`
-(Rulesets) and the legacy `branches/main/protection` API return the same 403:
-`Upgrade to GitHub Pro or make this repository public to enable this
-feature.` `vxture-foundation` is a Free-plan org and this repo is private;
-GitHub does not offer branch protection of either kind on that combination,
-full stop - there is no bypass_actor or misconfiguration to fix here, the
-feature itself is gated off. The org-secrets-for-private-repos gap and the
-production Environment's required-reviewer gap (see docs/50-deployment/
-00-index.md) are the same root cause. All three are solved at once by
-upgrading to GitHub Team; until/unless that happens, treat everything below
-as the design intent for when a ruleset CAN be applied, not as a description
-of current enforcement. The `direct-push-audit` workflow
-(`.github/workflows/direct-push-audit.yml`) is the compensating control in
-the meantime: it cannot block a direct push, but it flags one - loudly, via
-an auto-opened issue - the moment one lands.
+**Enforcement depends on the repo's visibility, and the visibility changes.**
+`vxture-foundation` is a Free-plan org. GitHub offers branch protection (of
+either kind) and Environment required reviewers there only on a PUBLIC repo:
 
-**Discipline substitute - non-negotiable until the tooling exists.** Since
-nothing technical enforces the rules below, every one of them is a hard rule
-for every contributor and every agent working in this repo, human oversight
-included:
+- **Private** (the normal state): both the Rulesets and the legacy
+  `branches/main/protection` API answer 403 `Upgrade to GitHub Pro or make
+  this repository public to enable this feature.` Nothing blocks a direct
+  push, the `production` Environment has no reviewer, and everything below is
+  held by discipline alone. There is no bypass_actor or misconfiguration to
+  fix - the feature is gated off.
+- **Public** (2026-09-29, temporarily): the `main-protection` ruleset was
+  applied from `docs/50-deployment/rebuild/main-ruleset.json` (id 24183442) -
+  no deletion, no force push, linear history, PR required with squash only,
+  the five required checks with `strict` - and the `production` Environment
+  got the owner as required reviewer with `can_admins_bypass: false`. Whether
+  GitHub keeps enforcing them after the repo goes private again is GitHub's
+  call; read the live state, not this paragraph.
 
-1. Every change to `main` goes through a branch + PR, always - not "it's a
-   small fix," not "I'm iterating fast," no exceptions carved out in the
-   moment. A direct push is a process failure to fix, not a shortcut to take.
-2. A PR does not get merged until its five required checks
-   (`quality-gate`/`build`/`test-coverage`/`audit`/`gitleaks`) show green on
-   that PR - checked by eye, since nothing blocks merging early.
-3. Squash-merge only, using the PR title as the commit message - never a
-   manual merge commit (the repo setting blocks this one technically, but
-   don't rely on the setting alone; know why it's there).
+`pnpm audit:run`'s `platform-claims` dimension reads the visibility first and
+then checks the state that visibility implies, so it reports the truth on
+either side of a switch. The `direct-push-audit` workflow is the detective
+control in both states: it cannot block a direct push, but it flags one via an
+auto-opened issue the moment one lands.
+
+**Discipline - non-negotiable whether or not the tooling enforces it.** Every
+rule below is a hard rule for every contributor and every agent working in
+this repo:
+
+1. Every change to `main` goes through a branch + PR, always.
+2. A PR is merged only when its five required checks are green on it -
+   checked by eye when nothing blocks merging early.
+3. Squash-merge only, using the PR title as the commit message.
 4. Cross-cutting discussion, decisions, and any product-to-product
-   coordination happen in Issues, not in chat or ephemeral channels - the
-   same `liaison` convention `docs/80-liaison/` already uses for cross-repo
-   traffic applies to this repo's own internal coordination too. If it isn't
-   in an Issue, it didn't happen, for the purpose of anyone reconstructing
-   why a decision was made.
+   coordination happen in Issues, not in chat or ephemeral channels. If it
+   isn't in an Issue, it didn't happen, for the purpose of anyone
+   reconstructing why a decision was made.
 5. Read `direct-push-audit`'s open issues (label `direct-push`) before
-   trusting `main`'s history is clean. A bypass that already landed cannot be
-   undone by this rule, but it should never be silently ignored either.
-
-Design (apply via `gh api repos/vxture-foundation/vxture-atlas/rulesets` once
-upgraded). The authoritative ruleset is
-`docs/50-deployment/rebuild/main-ruleset.json`.
+   trusting `main`'s history is clean.
 
 **Required checks (authoritative set of five):** `quality-gate` / `build` /
 `test-coverage` / `audit` / `gitleaks`. CI job names must produce exactly these
