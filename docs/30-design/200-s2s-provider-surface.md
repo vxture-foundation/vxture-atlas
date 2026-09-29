@@ -1,9 +1,11 @@
 # 200 - S2S provider surface (embedding / parse / rerank)
 
 The endpoints Atlas exposes as a **supplier**: karda / arda / varda obtain a
-credential by token exchange and call these. A4 (generation) is contracted in
-the platform repo (`docs/30-design/platform/40-model-platform.md` §7,
-`ChatRequest`) and is not restated here.
+credential by token exchange and call these. A4 (generation, `ChatRequest`)
+is contracted in this repo's `docs/20-specs/10-http-surface.md` and is not
+restated here. (This line used to point at a section 7 of the platform's
+`40-model-platform.md`; that document is retired and itself names this repo as
+the authority for Atlas's HTTP contract. Corrected 2026-09-30.)
 
 All three are implemented: zhipu serves A1 and A3 in production; A2 is
 implemented behind a vision gate (section 3). Design input was karda's
