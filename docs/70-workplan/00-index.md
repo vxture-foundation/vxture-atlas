@@ -80,6 +80,39 @@ Gateway capabilities ([ADR-004](../30-design/decisions/ADR-004-reject-portkey-ga
       that started this line of work. A timeout still reports nothing, and NULL
       remains the honest answer for those
 
+Request size and model capacity (tenderforge liaison
+`vx-agent-bid/docs/80-liaison/40-2609291955`, opened 2026-09-29):
+
+- [x] Body ceiling 16 MiB (`MAX_REQUEST_BODY_BYTES`), X-1 codes
+      `PAYLOAD_TOO_LARGE` / `REQUEST_BODY_MALFORMED`, and an upstream
+      400/413/422 answered as `UPSTREAM_REJECTED_REQUEST` without tripping the
+      circuit breaker - merged in #60. Design: `docs/30-design/200-s2s-provider-surface.md` section 1.4
+- [ ] Release #60: dev stack first, then production; in production send the
+      letter's probes (a ~2 MB body passes the parser, a 17 MB body gets the
+      413 envelope)
+- [ ] Verify `UPSTREAM_REJECTED_REQUEST` against a real upstream (an
+      over-context request): unit tests only so far
+- [ ] Confirm nothing in front of Atlas on worker-02 caps the body (e.g.
+      nginx `client_max_body_size`, 1 MB default) on tenderforge's path
+- [ ] Measure the request-size limits of the domestic upstreams (Doubao,
+      Zhipu, DeepSeek, MiniMax): none publishes one
+- [ ] Letter 30 (`30-2609142131`), never answered: read from production which
+      models serve `chat/deterministic` / `chat/fast` / `chat/default` /
+      `chat/reasoning`, and their context window, max output, thinking and
+      temperature, against the floors the letter asks for
+- [ ] Letter 40 item 4: fill `contextWindow` / `maxOutputTokens` for the
+      routed models, then publish per-route capacity on `/v1/model-routes`
+      (`contextWindow`, `maxOutputTokens`: the minimum across the fallback
+      chain; `maxRequestBytes`). Data before fields: a published `null` is
+      configured-but-inert
+- [ ] Letter 40 item 3: ADR, then code - recognise each provider's
+      context-overflow refusal and answer it with a structured code, fallback
+      first. No token estimation in the gateway, no truncation
+- [ ] Refusals before routing (`PAYLOAD_TOO_LARGE`,
+      `REQUEST_BODY_MALFORMED`) leave no reqlog row: add a counter metric
+- [ ] Reply to tenderforge letters 40 and 30 in `docs/80-liaison/`, with an
+      issue number recorded, after production verification
+
 Platform-side, not this repo's write-scope:
 
 - [ ] Remaining S2S callers - admin-bff, varda (TD-004)
