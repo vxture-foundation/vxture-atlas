@@ -78,6 +78,13 @@ export type ModelRuntimeErrorCode =
    * input; an unrecognised overflow still arrives as UPSTREAM_REJECTED_REQUEST.
    */
   | "CONTEXT_LENGTH_EXCEEDED"
+  /**
+   * ADR-009: the routed primary cannot run with the requested thinking mode
+   * (e.g. `off` on an always-on model, or no mapping recorded for it yet).
+   * Refused rather than served on the upstream default, which would bill the
+   * caller for the behaviour it asked to avoid.
+   */
+  | "THINKING_MODE_UNSUPPORTED"
   // --- request body ---
   // Raised by the JSON parser, before routing, auth, or any /v1 surface code
   // runs - so no requestId exists yet and no reqlog row is written.
@@ -126,6 +133,8 @@ export type ModelRuntimeErrorCode =
   | "USAGE_TYPE_INVALID"
   | "CHAT_MESSAGES_REQUIRED"
   | "CHAT_MESSAGES_INVALID"
+  /** `thinking` arrived outside the vocabulary (`off` / `on`). */
+  | "CHAT_THINKING_INVALID"
   | "EMBED_TEXTS_REQUIRED"
   | "EMBED_TEXTS_INVALID"
   | "RERANK_QUERY_REQUIRED"
@@ -170,6 +179,9 @@ const RETRYABLE: Record<ModelRuntimeErrorCode, boolean> = {
   // split it. The same reasoning covers both body codes below.
   UPSTREAM_REJECTED_REQUEST: false,
   CONTEXT_LENGTH_EXCEEDED: false,
+  // Waiting does not change what the routed model can do; an operator or a
+  // different route does.
+  THINKING_MODE_UNSUPPORTED: false,
   PAYLOAD_TOO_LARGE: false,
   REQUEST_BODY_MALFORMED: false,
   // A token problem is never fixed by repeating the same request. The caller's
@@ -200,6 +212,7 @@ const RETRYABLE: Record<ModelRuntimeErrorCode, boolean> = {
   USAGE_TYPE_INVALID: false,
   CHAT_MESSAGES_REQUIRED: false,
   CHAT_MESSAGES_INVALID: false,
+  CHAT_THINKING_INVALID: false,
   EMBED_TEXTS_REQUIRED: false,
   EMBED_TEXTS_INVALID: false,
   RERANK_QUERY_REQUIRED: false,

@@ -42,7 +42,8 @@ Onboarding then touches only the first and third.
 | Auth `Authorization: Bearer` vs `x-api-key` | data | same request body |
 | Needs `stream_options.include_usage` | data | one extra switch |
 | Supports tool calling / `top_p` | data | capability declaration, decides which fields are sent |
-| Vendor switch with no canonical equivalent (`thinking`, `reasoning_effort`, `response_format`) | data | a field to pass through, not a shape change - `wire.extraBody` |
+| Vendor switch with no canonical equivalent (`reasoning_effort`, `response_format`) | data | a field to pass through, not a shape change - `wire.extraBody` |
+| Per-call thinking (`off`/`on`), spelled differently per vendor | data | the caller's `thinking` field, translated by `wire.thinking` (ADR-009) |
 | `max_tokens` vs `max_completion_tokens` | data | a rename, not a shape change |
 | Model id differs from `model_code` | data | already `config.upstreamModel` |
 | Response is `choices[].message` vs `content[]` blocks | **code** | different response shape |
@@ -75,14 +76,18 @@ this layer costs **zero DDL**. A `wire` sub-object carries the quirks:
 // model_providers.config - provider-level defaults
 {
   "wire": {
-    "schemaVersion": 2,
+    "schemaVersion": 3,
     "chatPath": "/chat/completions",
     "auth": { "style": "bearer" },          // bearer | x-api-key | header
     "streamUsage": "stream_options",        // stream_options | native | none
     "supports": { "tools": true, "toolChoice": true, "topP": true },
     "paramMap": { "maxTokens": "max_tokens" },  // only names that differ
     "extraBody": {                              // vendor switches, sent verbatim
-      "thinking": { "type": "disabled" }
+      "response_format": { "type": "json_object" }
+    },
+    "thinking": {                               // per-call mode -> body fragment (ADR-009)
+      "off": { "thinking": { "type": "disabled" } },
+      "on":  { "thinking": { "type": "enabled" } }
     }
   }
 }
@@ -110,6 +115,15 @@ a **new** field: DeepSeek's `thinking` / `reasoning_effort`, `response_format`,
 `stop`, `logprobs`. Without it, section 3's own criterion ("parameters differ ->
 data") had no home and the difference went back into code.
 
+`thinking` maps each per-call mode a caller may ask for (`ChatRequest.thinking`)
+to the body fragment this model needs for it (ADR-009). A mode with no entry is
+a mode the model cannot run: a call asking for it is refused with
+`THINKING_MODE_UNSUPPORTED`, never served on the upstream default. An
+always-on model records `"on": {}` and no `off`. Per mode, a model's fragment
+replaces its provider's; the fragment is spread after `extraBody` (a per-call
+choice beats a per-model default) and under the adapter's reserved keys, which
+it cannot touch - rejected on write like `extraBody`'s.
+
 **`wire` is a closed schema, not a free dictionary.** Unknown keys are rejected
 on write - otherwise this becomes a second dumping ground. Validation lives on
 the `/capability/providers` and `/capability/models` write paths, not at
@@ -118,8 +132,8 @@ runtime.
 **Strict on write, lenient at runtime.** Operators change configuration faster
 than the service ships, so an older service reading a newer key must ignore it
 and warn, never take a running model out of service. `wire.schemaVersion` is
-the carrier of that rule: an optional integer, currently `2` (`2` added
-`extraBody`). Write validation
+the carrier of that rule: an optional integer, currently `3` (`2` added
+`extraBody`, `3` added `thinking`). Write validation
 checks it only when it is present - it must be an integer, and a version newer
 than the running build is rejected - so a `wire` written without the key is
 accepted and resolves to the adapter's base version. At runtime an adapter

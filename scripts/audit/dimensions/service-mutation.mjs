@@ -107,8 +107,11 @@ const MUTATIONS = [
     spec: "src/providers/wire.spec.ts",
     edit: {
       file: "service/src/providers/wire.ts",
-      find: "    if (RESERVED_BODY_KEYS.has(key)) {",
-      replace: "    if (false) {",
+      // Anchored on the log line that names extraBody: the bare `if` also
+      // occurs in the thinking merge (ADR-009), and a needle matching three
+      // places made this probe unreadable (2026-09-30).
+      find: "    if (RESERVED_BODY_KEYS.has(key)) {\n      logger.warn(\n        `ignoring config.wire.extraBody",
+      replace: "    if (false) {\n      logger.warn(\n        `ignoring config.wire.extraBody",
     },
   },
   {

@@ -851,6 +851,101 @@ describe("ModelRuntimeService runtime flow", () => {
       );
     });
 
+    // ADR-009: thinking is a per-call parameter, honoured through the
+    // model's config.wire.thinking or refused - never silently dropped.
+    describe("thinking (ADR-009)", () => {
+      const BOTH = { off: { thinking: { type: "disabled" } }, on: { thinking: { type: "enabled" } } };
+      function withWire(
+        primaryThinking: Record<string, unknown> | undefined,
+        fallbackThinking: Record<string, unknown> | undefined,
+      ) {
+        const primary = makeModel({
+          modelCode: "primary-model",
+          provider: "primary",
+          config: {
+            managedKeyAlias: "test-key",
+            fallbackModelCodes: ["fallback-model"],
+            ...(primaryThinking ? { wire: { thinking: primaryThinking } } : {}),
+          },
+        });
+        const fallback = makeModel({
+          id: "model-2",
+          modelCode: "fallback-model",
+          provider: "fallback",
+          config: {
+            managedKeyAlias: "test-key",
+            ...(fallbackThinking ? { wire: { thinking: fallbackThinking } } : {}),
+          },
+        });
+        return makeRuntime({
+          registry: {
+            getActiveModel: vi.fn((code: string) =>
+              Promise.resolve(code === "primary-model" ? primary : fallback),
+            ),
+          },
+        });
+      }
+
+      it("refuses a mode the primary cannot run, before any upstream call", async () => {
+        const { service, provider } = withWire({ on: {} }, BOTH);
+
+        const error = (await service
+          .chat(makeRequest({ modelCode: "primary-model", requestId: "t1", thinking: "off" }))
+          .catch((e: unknown) => e)) as ModelRuntimeException;
+
+        expect(error.getStatus()).toBe(422);
+        expect(error.getResponse()).toMatchObject({
+          code: "THINKING_MODE_UNSUPPORTED",
+          retryable: false,
+          modelCode: "primary-model",
+        });
+        expect(provider.chat).not.toHaveBeenCalled();
+      });
+
+      it("passes the mode to the adapter and echoes it", async () => {
+        const { service, provider } = withWire(BOTH, BOTH);
+
+        const response = await service.chat(
+          makeRequest({ modelCode: "primary-model", requestId: "t2", thinking: "off" }),
+        );
+
+        expect(provider.chat).toHaveBeenCalledWith(expect.objectContaining({ thinking: "off" }));
+        expect(response.thinking).toBe("off");
+      });
+
+      it("skips a fallback that cannot run the mode, rather than serving it the default", async () => {
+        const { service, provider, fallbackProvider } = withWire(BOTH, undefined);
+        provider.chat.mockRejectedValue(new Error("primary down"));
+
+        await service
+          .chat(makeRequest({ modelCode: "primary-model", requestId: "t3", thinking: "off" }))
+          .catch(() => undefined);
+
+        expect(fallbackProvider.chat).not.toHaveBeenCalled();
+      });
+
+      it("echoes null and sends no mode when none was asked - today's behaviour", async () => {
+        const { service, provider } = withWire(undefined, undefined);
+
+        const response = await service.chat(makeRequest({ modelCode: "primary-model", requestId: "t4" }));
+
+        expect(response.thinking).toBeNull();
+        expect(provider.chat.mock.calls[0]?.[0]).not.toHaveProperty("thinking");
+      });
+
+      it("refuses a value outside the vocabulary instead of treating it as not asked", async () => {
+        const { service, provider } = withWire(BOTH, BOTH);
+
+        const error = (await service
+          .chat(makeRequest({ modelCode: "primary-model", requestId: "t5", thinking: "auto" as never }))
+          .catch((e: unknown) => e)) as ModelRuntimeException;
+
+        expect(error.getStatus()).toBe(400);
+        expect(error.getResponse()).toMatchObject({ code: "CHAT_THINKING_INVALID" });
+        expect(provider.chat).not.toHaveBeenCalled();
+      });
+    });
+
     // ADR-008: the narrower code when the refusal is recognisably a context
     // overflow - same status, same handling, only the code differs.
     it("answers a recognised context overflow as CONTEXT_LENGTH_EXCEEDED, with the same handling", async () => {
@@ -1398,7 +1493,7 @@ describe("ModelRuntimeService runtime flow", () => {
         { type: "text", delta: "hello" },
         // `modelCode` rides on every done frame now - see the "who answered"
         // block below for why it is not optional in practice.
-        { type: "done", modelCode: "primary-model" },
+        { type: "done", modelCode: "primary-model", thinking: null },
       ]);
       expect(h.requestLog.record).toHaveBeenCalledWith(
         expect.objectContaining({

@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
 
-import { ModelRegistryService } from "./model-registry.service";
+import { ModelRegistryService, routeThinkingModes } from "./model-registry.service";
 import { ModelRuntimeException } from "../runtime/runtime.errors";
 import type { AiModelRecord } from "../types/runtime.types";
 
@@ -238,7 +238,7 @@ describe("ModelRegistryService.listGrantedEndpoints", () => {
     );
 
     expect(await service.listGrantedEndpoints(SCOPE)).toEqual([
-      { endpointCode: "chat/default", category: "chat", state: "active", contextWindow: null, maxOutputTokens: null },
+      { endpointCode: "chat/default", category: "chat", state: "active", contextWindow: null, maxOutputTokens: null, thinkingModes: [] },
     ]);
   });
 
@@ -257,7 +257,7 @@ describe("ModelRegistryService.listGrantedEndpoints", () => {
       );
 
       expect(await service.listGrantedEndpoints(SCOPE)).toEqual([
-        { endpointCode: "chat/default", category: "chat", state: "inactive", contextWindow: null, maxOutputTokens: null },
+        { endpointCode: "chat/default", category: "chat", state: "inactive", contextWindow: null, maxOutputTokens: null, thinkingModes: [] },
       ]);
     },
   );
@@ -268,7 +268,7 @@ describe("ModelRegistryService.listGrantedEndpoints", () => {
     const { service } = makeService([{ endpointCode: "chat/typoo" }], []);
 
     expect(await service.listGrantedEndpoints(SCOPE)).toEqual([
-      { endpointCode: "chat/typoo", category: null, state: "missing", contextWindow: null, maxOutputTokens: null },
+      { endpointCode: "chat/typoo", category: null, state: "missing", contextWindow: null, maxOutputTokens: null, thinkingModes: [] },
     ]);
   });
 
@@ -366,5 +366,26 @@ describe("ModelRegistryService.listGrantedEndpoints", () => {
       expect(repository.findActiveModelsByCodes).toHaveBeenCalledTimes(1);
       expect(repository.findActiveModelsByCodes).toHaveBeenCalledWith(["p", "f"]);
     });
+  });
+});
+
+describe("routeThinkingModes (ADR-009)", () => {
+  const model = (thinking?: Record<string, unknown>) =>
+    ({
+      protocol: "openai",
+      providerConfig: null,
+      config: thinking ? { wire: { thinking } } : null,
+    }) as unknown as AiModelRecord;
+
+  it("is the primary's supported modes", () => {
+    expect(routeThinkingModes(model({ off: { thinking: { type: "disabled" } }, on: {} }))).toEqual(["off", "on"]);
+  });
+
+  it("is empty when the model has no mapping yet - asking then is refused, not ignored", () => {
+    expect(routeThinkingModes(model())).toEqual([]);
+  });
+
+  it("is empty when there is no usable primary", () => {
+    expect(routeThinkingModes(undefined)).toEqual([]);
   });
 });

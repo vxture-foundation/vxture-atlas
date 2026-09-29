@@ -88,6 +88,28 @@ letter 40 item 4). The response is `{ endpoints: [...], maxRequestBytes }`:
 - Source is the model's `context_window` / `max_output_tokens` - what the
   model can take - not `model_policies.max_context_tokens`, which no code
   enforces (TD-054).
+- `thinkingModes` on each route: the `thinking` values a call on it may ask
+  for (the primary's; a fallback that cannot run a mode is skipped for that
+  call, so it never narrows this). Empty means asking is refused.
+
+### Thinking is a per-call field (ADR-009)
+
+`POST /v1/chat` accepts `thinking: "off" | "on"`, and the response - the JSON
+body, and the stream's `done` frame - carries `thinking`: the mode applied, or
+`null` when none was asked and the upstream's own default ran.
+
+- **Omitted** = the upstream model's default, exactly as before this field
+  existed. Several upstreams default to ON (DeepSeek V4, Doubao Seed - the
+  latter observed on a real request), so a caller that wants no reasoning must
+  say `off`.
+- **Translated per model** through `config.wire.thinking`
+  (`docs/30-design/100-model-onboarding-and-protocol-adapters.md`). A caller
+  never spells a vendor's field.
+- **Refused, never dropped.** A value outside `off`/`on` is
+  `400 CHAT_THINKING_INVALID`. A mode the routed primary cannot run is
+  `422 THINKING_MODE_UNSUPPORTED` (`retryable: false`) before any upstream
+  call; a fallback that cannot run it is skipped for that call. Check
+  `thinkingModes` on `/v1/model-routes` first.
 
 `GET /v1/models?tenantId=` accepts the tenant id as a caller-supplied filter by
 design: `/v1` is a first-party product plane, and tenant privacy is not a

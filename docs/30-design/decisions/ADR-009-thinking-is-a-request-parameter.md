@@ -1,6 +1,6 @@
 # ADR-009: Thinking is a per-call request parameter, mapped per model as data
 
-- Status: Proposed
+- Status: Accepted (owner, 2026-09-30)
 - Date: 2026-09-30
 - Deciders: owner
 

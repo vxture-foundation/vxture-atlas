@@ -3,7 +3,7 @@ import { UpstreamCallFailure } from "./upstream-failure";
 
 import { BaseProvider, joinEndpoint, resolveUpstreamModel } from "./base.provider";
 import { openSseRequest, readSseMessages } from "./sse";
-import { ANTHROPIC_WIRE_DEFAULTS, resolveWire } from "./wire";
+import { ANTHROPIC_WIRE_DEFAULTS, resolveWire, thinkingFragment } from "./wire";
 import type { ResolvedWire } from "./wire";
 import { errorFrame } from "../types/runtime.types";
 import type {
@@ -263,6 +263,8 @@ export function buildClaudeBody(
     // 这里必须一起支持，否则 `config.wire.extraBody` 就成了"在一半适配器上配了
     // 不生效"的开关。
     ...wire.extraBody,
+    // ADR-009, same position and rule as the openai-compatible adapter.
+    ...thinkingFragment(wire, request.thinking),
     model: resolveUpstreamModel(request),
     system: buildSystemPrompt(request.messages),
     messages: buildClaudeMessages(request.messages),
