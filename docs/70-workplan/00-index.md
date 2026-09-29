@@ -129,8 +129,9 @@ B - tenderforge is waiting on these:
       request; production's `chat/fast` primary thinks today), DeepSeek not
       yet observed. After B5b: confirm `off` yields no reasoning, then fill
       `config.wire.thinking` for the routed models; reply in #69
-- [ ] B6. Call deadline: pass the caller's timeout to the upstream as a
-      total deadline (today only a time-to-first-byte guard exists)
+- [x] B6. `timeoutMs` is a total deadline per call: the upstream call is
+      cancelled when it runs out, `504 DEADLINE_EXCEEDED`, no breaker count,
+      no further fallback
 - [ ] B7. Layer 2, an optional `requirements` block resolved by an
       operator-configured policy: cross-product vocabulary discussion open
       as `vxture-platform`#540 (2026-09-30); Atlas designs it after that

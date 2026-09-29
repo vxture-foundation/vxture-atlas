@@ -111,6 +111,22 @@ body, and the stream's `done` frame - carries `thinking`: the mode applied, or
   call; a fallback that cannot run it is skipped for that call. Check
   `thinkingModes` on `/v1/model-routes` first.
 
+### A total deadline per call (B6)
+
+`POST /v1/chat` accepts `timeoutMs` (whole milliseconds, 1000-600000): the
+budget from the moment Atlas accepts the call to its last byte, shared by every
+candidate in the chain.
+
+- When it runs out, the upstream call is **cancelled** - no more tokens are
+  generated or billed - and the caller gets `504 DEADLINE_EXCEEDED`
+  (`retryable: false`: the identical request gets the identical budget; raise
+  it or shrink the input). On a stream it arrives as the error frame, after any
+  output already sent.
+- It is the caller's budget, not a provider fault: it does not count toward the
+  circuit breaker, and no further fallback is tried once it has run out.
+- Omitted = no total deadline, only the time-to-first-byte guard - as before.
+  A value outside the range is `400 CHAT_TIMEOUT_INVALID`.
+
 `GET /v1/models?tenantId=` accepts the tenant id as a caller-supplied filter by
 design: `/v1` is a first-party product plane, and tenant privacy is not a
 boundary between sibling vxture products. `/tenancy/*` supersedes it for
