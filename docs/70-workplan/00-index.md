@@ -87,13 +87,16 @@ Request size and model capacity (tenderforge liaison
       `PAYLOAD_TOO_LARGE` / `REQUEST_BODY_MALFORMED`, and an upstream
       400/413/422 answered as `UPSTREAM_REJECTED_REQUEST` without tripping the
       circuit breaker - merged in #60. Design: `docs/30-design/200-s2s-provider-surface.md` section 1.4
-- [ ] Release #60: dev stack first, then production; in production send the
-      letter's probes (a ~2 MB body passes the parser, a 17 MB body gets the
-      413 envelope)
+- [x] Released as v0.7.6 (2026-09-29): dev stack first, then production;
+      the letter's probes sent to production (a ~2 MB body passes the parser,
+      a 17 MB body gets the 413 envelope)
 - [ ] Verify `UPSTREAM_REJECTED_REQUEST` against a real upstream (an
       over-context request): unit tests only so far
-- [ ] Confirm nothing in front of Atlas on worker-02 caps the body (e.g.
-      nginx `client_max_body_size`, 1 MB default) on tenderforge's path
+- [ ] Confirm nothing in front of Atlas caps the body on tenderforge's
+      production path (e.g. nginx `client_max_body_size`, 1 MB default). The
+      direct tailnet path to `:3100` is clear (a 17 MB body reached Atlas);
+      whether tenderforge uses that path is theirs to confirm, asked in
+      `vx-agent-tenderforge`#69
 - [ ] Measure the request-size limits of the domestic upstreams (Doubao,
       Zhipu, DeepSeek, MiniMax): none publishes one
 - [ ] Letter 30 (`30-2609142131`), never answered: read from production which
@@ -110,8 +113,12 @@ Request size and model capacity (tenderforge liaison
       first. No token estimation in the gateway, no truncation
 - [ ] Refusals before routing (`PAYLOAD_TOO_LARGE`,
       `REQUEST_BODY_MALFORMED`) leave no reqlog row: add a counter metric
-- [ ] Reply to tenderforge letters 40 and 30 in `docs/80-liaison/`, with an
-      issue number recorded, after production verification
+- [x] Reply to letter 40: `vx-agent-tenderforge`#69 (2026-09-29), an issue
+      in the repo that has to act (`docs/80-liaison/` is a frozen archive).
+      Items 3-5 are stated there as open
+- [ ] Follow up in `vx-agent-tenderforge`#69: letter 30's model floors, and
+      items 3 and 4 as they land; their production re-run of the failed
+      interpretation
 
 Platform-side, not this repo's write-scope:
 

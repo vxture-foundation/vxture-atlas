@@ -1,10 +1,11 @@
 name: direct-push-audit
 
-# Detective control, not a gate. vxture-foundation is a Free-plan org and
-# this repo is private, so neither Rulesets nor legacy branch protection are
-# available here - confirmed via the API (both return 403 "Upgrade to GitHub
-# Pro or make this repository public"), not assumed. There is no technical
-# way to BLOCK a direct `git push origin main` on this fork. This workflow
+# Detective control, not a gate. vxture-foundation is a Free-plan org: while
+# this repo is private, neither Rulesets nor legacy branch protection are
+# available - confirmed via the API (both return 403 "Upgrade to GitHub Pro or
+# make this repository public"), not assumed - so nothing can BLOCK a direct
+# `git push origin main`. While it is public a ruleset can, and an admin can
+# still disable that ruleset; this workflow stays either way. It
 # cannot prevent one, but it makes one visible instead of silent: every
 # commit landing on main is checked for an associated pull request, and a
 # bare direct push (no PR at all) opens a loud, hard-to-miss issue rather
