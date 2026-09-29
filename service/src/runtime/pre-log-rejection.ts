@@ -47,7 +47,13 @@ export function countingRejectionsSync<T>(
   }
 }
 
-function recordRejection(
+/**
+ * Exported for the body parser (request-body.ts): a body refused before
+ * routing is the earliest pre-log rejection of all, and before this it was
+ * counted nowhere. It runs before the token is verified, so its product is
+ * always "unknown" - honest, and still bounded.
+ */
+export function recordRejection(
   error: unknown,
   auth: { callerProductCode?: string | undefined } | undefined,
   requestId: string | undefined,
