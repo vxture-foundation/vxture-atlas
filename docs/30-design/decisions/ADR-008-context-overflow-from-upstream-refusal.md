@@ -1,6 +1,6 @@
 # ADR-008: Context overflow is recognised from the upstream's refusal, not estimated
 
-- Status: Proposed
+- Status: Accepted (owner, 2026-09-29, with the amendment to decision 3)
 - Date: 2026-09-29
 - Deciders: owner
 
@@ -57,14 +57,17 @@ wait for a reset that will never help.
    status (`422`), same `retryable: false`, same breaker exemption, same
    fallback behaviour; only the code is narrower.
 
-3. **Signatures are a table in code, one place, each entry pinned by a test
-   built from a recorded vendor body.** Not registry data: a signature is a
-   classification rule, not a wire parameter, and a wrong one misfiles every
-   request of that vendor - it belongs under review and test, not in an
-   operator form. Matching is on the parsed body: the vendor code when it is
+3. **Signatures are a table in code for now, one place, each entry pinned by
+   a test built from a recorded vendor body - and they move to per-provider
+   configuration later (owner, 2026-09-29; TD-055).** Every upstream spells
+   the refusal differently, and a new provider should not need a release to
+   be recognised. Until that lands, the table is kept as plain data objects
+   (`providers/context-overflow.ts`), so moving it is moving data, not
+   rewriting logic. Matching is on the parsed body: the vendor code when it is
    distinctive (`context_length_exceeded`, `1261`), otherwise a message
-   pattern; for DeepSeek's `quota_limit_reached` the message is REQUIRED to
-   match too, because that code alone means something else.
+   pattern; a signature matches only when every field it declares matches, so
+   DeepSeek's `quota_limit_reached` entry also requires the overflow message -
+   that code alone means something else.
 
 4. **An unrecognised overflow degrades safely.** It stays
    `UPSTREAM_REJECTED_REQUEST` - still non-retryable, still exempt from the
@@ -103,9 +106,10 @@ wait for a reset that will never help.
 ## Alternatives rejected
 
 - **Pre-flight estimation** (the letter's proposal): see decision 1.
-- **Signatures as provider config** (`config.wire`): see decision 3. The wire
-  descriptor exists so that parameter differences are data; this is not a
-  parameter.
+- **Signatures as provider config now**: deferred, not rejected (decision 3,
+  TD-055). The configuration needs validation that refuses a signature
+  declaring no field - one such entry would relabel every content refusal as
+  an overflow - and that is its own piece of work.
 - **Matching `code` only**: misfiles DeepSeek's `quota_limit_reached`.
 - **Matching message only**: needlessly fragile where a stable vendor code
   exists (OpenAI dialect, Zhipu).

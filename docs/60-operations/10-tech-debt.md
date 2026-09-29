@@ -57,6 +57,7 @@ because those are the ones still needing a decision.
 | [TD-051](#td-051) | The published contract states what is required, not what a surface accepts or can refuse with | 2026-08-26 |
 | [TD-052](#td-052) | Label routing exists only on the retiring tenant axis, so asking for a label drags a tenant along | 2026-08-26 |
 | [TD-054](#td-054) | `model_policies.max_context_tokens` is writable and enforced by nothing | 2026-09-29 |
+| [TD-055](#td-055) | Context-overflow signatures live in code; adding a provider's needs a release | 2026-09-29 |
 
 ## Closed
 
@@ -847,4 +848,27 @@ this column. See `docs/20-specs/10-http-surface.md` (route capacity).
 (b) enforcing it after the call from the upstream-reported usage, which bounds
 cost but cannot refuse a request up front. Until then this entry is the
 record that it is not enforced.
+
+## TD-055
+
+**Clause (owner, 2026-09-29):** each upstream reports "input too long" in its
+own way, so recognising it is per-provider knowledge - and per-provider
+knowledge belongs in provider configuration, set where the provider is
+configured, not in a release. ADR-008 decision 3.
+
+**Current state:** the signatures are a list in
+`service/src/providers/context-overflow.ts`, each pinned by a test built from
+a recorded vendor body. A provider whose refusal is not listed still gets the
+right handling - `UPSTREAM_REJECTED_REQUEST` is non-retryable, exempt from the
+breaker and fallback-first, exactly like `CONTEXT_LENGTH_EXCEEDED` - so the
+cost of a missing entry is a less specific code, not a wrong action. The list
+is kept as plain data objects so that moving it is moving data.
+
+**Recovery:**
+1. Atlas: a `contextOverflow` list in provider config (same shape as the
+   in-code entries: optional `code`, optional `message` pattern), validated on
+   the write path - refuse an entry declaring neither field, refuse a pattern
+   that does not compile - and merged with the built-in list at request time.
+2. The provider page that edits it is the operator console's; open an issue
+   there once step 1 has shipped, with the field's shape and validation rules.
 
