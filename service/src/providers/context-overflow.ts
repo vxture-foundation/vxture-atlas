@@ -41,6 +41,14 @@ export const CONTEXT_OVERFLOW_SIGNATURES: readonly ContextOverflowSignature[] = 
   { vendor: "deepseek", code: "quota_limit_reached", message: /input tokens? exceeds? the limit/iu },
   // Zhipu: business code 1261, "prompt too long" (docs.bigmodel.cn error-code table).
   { vendor: "zhipu", code: "1261" },
+  // Doubao (Ark): recorded from a real over-context request, 2026-09-30.
+  // `InvalidParameter` is Ark's generic parameter code, so the message is
+  // required - the code alone covers every bad parameter.
+  {
+    vendor: "doubao",
+    code: "InvalidParameter",
+    message: /exceed max message tokens/iu,
+  },
   // Claude: a plain 400 invalid_request_error; only the wording identifies it.
   // Observed wording, not documented by the vendor: "prompt is too long:
   // 250000 tokens > 200000 maximum".
