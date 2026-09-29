@@ -53,6 +53,18 @@ function assertUuid(value: string, code: "INVALID_TENANT_ID" | "INVALID_APPLICAT
 
 // model.models dropped the `provider` varchar column; provider identity is now the joined
 // model_providers.provider_code. Every model read pulls it so AiModelRecord.provider stays populated.
+/**
+ * "Usable" means the model AND its provider are active. One definition for
+ * the call path (`findActiveModelByCode`), the catalogue (`listActiveModels`)
+ * and route capacity (`findActiveModelsByCodes`): if these disagreed, a route
+ * could advertise the capacity of a model the router would never call.
+ */
+const USABLE_MODEL = {
+  isActive: true,
+  deletedAt: null,
+  providerRef: { isActive: true },
+} as const;
+
 const PROVIDER_INCLUDE = {
   // config comes along for the ride because the provider row is where a
   // provider-wide `wire` descriptor lives (design doc section 6); the model's
@@ -396,16 +408,21 @@ export class ModelRegistryRepository {
     modelCode: string,
   ): Promise<AiModelRecord | null> {
     const row = await prisma.modelDefinition.findFirst({
-      where: {
-        modelCode,
-        isActive: true,
-        deletedAt: null,
-        providerRef: { isActive: true },
-      },
+      where: { modelCode, ...USABLE_MODEL },
       include: PROVIDER_INCLUDE,
     });
 
     return row ? mapAiModel(row) : null;
+  }
+
+  /** Batch form of `findActiveModelByCode`, same rule; unusable codes are simply absent. */
+  async findActiveModelsByCodes(codes: string[]): Promise<AiModelRecord[]> {
+    if (codes.length === 0) return [];
+    const rows = await prisma.modelDefinition.findMany({
+      where: { modelCode: { in: codes }, ...USABLE_MODEL },
+      include: PROVIDER_INCLUDE,
+    });
+    return rows.map(mapAiModel);
   }
 
   /**
@@ -415,11 +432,7 @@ export class ModelRegistryRepository {
    */
   async listActiveModels(): Promise<AiModelRecord[]> {
     const rows = await prisma.modelDefinition.findMany({
-      where: {
-        isActive: true,
-        deletedAt: null,
-        providerRef: { isActive: true },
-      },
+      where: USABLE_MODEL,
       orderBy: [
         // `sort` is the operator's catalogue ordering (settable via
         // /capability/models, default 999); recency only breaks ties.

@@ -117,12 +117,15 @@ B - tenderforge is waiting on these:
       which models serve `chat/deterministic` / `chat/fast` / `chat/default`
       / `chat/reasoning` and their context window, max output, thinking and
       temperature, against the letter's floors; answer in #69
-- [ ] B2. Letter 40 item 4: settle how `model_policies.max_context_tokens`
-      relates to `models.context_window` (one fact, one writable place), fill
-      the data for the routed models, then publish per-route
-      `contextWindow` / `maxOutputTokens` (minimum across the fallback chain)
-      and `maxRequestBytes` on `/v1/model-routes`. Data before fields: a
-      published `null` is configured-but-inert
+- [x] B2a. `max_context_tokens` vs `context_window` settled: the policy
+      column is enforced by nothing (TD-054); capacity is published from the
+      model's own columns
+- [x] B2b. `/v1/model-routes` publishes per-route `contextWindow` /
+      `maxOutputTokens` (smallest across the chain, `null` = unknown) and a
+      top-level `maxRequestBytes` - code merged, not yet released
+- [ ] B2c. Before releasing B2b: fill `context_window` / `max_output_tokens`
+      for the models behind tenderforge's four routes (needs B1's production
+      read), so the first release publishes numbers, not `null`
 - [ ] B3. Letter 40 item 3: ADR, then code - recognise each provider's
       context-overflow refusal, answer it with a structured code, fallback
       first. No token estimation in the gateway

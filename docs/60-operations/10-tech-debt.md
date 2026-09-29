@@ -56,6 +56,7 @@ because those are the ones still needing a decision.
 | [TD-050](#td-050) | A credential exposure is tracked only in a published document, so no release checklist can see it | 2026-08-26 |
 | [TD-051](#td-051) | The published contract states what is required, not what a surface accepts or can refuse with | 2026-08-26 |
 | [TD-052](#td-052) | Label routing exists only on the retiring tenant axis, so asking for a label drags a tenant along | 2026-08-26 |
+| [TD-054](#td-054) | `model_policies.max_context_tokens` is writable and enforced by nothing | 2026-09-29 |
 
 ## Closed
 
@@ -821,3 +822,29 @@ does not carry that intent. Owner ruling, 2026-08-26.
 actually wanted; `taskProfile` is left to the countdown already in place. No
 code change is required for the correction itself - `endpointCode` has always
 worked and needs no tenant.
+
+## TD-054
+
+**Wrong**: `model_policies.max_context_tokens` can be set by an operator
+(`POST`/`PATCH /capability/policies`, per tenant or global) and is read back on
+the same surface, but nothing on the request path reads it. A policy of 32000
+on a 262144-token model changes nothing about what a call may send. That is the
+configured-but-inert shape: an operator who sets it believes a limit is in
+force. Found 2026-09-29 while deciding what `/v1/model-routes` should publish
+as a route's context window (tenderforge letter 40 item 4).
+
+**Why not simply enforce it**: enforcing a token cap in the gateway needs a
+token count BEFORE the call, which means estimating with a tokenizer Atlas does
+not have per provider - rejected for letter 40 item 3 for the same reason
+(Chinese tokenizes very differently across Doubao, Zhipu and Claude, so an
+estimate either refuses valid requests or lets over-budget ones through).
+
+**What is published instead**: route capacity comes from the model's own
+`context_window` / `max_output_tokens` - what the upstream can take - not from
+this column. See `docs/20-specs/10-http-surface.md` (route capacity).
+
+**Recovery**: decide between (a) retiring the column from the write path, or
+(b) enforcing it after the call from the upstream-reported usage, which bounds
+cost but cannot refuse a request up front. Until then this entry is the
+record that it is not enforced.
+

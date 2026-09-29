@@ -175,18 +175,44 @@ export class ModelRegistryService {
     const codes = [...new Set(grants.map((grant) => grant.endpointCode))];
     const endpoints = await this.repository.findEndpointsByCodes(codes);
     const byCode = new Map(endpoints.map((row) => [row.code, row]));
+    const modelCodes = [
+      ...new Set(
+        endpoints.flatMap((row) =>
+          row.fallbackModelCode === null
+            ? [row.primaryModelCode]
+            : [row.primaryModelCode, row.fallbackModelCode],
+        ),
+      ),
+    ];
+    const usable = new Map(
+      (await this.repository.findActiveModelsByCodes(modelCodes)).map(
+        (model) => [model.modelCode, model],
+      ),
+    );
 
     return codes
       .sort((left, right) => left.localeCompare(right))
       .map((endpointCode) => {
         const row = byCode.get(endpointCode);
         if (!row) {
-          return { endpointCode, category: null, state: "missing" as const };
+          return {
+            endpointCode,
+            category: null,
+            state: "missing" as const,
+            contextWindow: null,
+            maxOutputTokens: null,
+          };
         }
         return {
           endpointCode,
           category: row.category,
           state: toObjectState(row.isActive && row.deletedAt === null),
+          ...routeCapacity(
+            usable.get(row.primaryModelCode),
+            row.fallbackModelCode === null
+              ? undefined
+              : usable.get(row.fallbackModelCode),
+          ),
         };
       });
   }
@@ -208,4 +234,39 @@ export interface GrantedEndpoint {
    * coincidence two files happen to share.
    */
   state: GrantedEndpointState;
+  /**
+   * Tokens the route can take in one call, input and output together - the
+   * SMALLEST context window across the models a call on this route can land
+   * on. `null` means unknown: no usable primary, or a model in the chain with
+   * no window recorded. Never the minimum of only the known values - that can
+   * overstate, and overstating is the one error a budget field must not make
+   * (tenderforge letter 40 item 4).
+   */
+  contextWindow: number | null;
+  /** Same rule, for the largest output a call may request. */
+  maxOutputTokens: number | null;
+}
+
+type CapacityModel = Pick<AiModelRecord, "contextWindow" | "maxOutputTokens">;
+
+/**
+ * A route's capacity, following the call path exactly
+ * (`ModelRuntimeService.resolveCandidateModels`): an unusable primary fails
+ * the whole request, so the route serves nothing and its capacity is unknown;
+ * an unusable fallback is skipped, so it does not count.
+ */
+export function routeCapacity(
+  primary: CapacityModel | undefined,
+  fallback: CapacityModel | undefined,
+): { contextWindow: number | null; maxOutputTokens: number | null } {
+  if (primary === undefined) return { contextWindow: null, maxOutputTokens: null };
+  const chain = fallback === undefined ? [primary] : [primary, fallback];
+  const smallest = (values: (number | null)[]): number | null =>
+    values.some((value) => value === null)
+      ? null
+      : Math.min(...(values as number[]));
+  return {
+    contextWindow: smallest(chain.map((model) => model.contextWindow)),
+    maxOutputTokens: smallest(chain.map((model) => model.maxOutputTokens)),
+  };
 }
