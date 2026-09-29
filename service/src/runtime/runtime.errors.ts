@@ -85,6 +85,12 @@ export type ModelRuntimeErrorCode =
    * caller for the behaviour it asked to avoid.
    */
   | "THINKING_MODE_UNSUPPORTED"
+  /**
+   * The caller's own `timeoutMs` ran out; the upstream call was cancelled.
+   * Not a provider failure - the budget was the caller's - so it does not
+   * count toward the breaker and no further fallback is tried.
+   */
+  | "DEADLINE_EXCEEDED"
   // --- request body ---
   // Raised by the JSON parser, before routing, auth, or any /v1 surface code
   // runs - so no requestId exists yet and no reqlog row is written.
@@ -135,6 +141,8 @@ export type ModelRuntimeErrorCode =
   | "CHAT_MESSAGES_INVALID"
   /** `thinking` arrived outside the vocabulary (`off` / `on`). */
   | "CHAT_THINKING_INVALID"
+  /** `timeoutMs` arrived outside the accepted range. */
+  | "CHAT_TIMEOUT_INVALID"
   | "EMBED_TEXTS_REQUIRED"
   | "EMBED_TEXTS_INVALID"
   | "RERANK_QUERY_REQUIRED"
@@ -182,6 +190,9 @@ const RETRYABLE: Record<ModelRuntimeErrorCode, boolean> = {
   // Waiting does not change what the routed model can do; an operator or a
   // different route does.
   THINKING_MODE_UNSUPPORTED: false,
+  // The budget is the caller's. The identical request gets the identical
+  // budget; what changes the outcome is a larger timeoutMs or a smaller input.
+  DEADLINE_EXCEEDED: false,
   PAYLOAD_TOO_LARGE: false,
   REQUEST_BODY_MALFORMED: false,
   // A token problem is never fixed by repeating the same request. The caller's
@@ -213,6 +224,7 @@ const RETRYABLE: Record<ModelRuntimeErrorCode, boolean> = {
   CHAT_MESSAGES_REQUIRED: false,
   CHAT_MESSAGES_INVALID: false,
   CHAT_THINKING_INVALID: false,
+  CHAT_TIMEOUT_INVALID: false,
   EMBED_TEXTS_REQUIRED: false,
   EMBED_TEXTS_INVALID: false,
   RERANK_QUERY_REQUIRED: false,

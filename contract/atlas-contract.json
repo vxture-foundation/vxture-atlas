@@ -1,5 +1,5 @@
 {
-  "fingerprint": "c1-034d9893d3d2",
+  "fingerprint": "c1-721f105b150b",
   "errorCodes": [
     {
       "code": "APPLICATION_ID_REQUIRED",
@@ -34,11 +34,19 @@
       "retryable": false
     },
     {
+      "code": "CHAT_TIMEOUT_INVALID",
+      "retryable": false
+    },
+    {
       "code": "CLIENT_ABORTED",
       "retryable": false
     },
     {
       "code": "CONTEXT_LENGTH_EXCEEDED",
+      "retryable": false
+    },
+    {
+      "code": "DEADLINE_EXCEEDED",
       "retryable": false
     },
     {

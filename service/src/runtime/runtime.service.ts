@@ -74,11 +74,30 @@ function honoursThinking(model: AiModelRecord, mode: ThinkingMode): boolean {
   ).includes(mode);
 }
 
-/** Refusals of the request's content - never the model's health, so never the breaker. */
-const CONTENT_REFUSALS: ReadonlySet<ModelRuntimeErrorCode> = new Set([
+/**
+ * Failures that say nothing about the model's health, so never the breaker:
+ * refusals of the request's content, and the caller's own budget running out
+ * (B6) - a tight `timeoutMs` from one caller must not take a model offline for
+ * everyone.
+ */
+const NOT_A_HEALTH_SIGNAL: ReadonlySet<ModelRuntimeErrorCode> = new Set([
   "UPSTREAM_REJECTED_REQUEST",
   "CONTEXT_LENGTH_EXCEEDED",
+  "DEADLINE_EXCEEDED",
 ]);
+
+/** B6 bounds on `timeoutMs`. */
+const MIN_TIMEOUT_MS = 1_000;
+const MAX_TIMEOUT_MS = 600_000;
+
+/** Either signal cancels; `undefined` when neither exists. */
+function combineSignals(
+  ...signals: Array<AbortSignal | undefined>
+): AbortSignal | undefined {
+  const present = signals.filter((s): s is AbortSignal => s !== undefined);
+  if (present.length === 0) return undefined;
+  return present.length === 1 ? present[0] : AbortSignal.any(present);
+}
 
 /** Enough of the vendor's error body to name the cause, not to echo a prompt back. */
 const UPSTREAM_DETAIL_MAX_CHARS = 300;
@@ -128,6 +147,11 @@ interface ChatAttemptContext {
     fallbackModelCodes: string[] | null;
   };
   modelCode: string;
+  /**
+   * B6: the caller's total budget, started once per request so every
+   * candidate spends the same budget. Absent when no `timeoutMs` was given.
+   */
+  deadline?: AbortSignal | undefined;
 }
 
 @Injectable()
@@ -173,6 +197,9 @@ export class ModelRuntimeService {
       let lastProviderError: ModelRuntimeException | undefined;
 
       for (const [fallbackAttempt, model] of models.entries()) {
+        // B6: a spent budget ends the chain - trying a fallback would spend
+        // time the caller no longer has.
+        if (ctx.deadline?.aborted && lastProviderError !== undefined) break;
         if (this.skipTripped(ctx, model, fallbackAttempt, models.length)) continue;
 
         await this.assertQuotaOrRecordRefusal(
@@ -189,7 +216,7 @@ export class ModelRuntimeService {
           const apiKey = await resolveApiKey({ resolveManagedKey: this.resolveManagedKey }, model, requestId);
           this.logAttempt(ctx, model, fallbackAttempt, "model_runtime_provider_start", "started");
           const providerResponse = await provider.chat(
-            this.buildUpstreamRequest(model, request, apiKey),
+            this.buildUpstreamRequest(model, request, apiKey, ctx.deadline),
           );
           const latencyMs = Date.now() - startedAt;
           this.circuitBreaker.recordSuccess(model.modelCode);
@@ -360,7 +387,12 @@ export class ModelRuntimeService {
           const apiKey = await resolveApiKey({ resolveManagedKey: this.resolveManagedKey }, model, requestId);
           this.logAttempt(ctx, model, fallbackAttempt, "model_runtime_provider_stream_start", "started");
           for await (const event of provider.chatStream(
-            this.buildUpstreamRequest(model, request, apiKey, signal),
+            this.buildUpstreamRequest(
+              model,
+              request,
+              apiKey,
+              combineSignals(signal, ctx.deadline),
+            ),
           )) {
             if (event.type === "error") {
               // Adapters emit a RECOVERABLE `UPSTREAM_FRAME_UNPARSEABLE` frame
@@ -476,6 +508,20 @@ export class ModelRuntimeService {
 
           return;
         } catch (error) {
+          // B6, checked BEFORE the client abort: the deadline also aborts the
+          // same fetch, and it must be reported as the caller's budget running
+          // out, not as the caller disconnecting.
+          if (ctx.deadline?.aborted) {
+            lastProviderError = await this.failCandidate(
+              ctx,
+              model,
+              fallbackAttempt,
+              error,
+              startedAt,
+              "model_runtime_provider_stream_failed",
+            );
+            break;
+          }
           // A client-initiated abort is not a provider failure: the model is
           // healthy, so it must not count against the circuit breaker, and
           // the caller is gone, so no fallback may be attempted for it. The
@@ -679,6 +725,21 @@ export class ModelRuntimeService {
         HttpStatus.BAD_REQUEST,
         "CHAT_THINKING_INVALID",
         `thinking must be one of: ${THINKING_MODES.join(", ")}`,
+      );
+    }
+
+    // B6. Bounded both ways: below a second no upstream can answer, and
+    // above ten minutes a caller wants the batch path, not a held socket.
+    if (
+      request.timeoutMs !== undefined &&
+      (!Number.isInteger(request.timeoutMs) ||
+        request.timeoutMs < MIN_TIMEOUT_MS ||
+        request.timeoutMs > MAX_TIMEOUT_MS)
+    ) {
+      throw new ModelRuntimeException(
+        HttpStatus.BAD_REQUEST,
+        "CHAT_TIMEOUT_INVALID",
+        `timeoutMs must be a whole number of milliseconds between ${MIN_TIMEOUT_MS} and ${MAX_TIMEOUT_MS}`,
       );
     }
 
@@ -1043,7 +1104,17 @@ export class ModelRuntimeService {
 
     // TD-049. Returns the context itself rather than its parts. A caller
     // that reassembles them is a caller that can assemble them differently.
-    return { request, requestId, applicationScope, auth, routed, modelCode };
+    return {
+      request,
+      requestId,
+      applicationScope,
+      auth,
+      routed,
+      modelCode,
+      ...(request.timeoutMs !== undefined
+        ? { deadline: AbortSignal.timeout(request.timeoutMs) }
+        : {}),
+    };
   }
 
   /**
@@ -1171,13 +1242,20 @@ export class ModelRuntimeService {
     startedAt: number,
     event: string,
   ): Promise<ModelRuntimeException> {
-    const normalised = this.toProviderUnavailableError(error, model, ctx.requestId);
+    const normalised = ctx.deadline?.aborted
+      ? new ModelRuntimeException(
+          HttpStatus.GATEWAY_TIMEOUT,
+          "DEADLINE_EXCEEDED",
+          `the caller's ${ctx.request.timeoutMs}ms budget ran out before ${model.provider} finished; the upstream call was cancelled`,
+          { requestId: ctx.requestId, modelCode: model.modelCode, provider: model.provider },
+        )
+      : this.toProviderUnavailableError(error, model, ctx.requestId);
     // A request the upstream refused for its CONTENT says nothing about the
     // model's health. Counting it would let one caller retrying an oversized
     // request trip the breaker and take the model offline for everyone.
     // The candidate loop still moves on to the next model: a fallback with a
     // larger context window may accept what this one refused.
-    if (!CONTENT_REFUSALS.has(normalised.code)) {
+    if (!NOT_A_HEALTH_SIGNAL.has(normalised.code)) {
       this.circuitBreaker.recordFailure(model.modelCode);
     }
     const latencyMs = Date.now() - startedAt;

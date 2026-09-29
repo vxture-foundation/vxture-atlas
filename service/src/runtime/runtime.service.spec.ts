@@ -851,6 +851,78 @@ describe("ModelRuntimeService runtime flow", () => {
       );
     });
 
+    // B6: the caller's total budget. Real 1s deadlines (the floor), so these
+    // run on real timers; each asserts everything it can in one wait.
+    describe("timeoutMs (B6)", () => {
+      /** Hangs until the signal fires, then rejects with its reason - what fetch does. */
+      const hangUntilAborted = (req: { signal?: AbortSignal }) =>
+        new Promise((_, reject) => {
+          req.signal?.addEventListener("abort", () => reject(req.signal?.reason));
+        });
+
+      it("cancels the upstream call when the budget runs out: 504 DEADLINE_EXCEEDED, no fallback, no breaker count", async () => {
+        const { service, provider, fallbackProvider, circuitBreaker } = makeRuntime();
+        provider.chat.mockImplementation(hangUntilAborted);
+        const recordFailure = vi.spyOn(circuitBreaker, "recordFailure");
+
+        const error = (await service
+          .chat(makeRequest({ modelCode: "primary-model", requestId: "d1", timeoutMs: 1000 }))
+          .catch((e: unknown) => e)) as ModelRuntimeException;
+
+        expect(error.getStatus()).toBe(504);
+        expect(error.getResponse()).toMatchObject({ code: "DEADLINE_EXCEEDED", retryable: false });
+        expect(provider.chat.mock.calls[0]?.[0].signal).toBeInstanceOf(AbortSignal);
+        expect(fallbackProvider.chat).not.toHaveBeenCalled();
+        expect(recordFailure).not.toHaveBeenCalled();
+      });
+
+      it("on a stream: reported as the budget (not a disconnect), and no fallback starts on a spent budget", async () => {
+        const { service, provider, fallbackProvider } = makeRuntime();
+        // Deadline fires before any output, so the "partial output already
+        // sent" rule does not stop the fallback - only the deadline check can.
+        provider.chatStream.mockImplementation(async function* (req: { signal?: AbortSignal }) {
+          await hangUntilAborted(req);
+        });
+        // The controller always passes a client signal on a stream.
+        const client = new AbortController();
+
+        let caught: unknown;
+        try {
+          for await (const _ of service.chatStream(
+            makeRequest({ modelCode: "primary-model", requestId: "d2", timeoutMs: 1000 }),
+            undefined,
+            client.signal,
+          )) {
+            // drain
+          }
+        } catch (error) {
+          caught = error;
+        }
+
+        expect((caught as ModelRuntimeException).getResponse()).toMatchObject({ code: "DEADLINE_EXCEEDED" });
+        expect(fallbackProvider.chatStream).not.toHaveBeenCalled();
+      });
+
+      it.each([0, 999, 600_001, 1500.5])("refuses timeoutMs %s before any upstream call", async (timeoutMs) => {
+        const { service, provider } = makeRuntime();
+
+        const error = (await service
+          .chat(makeRequest({ modelCode: "primary-model", requestId: "d3", timeoutMs }))
+          .catch((e: unknown) => e)) as ModelRuntimeException;
+
+        expect(error.getResponse()).toMatchObject({ code: "CHAT_TIMEOUT_INVALID" });
+        expect(provider.chat).not.toHaveBeenCalled();
+      });
+
+      it("adds no deadline when none was asked - today's behaviour", async () => {
+        const { service, provider } = makeRuntime();
+
+        await service.chat(makeRequest({ modelCode: "primary-model", requestId: "d4" }));
+
+        expect(provider.chat.mock.calls[0]?.[0]).not.toHaveProperty("signal");
+      });
+    });
+
     // ADR-009: thinking is a per-call parameter, honoured through the
     // model's config.wire.thinking or refused - never silently dropped.
     describe("thinking (ADR-009)", () => {
