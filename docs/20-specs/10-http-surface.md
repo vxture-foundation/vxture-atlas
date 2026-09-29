@@ -69,6 +69,26 @@ operator switched off, and a grant naming a code no endpoint has, are both
 reported rather than omitted: at call time both are the same `404`, but only one
 of them is the caller's to fix, and an omission reads as "never granted".
 
+Capacity, for a caller that budgets its input before sending (tenderforge
+letter 40 item 4). The response is `{ endpoints: [...], maxRequestBytes }`:
+
+- `contextWindow` / `maxOutputTokens` on each route: the **smallest** value
+  across the models a call on that route can land on - the primary and the
+  route's fallback, following the call path exactly (an unusable primary fails
+  the request, an unusable fallback is skipped). Per route, not per model: a
+  caller knows only `endpointCode`, and an operator repointing the route
+  changes these numbers with no caller release.
+- `null` means **unknown**: no usable primary, or a model in the chain with no
+  value recorded. It is never the minimum of only the known values - that can
+  overstate, and a budget that overstates is worse than none. Treat `null` as
+  "do not rely on a number", not as "unlimited".
+- `maxRequestBytes` (top level): the body ceiling (`MAX_REQUEST_BODY_BYTES`,
+  design doc 200 section 1.4). One number for every route, because the body
+  is refused before routing; read from the same resolver the parser uses.
+- Source is the model's `context_window` / `max_output_tokens` - what the
+  model can take - not `model_policies.max_context_tokens`, which no code
+  enforces (TD-054).
+
 `GET /v1/models?tenantId=` accepts the tenant id as a caller-supplied filter by
 design: `/v1` is a first-party product plane, and tenant privacy is not a
 boundary between sibling vxture products. `/tenancy/*` supersedes it for
