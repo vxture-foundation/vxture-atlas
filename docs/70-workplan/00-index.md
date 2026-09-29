@@ -125,10 +125,16 @@ B - tenderforge is waiting on these:
       `THINKING_MODE_UNSUPPORTED` / `CHAT_THINKING_INVALID`,
       `thinkingModes` on `/v1/model-routes`, applied mode echoed on both
       response paths
-- [ ] B5c. Upstream default ON: confirmed for Doubao (2026-09-30, real
-      request; production's `chat/fast` primary thinks today), DeepSeek not
-      yet observed. After B5b: confirm `off` yields no reasoning, then fill
-      `config.wire.thinking` for the routed models; reply in #69
+- [x] B5c. Production mapping written (2026-09-30, owner-authorized direct
+      SQL, recorded in #74 because it bypasses the audit log): the five
+      models behind tenderforge's routes carry `off`/`on`. Observed on a real
+      request for Doubao Seed 2.0 lite; the DeepSeek V4 pair and Doubao 2.0
+      pro / 2.1 turbo are from vendor docs. tenderforge told in #69
+- [ ] B5d. An editor for `wire.thinking` in opera's model drawer, so the next
+      mapping goes through the audited operator path (opera's own work; to
+      be raised on the platform line)
+- [x] Released as v0.7.8 (2026-09-30): ADR-009 thinking parameter and B6
+      deadline; both verified on the dev stack against real Doubao
 - [x] B6. `timeoutMs` is a total deadline per call: the upstream call is
       cancelled when it runs out, `504 DEADLINE_EXCEEDED`, no breaker count,
       no further fallback
