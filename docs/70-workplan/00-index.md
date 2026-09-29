@@ -118,12 +118,21 @@ B - tenderforge is waiting on these:
       chain: 128000 on `chat/default`, 256000 on the other three; output
       128000). Temperature is the caller's to send. Thinking is not
       configured on any route - see B5
-- [ ] B5. Thinking per route: no route sets it, so each upstream's default
-      applies, and `chat/deterministic` (letter 30: off) and
-      `chat/reasoning` (on) share the primary `deepseek-v4-pro`, so a
-      per-model switch cannot tell them apart. Operator/owner decision:
-      a second model row for the same upstream with its own
-      `config.wire.extraBody`, or accept the vendor default. Reply in #69
+- [x] B5a. Thinking analysed (owner, 2026-09-30): a per-call request
+      parameter, not a route - ADR-009 (Proposed)
+- [ ] B5b. ADR-009 accepted, then code: `thinking: "off"|"on"`, per-model
+      `config.wire.thinking` fragments, `THINKING_MODE_UNSUPPORTED`,
+      `thinkingModes` on `/v1/model-routes`, applied mode echoed
+- [ ] B5c. Upstream default ON: confirmed for Doubao (2026-09-30, real
+      request; production's `chat/fast` primary thinks today), DeepSeek not
+      yet observed. After B5b: confirm `off` yields no reasoning, then fill
+      `config.wire.thinking` for the routed models; reply in #69
+- [ ] B6. Call deadline: pass the caller's timeout to the upstream as a
+      total deadline (today only a time-to-first-byte guard exists)
+- [ ] B7. Layer 2, an optional `requirements` block resolved by an
+      operator-configured policy: cross-product vocabulary discussion open
+      as `vxture-platform`#540 (2026-09-30); Atlas designs it after that
+      settles
 - [x] B2a. `max_context_tokens` vs `context_window` settled: the policy
       column is enforced by nothing (TD-054); capacity is published from the
       model's own columns
