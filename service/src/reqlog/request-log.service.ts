@@ -1,5 +1,6 @@
 import { Injectable, Logger } from "@nestjs/common";
 
+import { Prisma } from "../generated/prisma";
 import { prisma } from "../prisma";
 import { isUuid } from "../uuid";
 import type { ErrorLogEntry, RequestLogEntry } from "./request-log.types";
@@ -112,6 +113,24 @@ export class RequestLogService {
           // being zero are different facts, and only the second one is free.
           cachedInputTokens: asBigIntOrNull(entry.cachedInputTokens),
           reasoningTokens: asBigIntOrNull(entry.reasoningTokens),
+          // Usage-record batch 1 (incr/04). Same NULL-not-zero rule.
+          cacheWriteInputTokens: asBigIntOrNull(entry.cacheWriteInputTokens),
+          cacheWrite1hInputTokens: asBigIntOrNull(entry.cacheWrite1hInputTokens),
+          // CHECK-constrained, like costUnit below: passed through so the
+          // constraint rejects an out-of-vocabulary value instead of clamp()
+          // bending it into one it might accept.
+          usageSource: entry.usageSource ?? null,
+          finishReason: entry.finishReason ?? null,
+          upstreamRequestId: clamp(entry.upstreamRequestId, 200),
+          upstreamModel: clamp(entry.upstreamModel, 200),
+          nativeFinishReason: clamp(entry.nativeFinishReason, 64),
+          // Verbatim: every normalized column above is derived from it, and a
+          // pricing rule written later can re-derive from it. Prisma's
+          // DbNull, not JS null, is what leaves a Json? column NULL.
+          upstreamUsage:
+            entry.upstreamUsage !== undefined
+              ? (entry.upstreamUsage as Prisma.InputJsonValue)
+              : Prisma.DbNull,
           latencyMs:
             typeof entry.latencyMs === "number"
               ? Math.trunc(entry.latencyMs)

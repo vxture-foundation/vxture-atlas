@@ -155,10 +155,20 @@ CREATE TABLE IF NOT EXISTS reqlog.request_records (
     cached_input_tokens      bigint,                             -- TD-047 (incr/01): input tokens served from the upstream prompt cache, billed at the cached rate (1/30 of uncached on DeepSeek). Subset of input_tokens; the uncached half is the difference. Declared AFTER created_at on purpose - ALTER TABLE appends, so a database built from this baseline keeps the same column ordinals as one migrated by the increment
     reasoning_tokens         bigint,                             -- TD-047 (incr/01): completion tokens spent on a reasoning chain. Subset of output_tokens and billed at the output rate, kept apart because it is the one output cost an operator can switch off (config.wire.extraBody). NULL means unreported, never zero - a fabricated 0 makes an unmeasured call look free
     attempt_index            smallint,                           -- TD-037 (incr/03): zero-based position of this attempt within one logical request; rows of one chain share request_id. Matches fallbackAttempt in the routing loop. NULL = written before the column existed, i.e. a single-row logical request under the old chat grain. Declared AFTER the incr/01 columns for the same reason they were - ALTER TABLE appends, so a baseline-built database keeps the same ordinals as a migrated one
+    upstream_request_id      varchar(200),                       -- incr/04 (ADR-010, usage checklist A3): the vendor's own id for the call; the only join to a vendor bill
+    upstream_model           varchar(200),                       -- incr/04 (C4): the model name the vendor says answered; vendors alias and roll versions, and price follows what served
+    cache_write_input_tokens bigint,                             -- incr/04 (E3): input tokens written to the upstream prompt cache, priced above plain input. Subset of input_tokens, like cached_input_tokens: input_tokens counts every input token, cached or not
+    cache_write_1h_input_tokens bigint,                          -- incr/04 (E4): the 1-hour-TTL part of cache_write_input_tokens. NULL = not split by the upstream, not zero
+    usage_source             varchar(16),                        -- incr/04 (G1): reported | absent | partial. A NULL count on an 'absent' row is unknown, never free
+    upstream_usage           jsonb,                              -- incr/04 (G2): the upstream usage object verbatim; every normalized token column is derived from it and can be re-derived
+    finish_reason            varchar(16),                        -- incr/04 (H3): stop | length | tool_calls | content_filter | other
+    native_finish_reason     varchar(64),                        -- incr/04 (H3): the vendor's own word, unmapped
     PRIMARY KEY (id, created_at),                                -- partition key must be in the PK
     CONSTRAINT chk_request_records_usage_type CHECK (usage_type IS NULL OR usage_type IN ('normal','retry','test')),
     CONSTRAINT chk_request_records_status     CHECK (status IS NULL OR status IN ('success','error','timeout')),
-    CONSTRAINT chk_request_records_cost_unit  CHECK (cost_unit IS NULL OR cost_unit IN ('token','candidate','page'))
+    CONSTRAINT chk_request_records_cost_unit  CHECK (cost_unit IS NULL OR cost_unit IN ('token','candidate','page')),
+    CONSTRAINT chk_request_records_usage_source  CHECK (usage_source IS NULL OR usage_source IN ('reported','absent','partial')),
+    CONSTRAINT chk_request_records_finish_reason CHECK (finish_reason IS NULL OR finish_reason IN ('stop','length','tool_calls','content_filter','other'))
 ) PARTITION BY RANGE (created_at);
 CREATE INDEX IF NOT EXISTS idx_request_records_request_id     ON reqlog.request_records (request_id);
 CREATE INDEX IF NOT EXISTS idx_request_records_usage_event_id ON reqlog.request_records (usage_event_id);

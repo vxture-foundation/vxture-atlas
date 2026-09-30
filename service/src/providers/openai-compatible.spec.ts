@@ -37,7 +37,7 @@ describe("parseOpenAiCompatibleStream", () => {
     expect(events).toEqual<StreamEvent[]>([
       { type: "text", delta: "Hello" },
       { type: "text", delta: " world" },
-      { type: "done", finishReason: "stop" },
+      { type: "done", finishReason: "stop", upstream: { nativeFinishReason: "stop" } },
     ]);
   });
 
@@ -62,6 +62,9 @@ describe("parseOpenAiCompatibleStream", () => {
     expect(events.at(-1)).toEqual<StreamEvent>({
       type: "done",
       usage: { promptTokens: 12, completionTokens: 5, totalTokens: 17 },
+      upstream: {
+        rawUsage: { prompt_tokens: 12, completion_tokens: 5, total_tokens: 17 },
+      },
     });
   });
 
@@ -149,6 +152,10 @@ describe("parseOpenAiCompatibleStream", () => {
       type: "done",
       usage: { promptTokens: 8, completionTokens: 2, totalTokens: 10 },
       finishReason: "length",
+      upstream: {
+        nativeFinishReason: "length",
+        rawUsage: { prompt_tokens: 8, completion_tokens: 2, total_tokens: 10 },
+      },
     });
   });
 
@@ -222,6 +229,15 @@ describe("parseOpenAiCompatibleStream - cost splits (TD-047)", () => {
         cachedInputTokens: 20,
         reasoningTokens: 440,
       },
+      upstream: {
+        rawUsage: {
+          prompt_tokens: 84,
+          completion_tokens: 469,
+          total_tokens: 553,
+          prompt_cache_hit_tokens: 20,
+          completion_tokens_details: { reasoning_tokens: 440 },
+        },
+      },
     });
   });
 
@@ -242,7 +258,49 @@ describe("parseOpenAiCompatibleStream - cost splits (TD-047)", () => {
     expect(events.at(-1)).toEqual<StreamEvent>({
       type: "done",
       usage: { promptTokens: 1, completionTokens: 2, totalTokens: 3 },
+      upstream: {
+        rawUsage: { prompt_tokens: 1, completion_tokens: 2, total_tokens: 3 },
+      },
     });
+  });
+});
+
+// Usage-record batch 1 (A3, C4, G2, H3).
+describe("parseOpenAiCompatibleStream - what the vendor said", () => {
+  it("keeps the first chunk id and model, the last native reason and the raw usage", async () => {
+    const events = await collect(
+      parseOpenAiCompatibleStream(
+        streamOf(
+          frame({
+            id: "chatcmpl-first",
+            model: "deepseek-v4-pro",
+            choices: [{ index: 0, delta: { content: "a" } }],
+          }),
+          frame({
+            id: "chatcmpl-first",
+            model: "deepseek-v4-pro",
+            choices: [{ index: 0, delta: {}, finish_reason: "insufficient_system_resource" }],
+          }),
+          frame({
+            id: "chatcmpl-first",
+            choices: [],
+            usage: { prompt_tokens: 2, completion_tokens: 1, total_tokens: 3 },
+          }),
+          "data: [DONE]\n\n",
+        ),
+      ),
+    );
+
+    const done = events.at(-1) as Extract<StreamEvent, { type: "done" }>;
+    expect(done.upstream).toEqual({
+      upstreamRequestId: "chatcmpl-first",
+      upstreamModel: "deepseek-v4-pro",
+      nativeFinishReason: "insufficient_system_resource",
+      rawUsage: { prompt_tokens: 2, completion_tokens: 1, total_tokens: 3 },
+    });
+    // DeepSeek's own reason is not in the mapping; it stays unmapped here and
+    // survives verbatim for the reqlog row.
+    expect(done.finishReason).toBeUndefined();
   });
 });
 

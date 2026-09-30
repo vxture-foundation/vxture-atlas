@@ -1990,6 +1990,174 @@ describe("ModelRuntimeService runtime flow", () => {
     });
   });
 
+  // ── usage-record batch 1 (ADR-010, checklist A3 C4 E3 E4 G1 G2 H3) ─────
+  //
+  // Atlas reports raw usage and the platform prices it with rules operators
+  // change at will. A fact the row never received cannot be re-derived when a
+  // rule changes, so these are the facts that must reach it on every path.
+  describe("the usage record carries what the vendor said", () => {
+    const upstream = {
+      upstreamRequestId: "msg_01abc",
+      upstreamModel: "claude-sonnet-4-5-20250929",
+      nativeFinishReason: "pause_turn",
+      rawUsage: { input_tokens: 10, cache_creation_input_tokens: 20 },
+    };
+
+    it("writes the vendor id, model, raw usage, cache writes and source on a success row", async () => {
+      const h = makeRuntime();
+      h.provider.chat.mockResolvedValue({
+        content: "pong",
+        promptTokens: 30,
+        completionTokens: 3,
+        totalTokens: 33,
+        cacheWriteInputTokens: 20,
+        cacheWrite1hInputTokens: 5,
+        upstream,
+      });
+
+      await h.service.chat(makeRequest({ modelCode: "primary-model", requestId: "rec-1" }));
+
+      expect(h.requestLog.record).toHaveBeenCalledWith(
+        expect.objectContaining({
+          usageSource: "reported",
+          upstreamRequestId: "msg_01abc",
+          upstreamModel: "claude-sonnet-4-5-20250929",
+          upstreamUsage: { input_tokens: 10, cache_creation_input_tokens: 20 },
+          cacheWriteInputTokens: 20,
+          cacheWrite1hInputTokens: 5,
+          nativeFinishReason: "pause_turn",
+          // Unmapped vendor reason: normalized word is 'other', the vendor's
+          // own word survives beside it.
+          finishReason: "other",
+        }),
+      );
+    });
+
+    it("keeps the normalized reason when the adapter mapped one", async () => {
+      const h = makeRuntime();
+      h.provider.chat.mockResolvedValue({
+        content: "pong",
+        promptTokens: 1,
+        completionTokens: 1,
+        totalTokens: 2,
+        finishReason: "length",
+        upstream: { nativeFinishReason: "max_tokens" },
+      });
+
+      await h.service.chat(makeRequest({ modelCode: "primary-model", requestId: "rec-2" }));
+
+      expect(h.requestLog.record).toHaveBeenCalledWith(
+        expect.objectContaining({ finishReason: "length", nativeFinishReason: "max_tokens" }),
+      );
+    });
+
+    it("marks a served call whose upstream reported no usage as 'absent', and writes no cache split", async () => {
+      const h = makeRuntime();
+      h.provider.chat.mockResolvedValue({
+        content: "pong",
+        promptTokens: 0,
+        completionTokens: 0,
+        totalTokens: 0,
+        cacheWriteInputTokens: 9,
+        usageReported: false,
+      });
+
+      await h.service.chat(makeRequest({ modelCode: "primary-model", requestId: "rec-3" }));
+
+      const row = h.requestLog.record.mock.calls[0]?.[0] as {
+        usageSource?: string;
+        cacheWriteInputTokens?: number;
+      };
+      expect(row.usageSource).toBe("absent");
+      expect(row.cacheWriteInputTokens).toBeUndefined();
+    });
+
+    it("records the stream's vendor facts and keeps them off the caller's done frame", async () => {
+      const h = makeRuntime();
+      h.provider.chatStream.mockImplementation(async function* () {
+        yield { type: "text", delta: "hi" };
+        yield {
+          type: "done",
+          usage: { promptTokens: 4, completionTokens: 1, totalTokens: 5 },
+          finishReason: "stop",
+          upstream: { upstreamRequestId: "chatcmpl-9", upstreamModel: "deepseek-v4-pro" },
+        };
+      });
+
+      const events: StreamEvent[] = [];
+      for await (const event of h.service.chatStream(
+        makeRequest({ modelCode: "primary-model", requestId: "rec-4" }),
+      )) {
+        events.push(event);
+      }
+
+      const done = events.at(-1) as Record<string, unknown>;
+      // Vendor ids and raw usage are not part of the caller contract.
+      expect(done).not.toHaveProperty("upstream");
+      expect(h.requestLog.record).toHaveBeenCalledWith(
+        expect.objectContaining({
+          usageSource: "reported",
+          upstreamRequestId: "chatcmpl-9",
+          upstreamModel: "deepseek-v4-pro",
+          finishReason: "stop",
+        }),
+      );
+    });
+
+    it("marks a failed attempt that reached the upstream and got nothing back as 'absent'", async () => {
+      const h = makeRuntime();
+      h.provider.chat.mockRejectedValueOnce(new Error("socket hang up"));
+
+      await h.service.chat(makeRequest({ modelCode: "primary-model", requestId: "rec-5" }));
+
+      const failed = h.requestLog.record.mock.calls
+        .map(([entry]) => entry as { status?: string; usageSource?: string })
+        .find((row) => row.status === "error");
+      expect(failed?.usageSource).toBe("absent");
+    });
+
+    it("carries the vendor facts of a failed attempt the vendor charged for", async () => {
+      const h = makeRuntime();
+      h.provider.chat.mockRejectedValueOnce(
+        new UpstreamCallFailure(
+          "empty model response",
+          { promptTokens: 84, completionTokens: 16, totalTokens: 100 },
+          { upstream: { upstreamRequestId: "chatcmpl-empty", nativeFinishReason: "length" } },
+        ),
+      );
+
+      await h.service.chat(makeRequest({ modelCode: "primary-model", requestId: "rec-6" }));
+
+      const failed = h.requestLog.record.mock.calls
+        .map(([entry]) => entry as Record<string, unknown>)
+        .find((row) => row["status"] === "error");
+      expect(failed).toMatchObject({
+        usageSource: "reported",
+        upstreamRequestId: "chatcmpl-empty",
+        nativeFinishReason: "length",
+      });
+    });
+
+    it("leaves the source unset on a gate refusal, which never reached an upstream", async () => {
+      const h = makeRuntime({
+        quota: {
+          assertAllowed: vi
+            .fn()
+            .mockRejectedValue(
+              new ModelRuntimeException(HttpStatus.FORBIDDEN, "QUOTA_EXCEEDED", "quota exhausted"),
+            ),
+        },
+      });
+
+      await expect(
+        h.service.chat(makeRequest({ modelCode: "primary-model", requestId: "rec-7" })),
+      ).rejects.toMatchObject({ code: "QUOTA_EXCEEDED" });
+
+      const row = h.requestLog.record.mock.calls[0]?.[0] as { usageSource?: string };
+      expect(row.usageSource).toBeUndefined();
+    });
+  });
+
   // ── who answered ───────────────────────────────────────────────────────
   //
   // Routing by taskProfile/endpointCode means the caller did not name a model.

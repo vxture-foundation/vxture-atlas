@@ -1,3 +1,5 @@
+import type { UpstreamCallRecord } from "../types/runtime.types";
+
 /**
  * upstream-failure.ts - a failed upstream call that still cost tokens.
  *
@@ -33,6 +35,10 @@ export interface UpstreamUsageSnapshot {
   cachedInputTokens?: number;
   /** Subset of `completionTokens`, billed at the output rate. */
   reasoningTokens?: number;
+  /** Subset of `promptTokens`: written to the prompt cache (incr/04). */
+  cacheWriteInputTokens?: number;
+  /** Subset of `cacheWriteInputTokens`: the 1-hour-TTL part. */
+  cacheWrite1hInputTokens?: number;
 }
 
 /**
@@ -51,17 +57,36 @@ export class UpstreamCallFailure extends Error {
    * the runtime answers it as `OUTPUT_BUDGET_EXHAUSTED`, outside the breaker.
    */
   readonly outputBudgetExhausted: boolean;
+  /**
+   * Usage-record batch 1: what the upstream said about the call that failed -
+   * its id, model, finish reason and raw usage. A failed attempt the vendor
+   * charged for needs the same facts as a successful one to be reconciled.
+   */
+  readonly upstream: UpstreamCallRecord | undefined;
 
   constructor(
     message: string,
     usage: UpstreamUsageSnapshot,
-    options: { outputBudgetExhausted?: boolean } = {},
+    options: {
+      outputBudgetExhausted?: boolean;
+      upstream?: UpstreamCallRecord;
+    } = {},
   ) {
     super(message);
     this.name = "UpstreamCallFailure";
     this.usage = usage;
     this.outputBudgetExhausted = options.outputBudgetExhausted === true;
+    this.upstream = options.upstream;
   }
+}
+
+/** The upstream record a failure carries, or `undefined` - same `instanceof` rule as {@link usageFromError}. */
+export function upstreamFromError(
+  error: unknown,
+): UpstreamCallRecord | undefined {
+  if (!(error instanceof UpstreamCallFailure)) return undefined;
+  const record = error.upstream;
+  return record && Object.keys(record).length > 0 ? record : undefined;
 }
 
 /**
@@ -105,6 +130,12 @@ export function usageColumns(
   }
   if (usage.reasoningTokens !== undefined) {
     columns["reasoningTokens"] = usage.reasoningTokens;
+  }
+  if (usage.cacheWriteInputTokens !== undefined) {
+    columns["cacheWriteInputTokens"] = usage.cacheWriteInputTokens;
+  }
+  if (usage.cacheWrite1hInputTokens !== undefined) {
+    columns["cacheWrite1hInputTokens"] = usage.cacheWrite1hInputTokens;
   }
   return columns;
 }

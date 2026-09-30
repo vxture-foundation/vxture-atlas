@@ -340,6 +340,23 @@ model RequestRecord {
   /// chat grain, and a fabricated 0 would claim they were the first attempt of
   /// a chain nothing recorded.
   attemptIndex           Int?     @map("attempt_index") @db.SmallInt
+  /// incr/04 (ADR-010, usage-record batch 1). The vendor's own id for the call.
+  upstreamRequestId      String?  @map("upstream_request_id") @db.VarChar(200)
+  /// incr/04. The model name the vendor says answered.
+  upstreamModel          String?  @map("upstream_model") @db.VarChar(200)
+  /// incr/04. Input tokens written to the upstream prompt cache; subset of
+  /// inputTokens, which counts every input token cached or not.
+  cacheWriteInputTokens  BigInt?  @map("cache_write_input_tokens")
+  /// incr/04. The 1-hour-TTL part of cacheWriteInputTokens. NULL = not split.
+  cacheWrite1hInputTokens BigInt? @map("cache_write_1h_input_tokens")
+  /// incr/04. reported | absent | partial (CHECK-constrained).
+  usageSource            String?  @map("usage_source") @db.VarChar(16)
+  /// incr/04. The upstream usage object verbatim.
+  upstreamUsage          Json?    @map("upstream_usage")
+  /// incr/04. stop | length | tool_calls | content_filter | other.
+  finishReason           String?  @map("finish_reason") @db.VarChar(16)
+  /// incr/04. The vendor's finish/stop reason, unmapped.
+  nativeFinishReason     String?  @map("native_finish_reason") @db.VarChar(64)
 
   @@id([id, createdAt])
   @@index([requestId], map: "idx_request_records_request_id")

@@ -66,8 +66,23 @@ detailed history layer:
 - Atlas domain facts: `model_code`, `provider_code`, `input_tokens`,
   `output_tokens`, `total_tokens`, `latency_ms`, `usage_type`
   (normal/retry/test), `status` (success/error/timeout)
+- Token splits (subsets, NULL = not reported, never 0): `cached_input_tokens`,
+  `cache_write_input_tokens`, `cache_write_1h_input_tokens` (of `input_tokens`);
+  `reasoning_tokens` (of `output_tokens`)
+- What the vendor said (`incr/04`, ADR-010 usage-record batch 1):
+  `upstream_request_id`, `upstream_model`, `upstream_usage` (the vendor's usage
+  object verbatim), `finish_reason` (stop/length/tool_calls/content_filter/
+  other) with `native_finish_reason`, and `usage_source` (reported/absent/
+  partial - NULL on a row that never reached an upstream)
 - Billing correlation: `billed_metric_key`, `billed_amount`, `cost_unit`,
   `usage_event_id`
+
+**Token convention.** `input_tokens` counts every input token on every
+adapter - uncached, cache read and cache write - so the uncached part is
+`input_tokens - cached_input_tokens - cache_write_input_tokens`. OpenAI-
+compatible upstreams report `prompt_tokens` this way already; Anthropic reports
+`input_tokens` excluding both cache kinds, and the Claude adapter adds them
+back. Rows written before `incr/04` stored Anthropic's figure as-is.
 
 `cost_unit` says what `billed_amount` counts, and it exists because one column
 carries three units:

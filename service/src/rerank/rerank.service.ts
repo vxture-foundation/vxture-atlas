@@ -96,6 +96,7 @@ export class RerankService {
         meter({
           amount: request.candidates.length,
           ...(result.usage ? { usage: result.usage } : {}),
+          ...(result.upstream ? { upstream: result.upstream } : {}),
         });
         return { modelCode: gated.model.modelCode, scores: result.scores };
           },
