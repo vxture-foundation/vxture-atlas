@@ -151,6 +151,12 @@ model ModelPriceRule {
   /// than understates. Like the other value columns it is insert-only; the
   /// table grants UPDATE on lifecycle columns alone.
   cachedInputUnitPrice Decimal? @map("cached_input_unit_price") @db.Decimal(18, 8)
+  /// TD-057 (incr/06). 5-minute-TTL cache-write price per unitTokens; NULL = not
+  /// declared, costed at inputUnitPrice.
+  cacheWriteUnitPrice    Decimal? @map("cache_write_unit_price") @db.Decimal(18, 8)
+  /// TD-057 (incr/06). 1-hour-TTL cache-write price; NULL falls back to
+  /// cacheWriteUnitPrice, then inputUnitPrice.
+  cacheWrite1hUnitPrice  Decimal? @map("cache_write_1h_unit_price") @db.Decimal(18, 8)
   @@index([modelId], map: "idx_model_price_rules_model")
   @@index([effectiveAt], map: "idx_model_price_rules_effective")
   @@index([isActive], map: "idx_model_price_rules_is_active")
@@ -378,6 +384,18 @@ model RequestRecord {
   priceRuleId            String?  @map("price_rule_id") @db.Uuid
   /// incr/05. peak | off_peak.
   pricingWindow          String?  @map("pricing_window") @db.VarChar(8)
+  /// incr/06 (usage-record batch 3). The S2S token's jti.
+  tokenJti               String?  @map("token_jti") @db.VarChar(128)
+  /// incr/06. The stage that wrote the row, as /healthz reports it.
+  deployStage            String?  @map("deploy_stage") @db.VarChar(16)
+  /// incr/06. Model behaviour fingerprint at call time.
+  modelBehaviorVersion   String?  @map("model_behavior_version") @db.VarChar(64)
+  toolCount              Int?     @map("tool_count") @db.SmallInt
+  toolCallsMade          Int?     @map("tool_calls_made") @db.SmallInt
+  messageCount           Int?     @map("message_count") @db.SmallInt
+  /// incr/06. Embed: vectors returned and their dimension.
+  vectorCount            Int?     @map("vector_count")
+  vectorDimension        Int?     @map("vector_dimension")
 
   @@id([id, createdAt])
   @@index([requestId], map: "idx_request_records_request_id")

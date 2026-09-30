@@ -1,4 +1,5 @@
 import { Injectable, Logger } from "@nestjs/common";
+import { serviceIdentity } from "@vxture/shared";
 
 import { Prisma } from "../generated/prisma";
 import { prisma } from "../prisma";
@@ -46,6 +47,20 @@ function clamp(value: string | undefined, max: number): string | null {
  * inference call that succeeded must not be turned into an error because the
  * log write failed. Every method swallows its errors into a warning.
  */
+/**
+ * Usage-record batch 3 (B10): the stage that writes every row, read from the
+ * same identity `/healthz` reports - one source, so a row and the health
+ * endpoint cannot name different environments. Clamped to the column.
+ */
+const DEPLOY_STAGE: string | null =
+  serviceIdentity({ service: "atlas" }).stage?.slice(0, 16) || null;
+
+/** smallint columns: counts past its range are clamped rather than failing the whole insert. */
+function smallCount(value: number | undefined): number | null {
+  if (typeof value !== "number" || !Number.isFinite(value)) return null;
+  return Math.min(32767, Math.max(0, Math.trunc(value)));
+}
+
 @Injectable()
 export class RequestLogService {
   private readonly logger = new Logger(RequestLogService.name);
@@ -99,6 +114,17 @@ export class RequestLogService {
           costCurrency: pricing?.currency ?? null,
           priceRuleId: pricing?.priceRuleId ?? null,
           pricingWindow: pricing?.window ?? null,
+          // Usage-record batch 3 (incr/06).
+          tokenJti: clamp(entry.tokenJti, 128),
+          deployStage: DEPLOY_STAGE,
+          modelBehaviorVersion: clamp(entry.modelBehaviorVersion, 64),
+          toolCount: smallCount(entry.toolCount),
+          toolCallsMade: smallCount(entry.toolCallsMade),
+          messageCount: smallCount(entry.messageCount),
+          vectorCount:
+            typeof entry.vectorCount === "number" ? Math.trunc(entry.vectorCount) : null,
+          vectorDimension:
+            typeof entry.vectorDimension === "number" ? Math.trunc(entry.vectorDimension) : null,
           requestId: clamp(entry.requestId, 128) ?? entry.requestId,
           status: entry.status,
           // Clamped but NOT coerced (product_251 X-2 requires it verbatim).
@@ -236,6 +262,8 @@ export class RequestLogService {
         {
           input: entry.inputTokens ?? 0,
           cached: entry.cachedInputTokens,
+          cacheWrite: entry.cacheWriteInputTokens,
+          cacheWrite1h: entry.cacheWrite1hInputTokens,
           output: entry.outputTokens ?? 0,
         },
         {
@@ -243,8 +271,11 @@ export class RequestLogService {
           inputUnitPrice: rule.inputUnitPrice.toString(),
           outputUnitPrice: rule.outputUnitPrice.toString(),
           requestUnitPrice: rule.requestUnitPrice.toString(),
-          cachedInputUnitPrice:
-            rule.cachedInputUnitPrice === null ? null : rule.cachedInputUnitPrice.toString(),
+          // `?.` and not `=== null`: an absent value must read as "not
+          // declared" too, never throw and leave the whole row unpriced.
+          cachedInputUnitPrice: rule.cachedInputUnitPrice?.toString() ?? null,
+          cacheWriteUnitPrice: rule.cacheWriteUnitPrice?.toString() ?? null,
+          cacheWrite1hUnitPrice: rule.cacheWrite1hUnitPrice?.toString() ?? null,
         },
         providerPricing,
         at,

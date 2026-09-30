@@ -456,6 +456,10 @@ describe("EmbeddingService.embed", () => {
         startedAt: expect.any(Date),
       }),
     );
+    // Usage-record batch 3 (F1).
+    expect(requestLog.record).toHaveBeenCalledWith(
+      expect.objectContaining({ vectorCount: 1, vectorDimension: 3 }),
+    );
   });
 
   it("marks a served call that reported no usage as 'absent'", async () => {

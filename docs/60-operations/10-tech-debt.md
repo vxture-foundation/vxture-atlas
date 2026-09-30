@@ -59,7 +59,7 @@ because those are the ones still needing a decision.
 | [TD-054](#td-054) | `model_policies.max_context_tokens` is writable and enforced by nothing | 2026-09-29 |
 | [TD-055](#td-055) | Context-overflow signatures live in code; adding a provider's needs a release | 2026-09-29 |
 | [TD-056](#td-056) | Inference usage never reaches the platform: every C3 consume is refused | 2026-09-30 |
-| [TD-057](#td-057) | A price rule has no cache-write rate, so cache writes are costed as plain input | 2026-09-30 |
+| [TD-057](#td-057) | Cache-write rates exist in the API but no operator page can set them | 2026-09-30 |
 
 ## Closed
 
@@ -912,8 +912,13 @@ cached-read fallback was designed never to err in.
 and the OpenAI-compatible upstreams in use report no cache writes. It becomes
 real the day a Claude route is live.
 
-**Recovery**: two nullable value columns on `model_price_rules`
-(`cache_write_unit_price`, `cache_write_1h_unit_price`; NULL = not declared),
-the price-rule create path and its operator editor, and one more term in
-`priceUsage`. Until then the fallback understates, and this entry is the record
-that it does.
+**Recovery**:
+1. ~~Two nullable value columns on `model_price_rules`
+   (`cache_write_unit_price`, `cache_write_1h_unit_price`), accepted by
+   `POST /capability/price-rules`, refused by `PATCH` like every value column,
+   and priced in `priceUsage` (1-hour falls back to 5-minute, 5-minute to
+   input).~~ **Done 2026-09-30** (`incr/06`, usage-record batch 3).
+2. The operator console's price-rule form does not show the two fields, so
+   today they can be set only through the API. Raised on the platform repo
+   alongside `wire.thinking` (vxture-platform#542). This entry closes when that
+   ships - until then an undeclared write rate still falls back to input.

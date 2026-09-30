@@ -176,6 +176,14 @@ CREATE TABLE IF NOT EXISTS reqlog.request_records (
     cost_currency            varchar(16),                        -- incr/05 (J1): the rule's currency
     price_rule_id            uuid,                               -- incr/05 (J2): which rule priced it (same-db logical ref, no FK: rules are superseded, rows are not)
     pricing_window           varchar(8),                         -- incr/05 (J2): peak | off_peak
+    token_jti                varchar(128),                       -- incr/06 (B8): the S2S token's jti - which exchanged credential made the call
+    deploy_stage             varchar(16),                        -- incr/06 (B10): the stage that wrote the row, as /healthz reports it
+    model_behavior_version   varchar(64),                        -- incr/06 (C9): model behaviour fingerprint at call time
+    tool_count               smallint,                           -- incr/06 (D5): tool definitions sent (they cost input tokens)
+    tool_calls_made          smallint,                           -- incr/06 (D5): tool calls the model made in its answer
+    message_count            smallint,                           -- incr/06 (D6): messages in the request
+    vector_count             int,                                -- incr/06 (F1): embed - vectors returned
+    vector_dimension         int,                                -- incr/06 (F1): embed - their dimension
     PRIMARY KEY (id, created_at),                                -- partition key must be in the PK
     CONSTRAINT chk_request_records_usage_type CHECK (usage_type IS NULL OR usage_type IN ('normal','retry','test')),
     CONSTRAINT chk_request_records_status     CHECK (status IS NULL OR status IN ('success','error','timeout')),
@@ -396,7 +404,9 @@ CREATE TABLE IF NOT EXISTS model.model_price_rules (
     updated_at         timestamptz   NOT NULL DEFAULT now(),
     CONSTRAINT chk_model_price_rules_billing_mode CHECK (billing_mode IN ('token','request')),
     deleted_at       timestamptz,                             -- soft delete (incr/10); history lives in audit.change_records, not in an unremovable row
-    cached_input_unit_price numeric(18,8)                     -- TD-047 (incr/02): price for input tokens the upstream served from its prompt cache. NULLABLE on purpose - a 0 would claim cached input is free, which is false for every provider and would be applied silently to every existing row. NULL = not declared, so a cost calculation falls back to input_unit_price and can only overstate. Declared last to match where ALTER TABLE puts it
+    cached_input_unit_price numeric(18,8),                    -- TD-047 (incr/02): price for input tokens the upstream served from its prompt cache. NULLABLE on purpose - a 0 would claim cached input is free, which is false for every provider and would be applied silently to every existing row. NULL = not declared, so a cost calculation falls back to input_unit_price and can only overstate. Declared last to match where ALTER TABLE puts it
+    cache_write_unit_price  numeric(18,8),                    -- TD-057 (incr/06): 5-minute-TTL cache-write price per unit_tokens. NULL = not declared: costed at input_unit_price
+    cache_write_1h_unit_price numeric(18,8)                   -- TD-057 (incr/06): 1-hour-TTL cache-write price. NULL = falls back to cache_write_unit_price, then input_unit_price
 );
 CREATE INDEX IF NOT EXISTS idx_model_price_rules_model     ON model.model_price_rules (model_id);
 CREATE INDEX IF NOT EXISTS idx_model_price_rules_effective ON model.model_price_rules (effective_at);

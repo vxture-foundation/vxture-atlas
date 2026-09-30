@@ -2219,6 +2219,36 @@ describe("ModelRuntimeService runtime flow", () => {
       expect(row["cancelledBy"]).toBeUndefined();
     });
 
+    // Usage-record batch 3 (B8, C9, D5, D6).
+    it("writes message and tool counts, the token jti and the behaviour fingerprint", async () => {
+      const h = makeRuntime();
+      h.provider.chat.mockResolvedValue({
+        content: "",
+        toolCalls: [{ id: "c1", name: "search", arguments: {} }],
+        promptTokens: 1,
+        completionTokens: 1,
+        totalTokens: 2,
+      });
+
+      await h.service.chat(
+        makeRequest({
+          modelCode: "primary-model",
+          requestId: "facts-3",
+          tools: [{ name: "search", description: "d", parameters: {} }],
+        }),
+        { jti: "jti-123", callerProductCode: "karda" } as never,
+      );
+
+      const row = h.requestLog.record.mock.calls[0]?.[0] as Record<string, unknown>;
+      expect(row).toMatchObject({
+        messageCount: 1,
+        toolCount: 1,
+        toolCallsMade: 1,
+        tokenJti: "jti-123",
+      });
+      expect(typeof row["modelBehaviorVersion"]).toBe("string");
+    });
+
     it("times the first streamed event after the attempt started", async () => {
       const h = makeRuntime();
       h.provider.chatStream.mockImplementation(async function* () {

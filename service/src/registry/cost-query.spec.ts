@@ -72,8 +72,12 @@ describe("summarizeRequestCost query", () => {
   it("selects the rule by the window that contains the request, not by is_active", async () => {
     const { sql } = await run();
 
-    expect(sql).toContain("pr.effective_at <= r.created_at");
-    expect(sql).toContain("pr.expires_at IS NULL OR pr.expires_at > r.created_at");
+    // Usage-record batch 3: WHEN a call ran is started_at; created_at only for
+    // rows written before incr/05.
+    expect(sql).toContain("pr.effective_at <= coalesce(r.started_at, r.created_at)");
+    expect(sql).toContain(
+      "pr.expires_at IS NULL OR pr.expires_at > coalesce(r.started_at, r.created_at)",
+    );
     expect(sql).toContain("pr.deleted_at IS NULL");
     // A present-tense switch must not decide what last month cost.
     expect(sql).not.toContain("pr.is_active");
@@ -103,9 +107,14 @@ describe("summarizeRequestCost query", () => {
   it("buckets by UTC hour-of-week and leaves the window definition out of SQL", async () => {
     const { sql } = await run();
 
-    // The bucket is in SQL because only SQL can derive it from created_at.
-    expect(sql).toContain("EXTRACT(isodow FROM r.created_at AT TIME ZONE 'UTC')");
-    expect(sql).toContain("EXTRACT(hour   FROM r.created_at AT TIME ZONE 'UTC')");
+    // The bucket is in SQL because only SQL can derive it from the row's time -
+    // started_at since incr/05, created_at for older rows.
+    expect(sql).toContain(
+      "EXTRACT(isodow FROM coalesce(r.started_at, r.created_at) AT TIME ZONE 'UTC')",
+    );
+    expect(sql).toContain(
+      "EXTRACT(hour   FROM coalesce(r.started_at, r.created_at) AT TIME ZONE 'UTC')",
+    );
     expect(sql).toContain("(pv.config -> 'pricing')::text");
 
     // The RULE is not: which hours count as peak is provider configuration.
