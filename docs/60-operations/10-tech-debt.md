@@ -58,6 +58,7 @@ because those are the ones still needing a decision.
 | [TD-052](#td-052) | Label routing exists only on the retiring tenant axis, so asking for a label drags a tenant along | 2026-08-26 |
 | [TD-054](#td-054) | `model_policies.max_context_tokens` is writable and enforced by nothing | 2026-09-29 |
 | [TD-055](#td-055) | Context-overflow signatures live in code; adding a provider's needs a release | 2026-09-29 |
+| [TD-056](#td-056) | Inference usage never reaches the platform: every C3 consume is refused | 2026-09-30 |
 
 ## Closed
 
@@ -874,3 +875,22 @@ is kept as plain data objects so that moving it is moving data.
    `vxture-platform`#542 alongside `wire.thinking`. This entry closes when
    that ships.
 
+## TD-056
+
+**Wrong**: no inference Atlas serves is recorded by the platform. Every C3
+consume names `product: "atlas"`, and the platform removed atlas from
+`product.products` on 2026-09-23 (vxture-platform #469 / #472); its consume
+handler answers `400 unknown_product`. Consume failures are swallowed by
+design - the answer was already produced - so the caller is served, reqlog
+has its row, and nothing errors. It surfaced only because tenderforge read
+Atlas's production log (`vx-agent-tenderforge`#69). The platform's migration
+aborts if an L1 product has any `usage_events`, so where it ran, atlas had
+none: the reports may never have been accepted.
+
+The C2 read (`product=atlas`) is broken the same way; the quota gate falls
+open per ADR-001.
+
+**Recovery**: ADR-010 - raw tokens in four dimensions under the caller's
+product, in the shape vxture-platform#547 settles on (workplan E3-E5).
+**Detection is in place now**: `platform_consume_outcomes_total` counts
+`outcome="rejected"` with the platform's reason word.
