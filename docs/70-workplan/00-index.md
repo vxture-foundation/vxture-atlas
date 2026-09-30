@@ -24,8 +24,9 @@ deferral in `docs/60-operations/10-tech-debt.md`.
 - [x] Tenant self-service plane `/tenancy/*` - scope derived from the token
 - [x] C3 provisioning webhook - HMAC verify, dual-secret rotation, idempotent,
       per-workspace `seq` ordering (atomic check-and-write)
-- [x] C2 entitlement client - the quota gate can deny (partial, see TD-016)
-- [x] C3 consume caller + own `reqlog` request/error history, 6-month retention
+- [x] C2 entitlement client - built, but reads `product=atlas`, which the
+      platform no longer resolves (TD-056); the gate falls open until ADR-010 lands
+- [x] Own `reqlog` request/error history, 6-month retention
       with partition maintenance and a `/readyz` runway alarm; gate refusals,
       streamed responses without a usage frame, and probe traffic
       (`usage_type = 'test'`) all land in reqlog
@@ -222,6 +223,22 @@ D - raised during this work:
       `retryAfterMs: 58198`; production deploy verified (health, provenance,
       readiness, limits). Not reproduced in production - that needs a
       rate-limit policy written there, not authorized for this change
+
+E - usage reaches the platform (ADR-010, owner 2026-09-30):
+
+- [x] E1. Root cause: consume names `product: "atlas"`, removed from the
+      platform catalog on 2026-09-23, so every report is `400 unknown_product`
+      (TD-056). Raised: vxture-platform#547 (receiving shape, doc fixes),
+      `vxture-arda`#214 (doc fixes), `vx-agent-tenderforge`#69 (told)
+- [x] E2. A refused consume names the platform's reason in the log and counts
+      it in `platform_consume_outcomes_total{metric,outcome,reason}`
+- [ ] E3. Capture cache-write tokens in the adapters, plus a `reqlog` column
+      through db-init
+- [ ] E4. Consume under the caller's product with raw tokens in four
+      dimensions, and C2 read by the caller's product - in the shape #547
+      settles on
+- [ ] E5. Backfill from `reqlog` the calls that were served and never billed,
+      if the platform wants them
 
 Platform-side, not this repo's write-scope:
 

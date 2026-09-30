@@ -29,7 +29,7 @@ pnpm type-check:all
 | `router/` | dispatch to a provider adapter: specialization layer (Zhipu embed/rerank) then `protocol` layer; a protocol that cannot be normalized is `503 MODEL_NOT_ROUTABLE` - no silent fallback | complete |
 | `providers/` | `base`, `openai-compatible` (+ `wire`, `protocol`, `sse`, `parse-vision`), `zhipu`, `claude`; doubao and private upstreams ride the openai-compatible protocol adapter | chat + streaming complete; embed/rerank on Zhipu; parse on openai-compatible, gated on `config.supportsVision` |
 | `quota/` | entitlement gate ahead of every call | denies on exhausted pools; permissive for uncovered workspaces (TD-016) |
-| `platform/` | C2 entitlement client + C3 `POST /usage/consume` caller | complete |
+| `platform/` | C2 entitlement client + C3 `POST /usage/consume` caller | **broken (TD-056)**: both still name `product: "atlas"`, which the platform removed from its catalog on 2026-09-23, so every consume is refused `400 unknown_product` and the C2 read resolves nothing. Replacement per ADR-010, waiting on vxture-platform#547 |
 | `reqlog/` | per-request and per-error history writes | complete; `product_id` stays NULL by design (`product_code` is the resolvable form); A1/A3 rows DO carry token counts whenever the upstream reports usage - Zhipu reports it for both embed and rerank, and for embed that same total is what C3 was billed |
 | `tenancy/` | `/tenancy/*` self-service reads, scope from the token | complete |
 | `provider-keys/` | envelope-encrypted key vault + rotation log | complete |

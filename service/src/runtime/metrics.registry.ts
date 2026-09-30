@@ -22,7 +22,8 @@ type MetricName =
   | "model_request_rejections_total"
   | "model_reasoning_tool_exposure_total"
   | "capability_legacy_path_requests_total"
-  | "data_plane_legacy_path_requests_total";
+  | "data_plane_legacy_path_requests_total"
+  | "platform_consume_outcomes_total";
 
 type MetricDefinition = {
   type: "counter" | "gauge" | "histogram";
@@ -93,6 +94,23 @@ const METRIC_DEFINITIONS: Record<MetricName, MetricDefinition> = {
     type: "counter",
     help: "model_request_rejections_total 进入日志前被拒的请求数（按错误码与调用产品聚合）",
     labelNames: ["code", "product"],
+  },
+  /**
+   * Every C3 consume, by what became of it - the only place an unbilled
+   * inference is countable.
+   *
+   * A consume that fails is logged and swallowed by design (the answer was
+   * already produced), so a platform that refuses every one of them looks
+   * exactly like a platform that accepts them: the caller is served, reqlog
+   * has its row, nothing errors. That is how a catalog change that made the
+   * platform answer `400 unknown_product` to every Atlas report went unseen
+   * until a consumer read Atlas's log (vxture-platform#547). `reason` carries
+   * the platform's own refusal word, so the next one names itself.
+   */
+  platform_consume_outcomes_total: {
+    type: "counter",
+    help: "platform_consume_outcomes_total C3 用量上报结果（billed / rejected / failed / skipped，reason 为平台拒绝原因）",
+    labelNames: ["metric", "outcome", "reason"],
   },
   /**
    * TRANSITIONAL (#206): which spelling of a renamed operator route was called.

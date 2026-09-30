@@ -1,6 +1,7 @@
 import { Logger } from "@nestjs/common";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { metricsRegistry } from "../runtime/metrics.registry";
 import { PlatformEntitlementClient } from "./platform-entitlement.client";
 
 const CACHE_MAX_ENTRIES = 10_000;
@@ -103,5 +104,96 @@ describe("PlatformEntitlementClient.resolve", () => {
     expect(cache.size).toBe(CACHE_MAX_ENTRIES);
     expect(cache.has("ws-0")).toBe(false);
     expect(cache.has("ws-new")).toBe(true);
+  });
+});
+
+// vxture-platform#547: after the platform removed atlas from its product
+// catalog, every consume answered `400 {"message":"unknown_product"}`. Atlas
+// logged only the status and counted nothing, so the refusal was invisible
+// except to someone reading the log line by line.
+describe("PlatformEntitlementClient.consume", () => {
+  const input = {
+    workspaceId: "00000000-0000-4000-a000-000000000210",
+    metric: "atlas.chat",
+    amount: 11_681,
+    idempotencyKey: "req-consume-spec",
+  };
+
+  beforeEach(() => {
+    vi.stubEnv("PLATFORM_API_URL", "http://platform.test");
+    vi.stubEnv("PLATFORM_INTERNAL_AUTH_TOKEN", "internal-secret");
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  it("names the platform's refusal in the log line and counts it by that word", async () => {
+    const warn = vi
+      .spyOn(Logger.prototype, "warn")
+      .mockImplementation(() => undefined);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        jsonResponse(
+          { statusCode: 400, message: "unknown_product", error: "Bad Request" },
+          false,
+          400,
+        ),
+      ),
+    );
+
+    const outcome = await new PlatformEntitlementClient().consume(input);
+
+    expect(outcome).toEqual({ billed: false });
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining("400 (unknown_product)"),
+    );
+    const scrape = await metricsRegistry.scrape();
+    expect(scrape).toContain(
+      'platform_consume_outcomes_total{metric="atlas.chat",outcome="rejected",reason="unknown_product"',
+    );
+  });
+
+  it("labels free-text refusals by status, so another service cannot mint label values", async () => {
+    vi.spyOn(Logger.prototype, "warn").mockImplementation(() => undefined);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        jsonResponse({ message: "Workspace 42 is not allowed here" }, false, 403),
+      ),
+    );
+
+    await new PlatformEntitlementClient().consume(input);
+
+    const scrape = await metricsRegistry.scrape();
+    expect(scrape).toContain('outcome="rejected",reason="http_403"');
+    expect(scrape).not.toContain("Workspace 42");
+  });
+
+  it("counts a billed consume", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse({})));
+
+    const outcome = await new PlatformEntitlementClient().consume(input);
+
+    expect(outcome.billed).toBe(true);
+    expect(await metricsRegistry.scrape()).toContain(
+      'outcome="billed",reason="ok"',
+    );
+  });
+
+  it("counts a consume that never left because the platform is not configured", async () => {
+    vi.stubEnv("PLATFORM_API_URL", "");
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    await new PlatformEntitlementClient().consume(input);
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(await metricsRegistry.scrape()).toContain(
+      'outcome="skipped",reason="not_configured"',
+    );
   });
 });

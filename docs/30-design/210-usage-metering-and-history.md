@@ -51,6 +51,12 @@ deliberately does not learn them - it sees a `metric_key` and an amount.
 
 ## 3. Atlas side
 
+> **Superseded in part by ADR-010 (2026-09-30).** The metric table below is
+> the wire Atlas still sends (`product: "atlas"`, `atlas.*` metrics), and the
+> platform refuses all of it since atlas left the product catalog (TD-056).
+> ADR-010 replaces it with raw tokens in four dimensions under the caller's
+> product; this section is rewritten when that payload lands.
+
 `reqlog.request_records` (monthly `PARTITION BY RANGE (created_at)`) is the
 detailed history layer:
 

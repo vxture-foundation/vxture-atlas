@@ -1,6 +1,8 @@
 import { Injectable, Logger } from "@nestjs/common";
 import type { EntitlementResponseSingle } from "@vxture/shared";
 
+import { metricsRegistry } from "../runtime/metrics.registry";
+
 const DEFAULT_TIMEOUT_MS = 3_000;
 const DEFAULT_CACHE_TTL_MS = 30_000;
 /**
@@ -105,7 +107,10 @@ export class PlatformEntitlementClient {
       });
 
       if (!response.ok) {
-        return this.degraded(`platform returned ${response.status}`);
+        const detail = await refusalDetail(response);
+        return this.degraded(
+          `platform returned ${response.status}: ${detail.message}`,
+        );
       }
 
       const view = (await response.json()) as EntitlementResponseSingle;
@@ -159,8 +164,14 @@ export class PlatformEntitlementClient {
   }): Promise<ConsumeOutcome> {
     const base = this.baseUrl;
     const token = this.token;
-    if (!base || !token) return NOT_BILLED;
-    if (!Number.isFinite(input.amount) || input.amount <= 0) return NOT_BILLED;
+    if (!base || !token) {
+      recordConsume(input.metric, "skipped", "not_configured");
+      return NOT_BILLED;
+    }
+    if (!Number.isFinite(input.amount) || input.amount <= 0) {
+      recordConsume(input.metric, "skipped", "no_amount");
+      return NOT_BILLED;
+    }
 
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), DEFAULT_TIMEOUT_MS);
@@ -187,11 +198,16 @@ export class PlatformEntitlementClient {
       );
 
       if (!response.ok) {
+        // The status alone said "400" for weeks while the reason - a product
+        // row the platform had deleted - sat in the body unread.
+        const detail = await refusalDetail(response);
+        recordConsume(input.metric, "rejected", detail.reason);
         this.logger.warn(
-          `C3 consume returned ${response.status} for workspace=${input.workspaceId} metric=${input.metric} - request served, not billed`,
+          `C3 consume returned ${response.status} (${detail.message}) for workspace=${input.workspaceId} metric=${input.metric} - request served, not billed`,
         );
         return NOT_BILLED;
       }
+      recordConsume(input.metric, "billed", "ok");
       // Defensive parse: today's ConsumeResponseBody carries no event id
       // (correlation is via request_id / idempotency_key on both sides), but
       // the design (210 §4) wants the platform's usage_events.id echoed back
@@ -207,6 +223,7 @@ export class PlatformEntitlementClient {
       }
       return { billed: true, ...(usageEventId ? { usageEventId } : {}) };
     } catch (error) {
+      recordConsume(input.metric, "failed", "unreachable");
       this.logger.warn(
         `C3 consume failed (${error instanceof Error ? error.message : String(error)}) - request served, not billed`,
       );
@@ -219,5 +236,48 @@ export class PlatformEntitlementClient {
   private degraded(reason: string): EntitlementOutcome {
     this.logger.warn(`C2 entitlement read failed (${reason}) - degrading`);
     return { kind: "unreachable", reason };
+  }
+}
+
+function recordConsume(
+  metric: string,
+  outcome: "billed" | "rejected" | "failed" | "skipped",
+  reason: string,
+): void {
+  metricsRegistry.incCounter("platform_consume_outcomes_total", {
+    metric,
+    outcome,
+    reason,
+  });
+}
+
+/**
+ * The platform's refusal word travels as Nest's `{ message }` - e.g.
+ * `unknown_product`, `invalid_amount`. It becomes a metric label only when it
+ * looks like such a word: a label is a series, and free text from another
+ * service is an unbounded number of them. Anything else is labelled by status
+ * and still reaches the log line.
+ */
+const REFUSAL_WORD = /^[a-z][a-z0-9_]{0,63}$/;
+
+async function refusalDetail(
+  response: Response,
+): Promise<{ reason: string; message: string }> {
+  const fallback = `http_${response.status}`;
+  try {
+    const body = (await response.json()) as { message?: unknown };
+    const raw = Array.isArray(body.message)
+      ? body.message.join("; ")
+      : body.message;
+    if (typeof raw !== "string" || !raw.trim()) {
+      return { reason: fallback, message: "no reason given" };
+    }
+    const message = raw.replace(/\s+/g, " ").trim().slice(0, 200);
+    return {
+      reason: REFUSAL_WORD.test(message) ? message : fallback,
+      message,
+    };
+  } catch {
+    return { reason: fallback, message: "body unreadable" };
   }
 }
