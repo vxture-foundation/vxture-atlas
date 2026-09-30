@@ -44,11 +44,23 @@ export interface UpstreamUsageSnapshot {
  */
 export class UpstreamCallFailure extends Error {
   readonly usage: UpstreamUsageSnapshot;
+  /**
+   * The upstream stopped for LENGTH before producing any answer - the
+   * caller's `maxTokens` was spent (on a thinking model, usually all of it on
+   * the reasoning chain). The caller's budget, not the provider's health, so
+   * the runtime answers it as `OUTPUT_BUDGET_EXHAUSTED`, outside the breaker.
+   */
+  readonly outputBudgetExhausted: boolean;
 
-  constructor(message: string, usage: UpstreamUsageSnapshot) {
+  constructor(
+    message: string,
+    usage: UpstreamUsageSnapshot,
+    options: { outputBudgetExhausted?: boolean } = {},
+  ) {
     super(message);
     this.name = "UpstreamCallFailure";
     this.usage = usage;
+    this.outputBudgetExhausted = options.outputBudgetExhausted === true;
   }
 }
 

@@ -1047,6 +1047,27 @@ describe("ModelRuntimeService runtime flow", () => {
       });
     });
 
+    // Walkthrough 2026-09-30: a thinking model that spent a tiny maxTokens on
+    // reasoning was PROVIDER_UNAVAILABLE, retryable and breaker-counted.
+    it("answers an exhausted output budget as the caller's, not the provider's", async () => {
+      const { service, provider, fallbackProvider, circuitBreaker } = makeRuntime();
+      const exhausted = () =>
+        new UpstreamCallFailure("primary returned invalid response: output budget exhausted", { completionTokens: 8 }, {
+          outputBudgetExhausted: true,
+        });
+      provider.chat.mockRejectedValue(exhausted());
+      fallbackProvider.chat.mockRejectedValue(exhausted());
+      const recordFailure = vi.spyOn(circuitBreaker, "recordFailure");
+
+      const error = (await service
+        .chat(makeRequest({ modelCode: "primary-model", requestId: "ob-1" }))
+        .catch((e: unknown) => e)) as ModelRuntimeException;
+
+      expect(error.getStatus()).toBe(422);
+      expect(error.getResponse()).toMatchObject({ code: "OUTPUT_BUDGET_EXHAUSTED", retryable: false });
+      expect(recordFailure).not.toHaveBeenCalled();
+    });
+
     // TD-055: a provider's own wording, added in config, with no release.
     it("recognises an overflow by a signature from the model's provider config", async () => {
       const refusal = () =>

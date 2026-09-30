@@ -1,5 +1,5 @@
 {
-  "fingerprint": "c1-721f105b150b",
+  "fingerprint": "c1-5f484ea774f6",
   "errorCodes": [
     {
       "code": "APPLICATION_ID_REQUIRED",
@@ -87,6 +87,10 @@
     },
     {
       "code": "NOT_ENTITLED",
+      "retryable": false
+    },
+    {
+      "code": "OUTPUT_BUDGET_EXHAUSTED",
       "retryable": false
     },
     {

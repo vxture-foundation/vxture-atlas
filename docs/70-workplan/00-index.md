@@ -183,6 +183,23 @@ C - verification:
       `model_request_rejections_total{code, product="unknown"}` rather than
       a second metric for the same fact
 
+Production walkthrough (2026-09-30, v0.7.9):
+
+- [x] Outside probes: body ceiling exact at 16 MiB, envelopes for 413 / 400,
+      data plane, operator plane and `/metrics` all refuse anonymous access
+- [x] Inside: the rejection counter shows exactly the walkthrough's own two
+      refusals; no unhandled exceptions since the deploy; the B5c mapping is
+      intact on all five models
+- [x] Found: a reasoning-exhausted `maxTokens` was `PROVIDER_UNAVAILABLE`
+      (retryable, breaker-counted) - now `422 OUTPUT_BUDGET_EXHAUSTED`
+- [x] Found: a non-UUID `applicationId` on the product-grant lookup was a
+      codeless 500 (Postgres cast error, 3x on 2026-09-28) - now
+      `400 INVALID_APPLICATION_ID`
+- [ ] Observed: tenderforge's `chat/deterministic` on `deepseek-v4-pro`
+      averages 4137 output tokens, 3232 of them reasoning, p95 94 s - every
+      call so far predates v0.7.8's `thinking: "off"`. Re-read after they
+      adopt it (#69)
+
 D - raised during this work:
 
 - [ ] D1. After the repo returns to private: run

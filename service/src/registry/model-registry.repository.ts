@@ -655,6 +655,11 @@ export class ModelRegistryRepository {
     applicationId: string,
     applicationType: ApplicationType,
   ): Promise<ProductEndpointGrantRecord[]> {
+    // Same guard as the tenant-axis lookups below. Without it a non-UUID
+    // reached the `uuid` column and came back as Postgres's cast error - a
+    // codeless 500, three times in production on 2026-09-28, found by the
+    // 2026-09-30 walkthrough.
+    assertUuid(applicationId, "INVALID_APPLICATION_ID", "applicationId");
     return prisma.productEndpointGrant.findMany({
       where: {
         productCode,
