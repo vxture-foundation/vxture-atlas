@@ -147,7 +147,7 @@ describe("PlatformEntitlementClient.consume", () => {
 
     const outcome = await new PlatformEntitlementClient().consume(input);
 
-    expect(outcome).toEqual({ billed: false });
+    expect(outcome).toEqual({ billed: false, notBilledBecause: "rejected" });
     expect(warn).toHaveBeenCalledWith(
       expect.stringContaining("400 (unknown_product)"),
     );

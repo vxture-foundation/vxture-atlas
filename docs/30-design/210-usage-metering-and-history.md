@@ -83,6 +83,17 @@ detailed history layer:
   with the same formula as the cost rollup; NULL = unpriced, never free.
   Cache writes are priced at the rule's cache-write rates (`incr/06`); an
   undeclared rate falls back to the input rate
+- The last dimensions (`incr/07`, batch 4): `upstream_host`, `service_tier`,
+  `is_batch`, `reasoning_budget_tokens`, `input_image_count` /
+  `input_audio_seconds` / `input_file_count`, `input_image_tokens` /
+  `input_audio_tokens`, `output_audio_tokens` / `output_image_tokens`,
+  `tool_use_prompt_tokens`, `web_search_requests`, `generated_image_count` /
+  `generated_media_seconds`, `content_filtered`, `queue_wait_ms`
+- **Why an empty dimension is empty** (`incr/07`, ADR-011): `dimension_status`
+  maps every NULL usage column of the row to one of `not_integrated`,
+  `not_supported`, `not_reported`, `not_configured`, `capture_failed`,
+  `not_specified`, `not_applicable`, `not_reached`. The registry is
+  `service/src/reqlog/dimension-status.ts`
 - Analysis facts (`incr/06`, batch 3): `token_jti`, `deploy_stage` (as
   `/healthz` reports it), `model_behavior_version`, `tool_count` /
   `tool_calls_made`, `message_count`, `vector_count` / `vector_dimension`

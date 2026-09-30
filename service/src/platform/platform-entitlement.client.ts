@@ -33,6 +33,12 @@ export type EntitlementOutcome =
 export interface ConsumeOutcome {
   billed: boolean;
   usageEventId?: string;
+  /**
+   * Usage-record batch 4: why it was not billed, for the row's
+   * dimension_status. `not_configured` = no platform link, `rejected` = the
+   * platform refused it, `failed` = it could not be reached.
+   */
+  notBilledBecause?: "not_configured" | "no_amount" | "rejected" | "failed";
 }
 
 const NOT_BILLED: ConsumeOutcome = { billed: false };
@@ -166,11 +172,11 @@ export class PlatformEntitlementClient {
     const token = this.token;
     if (!base || !token) {
       recordConsume(input.metric, "skipped", "not_configured");
-      return NOT_BILLED;
+      return { ...NOT_BILLED, notBilledBecause: "not_configured" };
     }
     if (!Number.isFinite(input.amount) || input.amount <= 0) {
       recordConsume(input.metric, "skipped", "no_amount");
-      return NOT_BILLED;
+      return { ...NOT_BILLED, notBilledBecause: "no_amount" };
     }
 
     const controller = new AbortController();
@@ -205,7 +211,7 @@ export class PlatformEntitlementClient {
         this.logger.warn(
           `C3 consume returned ${response.status} (${detail.message}) for workspace=${input.workspaceId} metric=${input.metric} - request served, not billed`,
         );
-        return NOT_BILLED;
+        return { ...NOT_BILLED, notBilledBecause: "rejected" };
       }
       recordConsume(input.metric, "billed", "ok");
       // Defensive parse: today's ConsumeResponseBody carries no event id
@@ -227,7 +233,7 @@ export class PlatformEntitlementClient {
       this.logger.warn(
         `C3 consume failed (${error instanceof Error ? error.message : String(error)}) - request served, not billed`,
       );
-      return NOT_BILLED;
+      return { ...NOT_BILLED, notBilledBecause: "failed" };
     } finally {
       clearTimeout(timer);
     }

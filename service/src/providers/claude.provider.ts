@@ -1,6 +1,6 @@
 import { Injectable } from "@nestjs/common";
 import { UpstreamCallFailure } from "./upstream-failure";
-import { upstreamField } from "./upstream-record";
+import { statedNumber, upstreamField } from "./upstream-record";
 
 import { BaseProvider, joinEndpoint, resolveUpstreamModel } from "./base.provider";
 import { openSseRequest, readSseMessages } from "./sse";
@@ -18,6 +18,7 @@ import type {
   ToolChoice,
   ToolDefinition,
   ChatReasoning,
+  UpstreamCallRecord,
 } from "../types/runtime.types";
 
 interface ClaudeContentBlock {
@@ -139,6 +140,9 @@ interface ClaudeUsage {
     ephemeral_5m_input_tokens?: number;
     ephemeral_1h_input_tokens?: number;
   };
+  /** Usage-record batch 4 (C7, F4). */
+  service_tier?: string;
+  server_tool_use?: { web_search_requests?: number };
 }
 
 interface ClaudeChatResponse {
@@ -207,6 +211,7 @@ export class ClaudeProvider extends BaseProvider {
             response.model,
             response.stop_reason,
             response.usage,
+            claudeExtras(response.usage),
           ),
         },
       );
@@ -232,6 +237,7 @@ export class ClaudeProvider extends BaseProvider {
         response.model,
         response.stop_reason,
         response.usage,
+            claudeExtras(response.usage),
       ),
     };
   }
@@ -515,7 +521,7 @@ export async function* parseClaudeStream(
     ...(usage !== undefined ? { usage } : {}),
     ...(finishReason !== undefined ? { finishReason } : {}),
     ...(doneReasoning !== undefined ? { reasoning: doneReasoning } : {}),
-    ...upstreamField(upstreamId, upstreamModel, nativeStopReason, rawUsage),
+    ...upstreamField(upstreamId, upstreamModel, nativeStopReason, rawUsage, claudeExtras(rawUsage)),
   };
 }
 
@@ -665,3 +671,27 @@ function buildClaudeMessages(messages: ChatMessage[]): ClaudeMessage[] {
   }
   return result;
 }
+
+/**
+ * Usage-record batch 4. Anthropic states its service tier and server-side
+ * tool use inside `usage`. It reports no reasoning split (thinking is billed
+ * inside output_tokens) and no modality or tool-use-prompt splits at all.
+ */
+function claudeExtras(usage: ClaudeUsage | undefined): Partial<UpstreamCallRecord> {
+  return {
+    ...(usage?.service_tier ? { serviceTier: usage.service_tier } : {}),
+    ...(statedNumber(usage?.server_tool_use?.web_search_requests) !== undefined
+      ? { webSearchRequests: usage?.server_tool_use?.web_search_requests as number }
+      : {}),
+    notSupported: CLAUDE_LACKS,
+  };
+}
+
+export const CLAUDE_LACKS: readonly string[] = [
+  "reasoningTokens",
+  "inputImageTokens",
+  "inputAudioTokens",
+  "outputAudioTokens",
+  "outputImageTokens",
+  "toolUsePromptTokens",
+];

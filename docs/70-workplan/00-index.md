@@ -261,7 +261,14 @@ E - usage reaches the platform (ADR-010, owner 2026-09-30):
       today: image/audio/file counts and per-modality tokens (chat content is
       text only), tool-use prompt tokens (Gemini only), reasoning budget
       (thinking is off/on only). Released as v0.7.15 (2026-09-30, db-init
-      first). Batch 4 (P3) is reserved structure only - no such calls today
+      first)
+- [x] E3e. Usage-record batch 4 (owner: build all 12; ADR-011): `incr/07`
+      adds the last 17 columns (upstream host, service tier, batch, reasoning
+      budget, image/audio/file inputs, modality tokens, tool-use prompt tokens,
+      web search calls, generated media, content filtered, queue wait) and
+      `dimension_status` - for every NULL usage dimension, why, in an
+      eight-word vocabulary the database enforces. Adapters declare what their
+      protocol lacks; a test fails CI on any unregistered nullable column
 - [ ] E4. Consume under the caller's product with raw tokens in four
       dimensions, and C2 read by the caller's product - in the shape #547
       settles on

@@ -11,8 +11,10 @@ export function upstreamRecord(
   model: string | undefined,
   finishReason: string | undefined,
   usage: object | undefined,
+  extra: Partial<UpstreamCallRecord> = {},
 ): UpstreamCallRecord {
   return {
+    ...definedOnly(extra),
     ...(typeof id === "string" && id ? { upstreamRequestId: id } : {}),
     ...(typeof model === "string" && model ? { upstreamModel: model } : {}),
     ...(typeof finishReason === "string" && finishReason
@@ -33,7 +35,24 @@ export function upstreamField(
   model: string | undefined,
   finishReason: string | undefined,
   usage: object | undefined,
+  extra: Partial<UpstreamCallRecord> = {},
 ): { upstream?: UpstreamCallRecord } {
-  const record = upstreamRecord(id, model, finishReason, usage);
+  const record = upstreamRecord(id, model, finishReason, usage, extra);
   return Object.keys(record).length > 0 ? { upstream: record } : {};
+}
+
+/** Drop keys whose value is undefined or not a finite number where a number is due. */
+function definedOnly(extra: Partial<UpstreamCallRecord>): Partial<UpstreamCallRecord> {
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(extra)) {
+    if (v === undefined || v === null) continue;
+    if (typeof v === "number" && !Number.isFinite(v)) continue;
+    out[k] = v;
+  }
+  return out as Partial<UpstreamCallRecord>;
+}
+
+/** A number the vendor stated, or undefined - never a coerced 0. */
+export function statedNumber(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }

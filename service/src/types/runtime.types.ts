@@ -325,6 +325,19 @@ export interface UpstreamCallRecord {
   nativeFinishReason?: string;
   /** The vendor's usage object, verbatim. */
   rawUsage?: Record<string, unknown>;
+  /** Usage-record batch 4 - read when the vendor states them. */
+  serviceTier?: string;
+  inputImageTokens?: number;
+  inputAudioTokens?: number;
+  outputAudioTokens?: number;
+  outputImageTokens?: number;
+  toolUsePromptTokens?: number;
+  webSearchRequests?: number;
+  /**
+   * reqlog fields this adapter's protocol does not offer at all - DECLARED by
+   * the adapter, never inferred from absence (see reqlog/dimension-status.ts).
+   */
+  notSupported?: readonly string[];
 }
 
 export interface IModelProvider {

@@ -123,6 +123,22 @@ CREATE INDEX IF NOT EXISTS idx_gateway_api_keys_deleted_at ON key.gateway_api_ke
 -- provider_code) are bare values, no FK (boundary #1). Failed calls
 -- (status=error/timeout) land only here - they never trigger consume or write
 -- a usage event on the platform side.
+-- incr/07: the closed vocabulary of dimension_status, used by its CHECK below.
+CREATE OR REPLACE FUNCTION reqlog.dimension_status_valid(s jsonb)
+RETURNS boolean
+LANGUAGE sql
+IMMUTABLE
+AS $$
+  SELECT s IS NULL
+      OR (jsonb_typeof(s) = 'object'
+          AND NOT EXISTS (
+            SELECT 1 FROM jsonb_each(s) e
+             WHERE jsonb_typeof(e.value) <> 'string'
+                OR e.value #>> '{}' NOT IN ('not_integrated','not_supported','not_reported',
+                                             'not_configured','capture_failed','not_specified',
+                                             'not_applicable','not_reached')));
+$$;
+
 CREATE TABLE IF NOT EXISTS reqlog.request_records (
     id                       uuid          NOT NULL DEFAULT gen_random_uuid(),
     request_id               varchar(128)  NOT NULL,             -- cross-db correlation key -> platform metering.usage_events.request_id (no FK)
@@ -184,6 +200,24 @@ CREATE TABLE IF NOT EXISTS reqlog.request_records (
     message_count            smallint,                           -- incr/06 (D6): messages in the request
     vector_count             int,                                -- incr/06 (F1): embed - vectors returned
     vector_dimension         int,                                -- incr/06 (F1): embed - their dimension
+    upstream_host            varchar(255),                       -- incr/07 (C6): upstream endpoint host that served the call
+    service_tier             varchar(32),                        -- incr/07 (C7): the vendor's service tier, when it states one
+    is_batch                 boolean,                            -- incr/07 (C8): batch vs realtime
+    reasoning_budget_tokens  int,                                -- incr/07 (D2): reasoning budget
+    input_image_count        int,                                -- incr/07 (D7): images in the input
+    input_audio_seconds      numeric(10,3),                      -- incr/07 (D7): audio seconds in the input
+    input_file_count         int,                                -- incr/07 (D7): files in the input
+    input_image_tokens       bigint,                             -- incr/07 (E7): input tokens by modality
+    input_audio_tokens       bigint,                             -- incr/07 (E7)
+    output_audio_tokens      bigint,                             -- incr/07 (E8): output tokens by modality
+    output_image_tokens      bigint,                             -- incr/07 (E8)
+    tool_use_prompt_tokens   bigint,                             -- incr/07 (E9): tool-use prompt tokens
+    web_search_requests      int,                                -- incr/07 (F4): vendor-side tool calls billed per call
+    generated_image_count    int,                                -- incr/07 (F5): generated media
+    generated_media_seconds  numeric(10,3),                      -- incr/07 (F5)
+    content_filtered         boolean,                            -- incr/07 (H5): the answer was cut by content filtering
+    queue_wait_ms            int,                                -- incr/07 (I4): time queued before the upstream call
+    dimension_status         jsonb,                              -- incr/07: for every NULL usage dimension, why (8-word closed vocabulary, see the function below)
     PRIMARY KEY (id, created_at),                                -- partition key must be in the PK
     CONSTRAINT chk_request_records_usage_type CHECK (usage_type IS NULL OR usage_type IN ('normal','retry','test')),
     CONSTRAINT chk_request_records_status     CHECK (status IS NULL OR status IN ('success','error','timeout')),
@@ -193,7 +227,8 @@ CREATE TABLE IF NOT EXISTS reqlog.request_records (
     CONSTRAINT chk_request_records_selector_kind  CHECK (selector_kind IS NULL OR selector_kind IN ('model','endpoint','task_profile')),
     CONSTRAINT chk_request_records_thinking_mode  CHECK (thinking_mode IS NULL OR thinking_mode IN ('off','on')),
     CONSTRAINT chk_request_records_cancelled_by   CHECK (cancelled_by IS NULL OR cancelled_by IN ('client','deadline')),
-    CONSTRAINT chk_request_records_pricing_window CHECK (pricing_window IS NULL OR pricing_window IN ('peak','off_peak'))
+    CONSTRAINT chk_request_records_pricing_window CHECK (pricing_window IS NULL OR pricing_window IN ('peak','off_peak')),
+    CONSTRAINT chk_request_records_dimension_status CHECK (reqlog.dimension_status_valid(dimension_status))
 ) PARTITION BY RANGE (created_at);
 CREATE INDEX IF NOT EXISTS idx_request_records_request_id     ON reqlog.request_records (request_id);
 CREATE INDEX IF NOT EXISTS idx_request_records_usage_event_id ON reqlog.request_records (usage_event_id);

@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 
 import {
+  OPENAI_DIALECT_LACKS,
   buildOpenAiCompatibleBody,
   normalizeOpenAiCompatibleResponse,
   parseOpenAiCompatibleStream,
@@ -37,7 +38,11 @@ describe("parseOpenAiCompatibleStream", () => {
     expect(events).toEqual<StreamEvent[]>([
       { type: "text", delta: "Hello" },
       { type: "text", delta: " world" },
-      { type: "done", finishReason: "stop", upstream: { nativeFinishReason: "stop" } },
+      {
+        type: "done",
+        finishReason: "stop",
+        upstream: { nativeFinishReason: "stop", notSupported: OPENAI_DIALECT_LACKS },
+      },
     ]);
   });
 
@@ -63,6 +68,7 @@ describe("parseOpenAiCompatibleStream", () => {
       type: "done",
       usage: { promptTokens: 12, completionTokens: 5, totalTokens: 17 },
       upstream: {
+        notSupported: OPENAI_DIALECT_LACKS,
         rawUsage: { prompt_tokens: 12, completion_tokens: 5, total_tokens: 17 },
       },
     });
@@ -153,6 +159,7 @@ describe("parseOpenAiCompatibleStream", () => {
       usage: { promptTokens: 8, completionTokens: 2, totalTokens: 10 },
       finishReason: "length",
       upstream: {
+        notSupported: OPENAI_DIALECT_LACKS,
         nativeFinishReason: "length",
         rawUsage: { prompt_tokens: 8, completion_tokens: 2, total_tokens: 10 },
       },
@@ -164,7 +171,11 @@ describe("parseOpenAiCompatibleStream", () => {
       parseOpenAiCompatibleStream(streamOf(textChunk("hi"), "data: [DONE]\n\n")),
     );
 
-    expect(events.at(-1)).toEqual<StreamEvent>({ type: "done" });
+    // Nothing reported - but the protocol declaration always travels.
+    expect(events.at(-1)).toEqual<StreamEvent>({
+      type: "done",
+      upstream: { notSupported: OPENAI_DIALECT_LACKS },
+    });
   });
 
   it("reports an unparseable frame as an error event and continues", async () => {
@@ -230,6 +241,7 @@ describe("parseOpenAiCompatibleStream - cost splits (TD-047)", () => {
         reasoningTokens: 440,
       },
       upstream: {
+        notSupported: OPENAI_DIALECT_LACKS,
         rawUsage: {
           prompt_tokens: 84,
           completion_tokens: 469,
@@ -259,6 +271,7 @@ describe("parseOpenAiCompatibleStream - cost splits (TD-047)", () => {
       type: "done",
       usage: { promptTokens: 1, completionTokens: 2, totalTokens: 3 },
       upstream: {
+        notSupported: OPENAI_DIALECT_LACKS,
         rawUsage: { prompt_tokens: 1, completion_tokens: 2, total_tokens: 3 },
       },
     });
@@ -293,6 +306,7 @@ describe("parseOpenAiCompatibleStream - what the vendor said", () => {
 
     const done = events.at(-1) as Extract<StreamEvent, { type: "done" }>;
     expect(done.upstream).toEqual({
+      notSupported: OPENAI_DIALECT_LACKS,
       upstreamRequestId: "chatcmpl-first",
       upstreamModel: "deepseek-v4-pro",
       nativeFinishReason: "insufficient_system_resource",
@@ -441,5 +455,41 @@ describe("推理载荷 · 回传（TD-046 的实质）", () => {
       usage: { prompt_tokens: 1, completion_tokens: 2, total_tokens: 3 },
     });
     expect(out.reasoning).toBeUndefined();
+  });
+});
+
+// Usage-record batch 4: what the OpenAI dialect can state beyond token counts.
+describe("OpenAI dialect - batch 4 extras", () => {
+  it("keeps the service tier and the audio splits when the vendor states them", () => {
+    const r = normalizeOpenAiCompatibleResponse("openai", {
+      id: "chatcmpl-x",
+      model: "gpt-x",
+      service_tier: "default",
+      choices: [{ message: { content: "hi" }, finish_reason: "stop" }],
+      usage: {
+        prompt_tokens: 10,
+        completion_tokens: 2,
+        total_tokens: 12,
+        prompt_tokens_details: { cached_tokens: 0, audio_tokens: 3 },
+        completion_tokens_details: { reasoning_tokens: 0, audio_tokens: 1 },
+      },
+    });
+
+    expect(r.upstream).toMatchObject({
+      serviceTier: "default",
+      inputAudioTokens: 3,
+      outputAudioTokens: 1,
+      notSupported: OPENAI_DIALECT_LACKS,
+    });
+  });
+
+  it("states nothing it was not given - absent stays absent", () => {
+    const r = normalizeOpenAiCompatibleResponse("deepseek", {
+      choices: [{ message: { content: "hi" }, finish_reason: "stop" }],
+      usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+    });
+
+    expect(r.upstream).not.toHaveProperty("serviceTier");
+    expect(r.upstream).not.toHaveProperty("inputAudioTokens");
   });
 });

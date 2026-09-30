@@ -4,6 +4,7 @@ import { serviceIdentity } from "@vxture/shared";
 import { Prisma } from "../generated/prisma";
 import { prisma } from "../prisma";
 import { priceOneCall } from "../observability/cost-rollup";
+import { classifyNulls, type DimensionStatus } from "./dimension-status";
 import { metricsRegistry } from "../runtime/metrics.registry";
 import { isUuid } from "../uuid";
 import type { ErrorLogEntry, RequestLogEntry } from "./request-log.types";
@@ -81,6 +82,12 @@ export class RequestLogService {
    * per-request on purpose - a caller doing it on every call is exactly the
    * case worth being noisy about, and it stops the moment they fix it.
    */
+  /** A tenant the caller sent that the uuid column cannot hold - written NULL. */
+  private tenantDropped(entry: RequestLogEntry): boolean {
+    const raw = entry.tenantId?.trim();
+    return Boolean(raw) && !isUuid(raw as string);
+  }
+
   private warnOnDroppedTenant(entry: RequestLogEntry): void {
     const raw = entry.tenantId?.trim();
     if (!raw || isUuid(raw)) return;
@@ -94,10 +101,10 @@ export class RequestLogService {
 
   async record(entry: RequestLogEntry): Promise<void> {
     this.warnOnDroppedTenant(entry);
-    const pricing = await this.priceRow(entry);
+    const { priced: pricing, why: costWhy } = await this.priceRow(entry);
+    const reached = entry.usageSource !== undefined;
     try {
-      await prisma.requestRecord.create({
-        data: {
+      const data = {
           // Usage-record batch 2 (incr/05). Enough on the row to price it
           // alone, without joining back to state that has since changed.
           startedAt: entry.startedAt ?? null,
@@ -125,6 +132,25 @@ export class RequestLogService {
             typeof entry.vectorCount === "number" ? Math.trunc(entry.vectorCount) : null,
           vectorDimension:
             typeof entry.vectorDimension === "number" ? Math.trunc(entry.vectorDimension) : null,
+          // Usage-record batch 4 (incr/07).
+          upstreamHost: clamp(entry.upstreamHost, 255),
+          serviceTier: clamp(entry.serviceTier, 32),
+          inputImageCount:
+            typeof entry.inputImageCount === "number" ? Math.trunc(entry.inputImageCount) : null,
+          inputImageTokens: asBigIntOrNull(entry.inputImageTokens),
+          inputAudioTokens: asBigIntOrNull(entry.inputAudioTokens),
+          outputAudioTokens: asBigIntOrNull(entry.outputAudioTokens),
+          outputImageTokens: asBigIntOrNull(entry.outputImageTokens),
+          toolUsePromptTokens: asBigIntOrNull(entry.toolUsePromptTokens),
+          webSearchRequests:
+            typeof entry.webSearchRequests === "number" ? Math.trunc(entry.webSearchRequests) : null,
+          // Follows finish_reason: known only when the reason is.
+          contentFiltered:
+            entry.finishReason !== undefined ? entry.finishReason === "content_filter" : null,
+          // Atlas has neither a queue nor a batch mode: on a row that reached
+          // a provider these are facts - 0 ms queued, not a batch.
+          queueWaitMs: reached ? 0 : null,
+          isBatch: reached ? false : null,
           requestId: clamp(entry.requestId, 128) ?? entry.requestId,
           status: entry.status,
           // Clamped but NOT coerced (product_251 X-2 requires it verbatim).
@@ -204,6 +230,35 @@ export class RequestLogService {
           // `productId` stays NULL and always will - a uuid FK-shaped
           // reference into the platform's product.products, in another
           // database. The resolvable form is `product_code` above (incr/05).
+      };
+      // Usage-record batch 4: for every usage dimension this row leaves
+      // NULL, the reason - from the row itself plus what only the caller knew.
+      const dimensionStatus = classifyNulls(data, {
+        capability: entry.capability,
+        reached,
+        usageSource: entry.usageSource,
+        streamed: entry.streamed,
+        notSupported: new Set(entry.notSupported ?? []),
+        explicit: {
+          ...(entry.nullReasons ?? {}),
+          ...(costWhy !== undefined
+            ? {
+                upstreamCost: costWhy,
+                costCurrency: costWhy,
+                priceRuleId: costWhy,
+                pricingWindow: costWhy,
+              }
+            : {}),
+          ...(this.tenantDropped(entry) ? { tenantId: "capture_failed" as const } : {}),
+        },
+      });
+      await prisma.requestRecord.create({
+        data: {
+          ...data,
+          dimensionStatus:
+            dimensionStatus !== undefined
+              ? (dimensionStatus as Prisma.InputJsonValue)
+              : Prisma.DbNull,
         },
       });
     } catch (error) {
@@ -227,13 +282,19 @@ export class RequestLogService {
    * force, or an unreadable provider policy all leave the columns NULL -
    * "unpriced" - because a 0 would say "this call was free".
    */
-  private async priceRow(entry: RequestLogEntry): Promise<
-    | { cost: string; currency: string; priceRuleId: string; window: "peak" | "off_peak" }
-    | undefined
-  > {
-    if (!entry.modelCode) return undefined;
+  private async priceRow(entry: RequestLogEntry): Promise<{
+    priced?: { cost: string; currency: string; priceRuleId: string; window: "peak" | "off_peak" };
+    /**
+     * Why it is unpriced, when that is not already what the token columns
+     * say: no rule in force (the operator has not priced the model) or a
+     * failed lookup / unreadable policy (Atlas could not). Absent = the row
+     * has no token counts, and the cost columns share their reason.
+     */
+    why?: DimensionStatus;
+  }> {
+    if (!entry.modelCode) return {};
     if (typeof entry.inputTokens !== "number" && typeof entry.outputTokens !== "number") {
-      return undefined;
+      return {};
     }
     const at = entry.startedAt ?? new Date();
     try {
@@ -247,7 +308,7 @@ export class RequestLogService {
         },
         orderBy: [{ effectiveAt: "desc" }, { createdAt: "desc" }],
       });
-      if (!rule) return undefined;
+      if (!rule) return { why: "not_configured" };
       const provider = entry.providerCode
         ? await prisma.modelProvider.findFirst({
             where: { providerCode: entry.providerCode },
@@ -280,15 +341,16 @@ export class RequestLogService {
         providerPricing,
         at,
       );
-      if (!priced) return undefined;
-      return { ...priced, currency: rule.currency, priceRuleId: rule.id };
+      // An unreadable off-peak policy: the rule exists, Atlas could not apply it.
+      if (!priced) return { why: "capture_failed" };
+      return { priced: { ...priced, currency: rule.currency, priceRuleId: rule.id } };
     } catch (error) {
       this.logger.warn(
         `request cost not priced for requestId=${entry.requestId}: ${
           error instanceof Error ? error.message : String(error)
         }`,
       );
-      return undefined;
+      return { why: "capture_failed" };
     }
   }
 

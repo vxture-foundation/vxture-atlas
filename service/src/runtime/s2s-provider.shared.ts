@@ -34,6 +34,7 @@ import {
 import { ProviderKeyService } from "../provider-keys/provider-key.service";
 import { resolveApiKey, managedKeyAliasOf } from "./resolve-api-key";
 import { modelBehaviorVersion } from "../model-behavior-version";
+import { batch4Columns, billingReasons, hostOf } from "../reqlog/record-facts";
 import { ModelRuntimeException } from "./runtime.errors";
 import { RequestLogService } from "../reqlog/request-log.service";
 import {
@@ -94,8 +95,8 @@ export interface MeterReading {
   usage?: Partial<TokenUsage>;
   /** Usage-record batch 1: the vendor's id, model and raw usage. */
   upstream?: UpstreamCallRecord;
-  /** Usage-record batch 3: capability-specific facts (embed: vector count/dimension). */
-  facts?: { vectorCount?: number; vectorDimension?: number };
+  /** Usage-record batch 3/4: capability-specific facts. */
+  facts?: { vectorCount?: number; vectorDimension?: number; inputImageCount?: number };
 }
 
 /**
@@ -166,6 +167,13 @@ export async function withRequestLog<T>(
     // Usage-record batch 3 (B8, C9).
     ...(auth?.jti !== undefined ? { tokenJti: auth.jti } : {}),
     modelBehaviorVersion: modelBehaviorVersion(gated.model),
+    // Usage-record batch 4 (C6) and the capability the null reasons key on.
+    ...(hostOf(gated.model.endpointUrl) !== undefined
+      ? { upstreamHost: hostOf(gated.model.endpointUrl) }
+      : {}),
+    ...(capabilityOf(metering?.metric) !== undefined
+      ? { capability: capabilityOf(metering?.metric) }
+      : {}),
   };
 
   let reading: MeterReading = {};
@@ -215,6 +223,11 @@ export async function withRequestLog<T>(
         ? { upstreamUsage: reading.upstream.rawUsage }
         : {}),
       ...(reading.facts ?? {}),
+      ...batch4Columns(reading.upstream),
+      nullReasons: billingReasons(consumed, {
+        reported: reading.usage !== undefined,
+        workspaceKnown: auth?.workspaceId !== undefined,
+      }),
       ...(consumed.billed && metering
         ? {
             billedMetricKey: metering.metric,
@@ -238,6 +251,13 @@ export async function withRequestLog<T>(
       ...dimensions,
       status: "error",
       latencyMs: Date.now() - startedAt,
+      // Usage-record batch 4. A provider failure reached the upstream and got
+      // no usage back; a missing key or an unimplemented capability never left
+      // Atlas, and its upstream columns are `not_reached`.
+      ...(error instanceof ModelRuntimeException ||
+      error instanceof ProviderCapabilityNotImplementedError
+        ? {}
+        : { usageSource: "absent" as const }),
     });
     const code =
       error instanceof ModelRuntimeException
@@ -577,4 +597,20 @@ export function toS2sProviderError(
     message,
     { requestId, modelCode: model.modelCode, provider: model.provider },
   );
+}
+
+/** The capability a metric belongs to (`atlas.embed` -> embed). */
+function capabilityOf(
+  metric: string | undefined,
+): "embed" | "rerank" | "parse" | undefined {
+  switch (metric) {
+    case "atlas.embed":
+      return "embed";
+    case "atlas.rerank":
+      return "rerank";
+    case "atlas.parse":
+      return "parse";
+    default:
+      return undefined;
+  }
 }

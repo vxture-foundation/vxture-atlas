@@ -1,3 +1,4 @@
+import type { DimensionStatus } from "./dimension-status";
 import type { ApplicationType } from "../types/runtime.types";
 import type { CostUnit } from "./cost-unit";
 
@@ -127,6 +128,24 @@ export interface RequestLogEntry {
   messageCount?: number | undefined;
   vectorCount?: number | undefined;
   vectorDimension?: number | undefined;
+  /** Usage-record batch 4 (incr/07): what the vendor stated beyond the token counts. */
+  upstreamHost?: string | undefined;
+  serviceTier?: string | undefined;
+  inputImageCount?: number | undefined;
+  inputImageTokens?: number | undefined;
+  inputAudioTokens?: number | undefined;
+  outputAudioTokens?: number | undefined;
+  outputImageTokens?: number | undefined;
+  toolUsePromptTokens?: number | undefined;
+  webSearchRequests?: number | undefined;
+  /**
+   * For dimension_status (reqlog/dimension-status.ts): which capability wrote
+   * the row, the fields the adapter declared its protocol lacks, and reasons
+   * the caller determined itself (e.g. why the platform did not bill it).
+   */
+  capability?: "chat" | "embed" | "rerank" | "parse" | undefined;
+  notSupported?: readonly string[] | undefined;
+  nullReasons?: Partial<Record<string, DimensionStatus>> | undefined;
   latencyMs?: number | undefined;
   /**
    * TD-037. Zero-based position of this attempt within one logical request.
