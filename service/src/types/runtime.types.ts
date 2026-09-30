@@ -244,6 +244,12 @@ export type StreamEvent =
        * 缺省 = 上游没给推理载荷。详见 {@link ChatReasoning}。
        */
       reasoning?: ChatReasoning;
+      /**
+       * Internal: `runtime.service` takes it for the usage record and strips it
+       * before the frame leaves. Vendor ids and raw usage are not part of the
+       * caller contract.
+       */
+      upstream?: UpstreamCallRecord;
     }
   /**
    * Same envelope as the HTTP error body, only carried on a different
@@ -292,6 +298,33 @@ export interface TokenUsage {
    */
   cachedInputTokens?: number;
   reasoningTokens?: number;
+  /**
+   * Usage-record batch 1 (E3/E4). Input tokens the upstream WROTE to its prompt
+   * cache, priced above plain input (Anthropic `cache_creation_input_tokens`).
+   * Like `cachedInputTokens` it is a subset of `promptTokens`, which counts
+   * every input token - uncached, cache read and cache write - on every
+   * adapter. `cacheWrite1hInputTokens` is the 1-hour-TTL part of it; absent
+   * means the upstream did not split the write, not that nothing was 1-hour.
+   */
+  cacheWriteInputTokens?: number;
+  cacheWrite1hInputTokens?: number;
+}
+
+/**
+ * What the upstream said about a call, kept for the usage record and never
+ * shown to the caller (usage-record batch 1: A3, C4, G2, H3). Every field is
+ * the vendor's own value, unmapped - the point is that a pricing rule written
+ * later can still be applied to it.
+ */
+export interface UpstreamCallRecord {
+  /** The vendor's id for the call (`chatcmpl-...`, `msg_...`). */
+  upstreamRequestId?: string;
+  /** The model name the vendor says answered. */
+  upstreamModel?: string;
+  /** The vendor's finish/stop reason before `FinishReason` mapping. */
+  nativeFinishReason?: string;
+  /** The vendor's usage object, verbatim. */
+  rawUsage?: Record<string, unknown>;
 }
 
 export interface IModelProvider {
@@ -323,6 +356,8 @@ export interface ProviderEmbedResponse {
   vectors: number[][];
   /** Upstream-reported usage, when the provider returns it (zhipu does). */
   usage?: Partial<TokenUsage>;
+  /** Usage-record batch 1: the vendor's id, model and raw usage, for reqlog only. */
+  upstream?: UpstreamCallRecord;
 }
 
 // ── A2 parse (layout / OCR / table / formula) ──────────────────────────────────
@@ -427,6 +462,8 @@ export interface ProviderRerankResponse {
   scores: Array<{ id: string; score: number }>;
   /** Upstream-reported usage, when the provider returns it (zhipu does). */
   usage?: Partial<TokenUsage>;
+  /** Usage-record batch 1: the vendor's id, model and raw usage, for reqlog only. */
+  upstream?: UpstreamCallRecord;
 }
 
 export interface ProviderChatRequest {
@@ -463,6 +500,8 @@ export interface ProviderChatResponse extends TokenUsage {
    * 0 - "unreported" and "free" are different facts. Absent means reported.
    */
   usageReported?: boolean;
+  /** For the usage record only; see {@link UpstreamCallRecord}. */
+  upstream?: UpstreamCallRecord;
 }
 
 export type ModelConfig = Record<string, unknown>;

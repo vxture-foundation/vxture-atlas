@@ -232,8 +232,15 @@ E - usage reaches the platform (ADR-010, owner 2026-09-30):
       `vxture-arda`#214 (doc fixes), `vx-agent-tenderforge`#69 (told)
 - [x] E2. A refused consume names the platform's reason in the log and counts
       it in `platform_consume_outcomes_total{metric,outcome,reason}`
-- [ ] E3. Capture cache-write tokens in the adapters, plus a `reqlog` column
-      through db-init
+- [x] E3. Capture cache-write tokens in the adapters, plus a `reqlog` column
+      through db-init - done as part of usage-record batch 1 below
+- [x] E3b. Usage-record batch 1 (P0 of the 62-dimension checklist): `incr/04`
+      adds upstream id / model / raw usage / finish reason (normalized + native)
+      / usage source / cache writes (with the 1-hour split) to every reqlog row
+      that reached an upstream, chat and S2S; the Claude adapter now counts
+      cache read + write inside `input_tokens` (it stored Anthropic's
+      cache-exclusive figure), and its streaming path no longer drops the cache
+      read. Batches 2-4 (P1-P3) follow in that order
 - [ ] E4. Consume under the caller's product with raw tokens in four
       dimensions, and C2 read by the caller's product - in the shape #547
       settles on

@@ -1,5 +1,6 @@
 import { joinEndpoint, resolveUpstreamModel } from "./base.provider";
 import { UpstreamCallFailure } from "./upstream-failure";
+import { upstreamField } from "./upstream-record";
 import type {
   OpenAiCompatibleChatResponse,
   OpenAiCompatibleChatStreamChunk,
@@ -201,7 +202,15 @@ export function normalizeOpenAiCompatibleResponse(
           : {}),
         ...readCostSplits(response.usage),
       },
-      { outputBudgetExhausted: response.choices?.[0]?.finish_reason === "length" },
+      {
+        outputBudgetExhausted: response.choices?.[0]?.finish_reason === "length",
+        ...upstreamField(
+          response.id,
+          response.model,
+          response.choices?.[0]?.finish_reason ?? undefined,
+          response.usage,
+        ),
+      },
     );
   }
 
@@ -225,6 +234,12 @@ export function normalizeOpenAiCompatibleResponse(
     // Zeros above are placeholders when the upstream sent no usage object;
     // metering records NULL for those instead of a fabricated free request.
     usageReported: response.usage != null,
+    ...upstreamField(
+      response.id,
+      response.model,
+      choice?.finish_reason ?? undefined,
+      response.usage,
+    ),
   };
 }
 
@@ -371,6 +386,13 @@ export async function* parseOpenAiCompatibleStream(
   >();
   let usage: TokenUsage | undefined;
   let finishReason: FinishReason | undefined;
+  /* Usage-record batch 1. The id and model repeat on every chunk; the first
+     seen is kept. The raw usage and native finish reason are the last seen,
+     because that is where the upstream puts the final values. */
+  let upstreamId: string | undefined;
+  let upstreamModel: string | undefined;
+  let nativeFinishReason: string | undefined;
+  let rawUsage: OpenAiUsage | undefined;
 
   /* 推理文本的累积。`done` 帧的信封要完整的那一份，而分片是逐个 yield 出去的。 */
   let reasoningText = "";
@@ -395,6 +417,7 @@ export async function* parseOpenAiCompatibleStream(
          不是（Anthropic 的 `signature` 根本不在分片里）。让调用方拼，等于要求
          它发明一个它拿不到的东西。 */
       ...reasoningFromWire(reasoningText.length > 0 ? reasoningText : undefined),
+      ...upstreamField(upstreamId, upstreamModel, nativeFinishReason, rawUsage),
     };
   }
 
@@ -417,7 +440,15 @@ export async function* parseOpenAiCompatibleStream(
       continue;
     }
 
+    if (upstreamId === undefined && typeof chunk.id === "string" && chunk.id) {
+      upstreamId = chunk.id;
+    }
+    if (upstreamModel === undefined && typeof chunk.model === "string" && chunk.model) {
+      upstreamModel = chunk.model;
+    }
+
     if (chunk.usage) {
+      rawUsage = chunk.usage;
       usage = {
         promptTokens: chunk.usage.prompt_tokens ?? 0,
         completionTokens: chunk.usage.completion_tokens ?? 0,
@@ -462,6 +493,7 @@ export async function* parseOpenAiCompatibleStream(
     }
 
     if (choice.finish_reason) {
+      nativeFinishReason = choice.finish_reason;
       finishReason = mapFinishReason(choice.finish_reason) ?? finishReason;
     }
   }

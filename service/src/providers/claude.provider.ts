@@ -1,5 +1,6 @@
 import { Injectable } from "@nestjs/common";
 import { UpstreamCallFailure } from "./upstream-failure";
+import { upstreamField } from "./upstream-record";
 
 import { BaseProvider, joinEndpoint, resolveUpstreamModel } from "./base.provider";
 import { openSseRequest, readSseMessages } from "./sse";
@@ -92,7 +93,9 @@ interface ClaudeStreamEvent {
   type?: string;
   index?: number;
   message?: {
-    usage?: { input_tokens?: number; output_tokens?: number };
+    id?: string;
+    model?: string;
+    usage?: ClaudeUsage;
   };
   content_block?: {
     type?: string;
@@ -110,23 +113,39 @@ interface ClaudeStreamEvent {
     thinking?: string;
     signature?: string;
   };
-  usage?: { output_tokens?: number };
+  /** `message_delta` carries the running totals; newer API versions repeat the input side here too. */
+  usage?: ClaudeUsage;
   error?: { type?: string; message?: string };
 }
 
-interface ClaudeChatResponse {
-  content?: ClaudeContentBlock[];
-  usage?: {
-    input_tokens?: number;
-    output_tokens?: number;
-    /**
-     * TD-047. Anthropic's name for the cached-input count. There is no
-     * counterpart for `reasoningTokens` here - Anthropic bills thinking inside
-     * `output_tokens` and reports no separate figure, so that split stays
-     * absent on this adapter rather than being invented.
-     */
-    cache_read_input_tokens?: number;
+/**
+ * Anthropic's usage object. Its `input_tokens` EXCLUDES both cache kinds -
+ * unlike OpenAI's `prompt_tokens`, which includes the cached part. Atlas's
+ * convention (incr/04) is that `promptTokens` counts every input token, so the
+ * three are added in {@link claudeTokenUsage}; storing `input_tokens` as-is made
+ * a Claude row's "uncached = input - cached" come out short or negative.
+ *
+ * There is no counterpart for `reasoningTokens`: Anthropic bills thinking
+ * inside `output_tokens` and reports no separate figure, so that split stays
+ * absent here rather than being invented (TD-047).
+ */
+interface ClaudeUsage {
+  input_tokens?: number;
+  output_tokens?: number;
+  cache_read_input_tokens?: number;
+  cache_creation_input_tokens?: number;
+  /** The write split by TTL; the 1-hour write is priced above the 5-minute one. */
+  cache_creation?: {
+    ephemeral_5m_input_tokens?: number;
+    ephemeral_1h_input_tokens?: number;
   };
+}
+
+interface ClaudeChatResponse {
+  id?: string;
+  model?: string;
+  content?: ClaudeContentBlock[];
+  usage?: ClaudeUsage;
   stop_reason?: string;
   error?: {
     message?: string;
@@ -180,31 +199,20 @@ export class ClaudeProvider extends BaseProvider {
       // absent here rather than being invented as 0.
       throw new UpstreamCallFailure(
         `${this.providerName} returned invalid response: ${providerMessage}`,
+        response.usage ? claudeTokenUsage(response.usage) : {},
         {
-          ...(typeof response.usage?.input_tokens === "number"
-            ? { promptTokens: response.usage.input_tokens }
-            : {}),
-          ...(typeof response.usage?.output_tokens === "number"
-            ? { completionTokens: response.usage.output_tokens }
-            : {}),
-          ...(typeof response.usage?.input_tokens === "number" &&
-          typeof response.usage?.output_tokens === "number"
-            ? {
-                totalTokens:
-                  response.usage.input_tokens + response.usage.output_tokens,
-              }
-            : {}),
-          ...(typeof response.usage?.cache_read_input_tokens === "number"
-            ? { cachedInputTokens: response.usage.cache_read_input_tokens }
-            : {}),
+          outputBudgetExhausted: response.stop_reason === "max_tokens",
+          ...upstreamField(
+            response.id,
+            response.model,
+            response.stop_reason,
+            response.usage,
+          ),
         },
-        { outputBudgetExhausted: response.stop_reason === "max_tokens" },
       );
     }
 
-    const promptTokens = response.usage?.input_tokens ?? 0;
-    const completionTokens = response.usage?.output_tokens ?? 0;
-    const cacheRead = response.usage?.cache_read_input_tokens;
+    const usage = claudeTokenUsage(response.usage ?? {});
 
     const mappedToolCalls = toolCalls.length > 0 ? toolCalls : undefined;
     const mappedFinishReason = mapClaudeStopReason(response.stop_reason);
@@ -215,13 +223,16 @@ export class ClaudeProvider extends BaseProvider {
         ? { finishReason: mappedFinishReason }
         : {}),
       ...(reasoning !== undefined ? { reasoning } : {}),
-      promptTokens,
-      completionTokens,
-      totalTokens: promptTokens + completionTokens,
-      ...(typeof cacheRead === "number" ? { cachedInputTokens: cacheRead } : {}),
+      ...usage,
       // Zeros above are placeholders when the upstream sent no usage object;
       // metering records NULL for those instead of a fabricated free request.
       usageReported: response.usage != null,
+      ...upstreamField(
+        response.id,
+        response.model,
+        response.stop_reason,
+        response.usage,
+      ),
     };
   }
 
@@ -328,10 +339,16 @@ export async function* parseClaudeStream(
   >();
   /* thinking / redacted_thinking 块，按上游给的 index 归位。 */
   const thinkingBlocks = new Map<number, ClaudeContentBlock>();
-  let promptTokens = 0;
-  let completionTokens = 0;
-  let sawUsage = false;
+  /* The usage object is merged across message_start (input and cache side)
+     and message_delta (running totals). Keeping the merged object, not two
+     loose numbers, is what lets the cache fields survive the stream - before
+     this, streaming dropped cache_read_input_tokens that the non-stream path
+     kept. */
+  let rawUsage: ClaudeUsage | undefined;
   let finishReason: FinishReason | undefined;
+  let nativeStopReason: string | undefined;
+  let upstreamId: string | undefined;
+  let upstreamModel: string | undefined;
 
   function emitToolBlock(index: number): StreamEvent | undefined {
     const block = toolBlocks.get(index);
@@ -366,12 +383,10 @@ export async function* parseClaudeStream(
     // 以 payload 为准（代理层有可能不透传 event 行）。
     switch (event.type ?? message.event) {
       case "message_start": {
+        if (event.message?.id) upstreamId = event.message.id;
+        if (event.message?.model) upstreamModel = event.message.model;
         const usage = event.message?.usage;
-        if (usage) {
-          promptTokens = usage.input_tokens ?? 0;
-          completionTokens = usage.output_tokens ?? 0;
-          sawUsage = true;
-        }
+        if (usage) rawUsage = { ...rawUsage, ...usage };
         break;
       }
 
@@ -446,13 +461,11 @@ export async function* parseClaudeStream(
 
       case "message_delta": {
         if (event.delta?.stop_reason) {
+          nativeStopReason = event.delta.stop_reason;
           finishReason =
             mapClaudeStopReason(event.delta.stop_reason) ?? finishReason;
         }
-        if (event.usage?.output_tokens !== undefined) {
-          completionTokens = event.usage.output_tokens;
-          sawUsage = true;
-        }
+        if (event.usage) rawUsage = { ...rawUsage, ...event.usage };
         break;
       }
 
@@ -485,12 +498,8 @@ export async function* parseClaudeStream(
     if (toolCall) yield toolCall;
   }
 
-  const usage: TokenUsage | undefined = sawUsage
-    ? {
-        promptTokens,
-        completionTokens,
-        totalTokens: promptTokens + completionTokens,
-      }
+  const usage: TokenUsage | undefined = rawUsage
+    ? claudeTokenUsage(rawUsage)
     : undefined;
 
   /* 按 index 升序还原块顺序。Map 的插入序恰好就是上游发来的顺序,但依赖插入序
@@ -506,6 +515,34 @@ export async function* parseClaudeStream(
     ...(usage !== undefined ? { usage } : {}),
     ...(finishReason !== undefined ? { finishReason } : {}),
     ...(doneReasoning !== undefined ? { reasoning: doneReasoning } : {}),
+    ...upstreamField(upstreamId, upstreamModel, nativeStopReason, rawUsage),
+  };
+}
+
+/**
+ * Anthropic usage -> Atlas's convention: `promptTokens` counts every input
+ * token (plain + cache read + cache write), and both cache kinds are subsets
+ * of it. A split the upstream did not send stays absent, never 0.
+ */
+export function claudeTokenUsage(usage: ClaudeUsage): TokenUsage {
+  const plain = usage.input_tokens ?? 0;
+  const read = usage.cache_read_input_tokens;
+  const write =
+    usage.cache_creation_input_tokens ??
+    (usage.cache_creation
+      ? (usage.cache_creation.ephemeral_5m_input_tokens ?? 0) +
+        (usage.cache_creation.ephemeral_1h_input_tokens ?? 0)
+      : undefined);
+  const write1h = usage.cache_creation?.ephemeral_1h_input_tokens;
+  const promptTokens = plain + (read ?? 0) + (write ?? 0);
+  const completionTokens = usage.output_tokens ?? 0;
+  return {
+    promptTokens,
+    completionTokens,
+    totalTokens: promptTokens + completionTokens,
+    ...(typeof read === "number" ? { cachedInputTokens: read } : {}),
+    ...(typeof write === "number" ? { cacheWriteInputTokens: write } : {}),
+    ...(typeof write1h === "number" ? { cacheWrite1hInputTokens: write1h } : {}),
   };
 }
 

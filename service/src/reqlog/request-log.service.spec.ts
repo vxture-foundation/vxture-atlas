@@ -1,6 +1,7 @@
 import { Logger } from "@nestjs/common";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { Prisma } from "../generated/prisma";
 import { prisma } from "../prisma";
 import { RequestLogService } from "./request-log.service";
 
@@ -295,5 +296,70 @@ describe("RequestLogService.record - cost splits (TD-047)", () => {
       cachedInputTokens: 0n,
       reasoningTokens: 0n,
     });
+  });
+});
+
+// Usage-record batch 1 (incr/04). What reaches the table, not what the caller
+// passed: bigint for counts, the vendor's JSON verbatim, and a real SQL NULL -
+// Prisma's DbNull, not JS null - when there is no raw usage.
+describe("RequestLogService.record - usage-record batch 1", () => {
+  let create: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    create = vi.fn().mockResolvedValue({});
+    vi.spyOn(prisma.requestRecord, "create").mockImplementation(
+      create as never,
+    );
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  const written = () =>
+    (create.mock.calls[0] as [{ data: Record<string, unknown> }])[0].data;
+
+  it("writes the vendor facts, the cache writes and the source", async () => {
+    const rawUsage = { input_tokens: 10, cache_creation: { ephemeral_1h_input_tokens: 5 } };
+    await new RequestLogService().record({
+      requestId: "req-b1",
+      status: "success",
+      inputTokens: 35,
+      cacheWriteInputTokens: 20,
+      cacheWrite1hInputTokens: 5,
+      usageSource: "reported",
+      upstreamRequestId: "msg_01abc",
+      upstreamModel: "claude-sonnet-4-5-20250929",
+      upstreamUsage: rawUsage,
+      finishReason: "other",
+      nativeFinishReason: "pause_turn",
+    });
+
+    expect(written()).toMatchObject({
+      cacheWriteInputTokens: 20n,
+      cacheWrite1hInputTokens: 5n,
+      usageSource: "reported",
+      upstreamRequestId: "msg_01abc",
+      upstreamModel: "claude-sonnet-4-5-20250929",
+      upstreamUsage: rawUsage,
+      finishReason: "other",
+      nativeFinishReason: "pause_turn",
+    });
+  });
+
+  it("writes SQL NULL for every new column the entry does not carry", async () => {
+    await new RequestLogService().record({ requestId: "req-b1-empty", status: "success" });
+
+    const data = written();
+    expect(data).toMatchObject({
+      cacheWriteInputTokens: null,
+      cacheWrite1hInputTokens: null,
+      usageSource: null,
+      upstreamRequestId: null,
+      upstreamModel: null,
+      finishReason: null,
+      nativeFinishReason: null,
+    });
+    expect(data["upstreamUsage"]).toBe(Prisma.DbNull);
   });
 });

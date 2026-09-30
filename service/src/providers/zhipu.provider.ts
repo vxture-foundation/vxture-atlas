@@ -1,4 +1,5 @@
 import { Injectable } from "@nestjs/common";
+import { upstreamField } from "./upstream-record";
 
 import { joinEndpoint, resolveUpstreamModel } from "./base.provider";
 import { OpenAiCompatibleProvider } from "./openai-compatible.provider";
@@ -84,6 +85,7 @@ export class ZhipuProvider extends OpenAiCompatibleProvider {
       dimension: vectors[0]?.length ?? 0,
       vectors,
       ...(usage ? { usage } : {}),
+      ...upstreamField(undefined, response.model, undefined, response.usage),
     };
   }
 
@@ -112,6 +114,7 @@ export class ZhipuProvider extends OpenAiCompatibleProvider {
         score: result.relevance_score,
       })),
       ...(usage ? { usage } : {}),
+      ...upstreamField(response.id, undefined, undefined, response.usage),
     };
   }
 }

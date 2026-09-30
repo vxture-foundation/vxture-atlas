@@ -55,6 +55,12 @@ describe("parseClaudeStream", () => {
         // in message_delta. Reading one and not the other under-counts.
         usage: { promptTokens: 42, completionTokens: 7, totalTokens: 49 },
         finishReason: "stop",
+        // Usage-record batch 1: the vendor's own word and its usage object,
+        // merged across message_start and message_delta.
+        upstream: {
+          nativeFinishReason: "end_turn",
+          rawUsage: { input_tokens: 42, output_tokens: 7 },
+        },
       },
     ]);
   });
@@ -202,6 +208,10 @@ describe("parseClaudeStream", () => {
       type: "done",
       usage: { promptTokens: 42, completionTokens: 3, totalTokens: 45 },
       finishReason: "length",
+      upstream: {
+        nativeFinishReason: "max_tokens",
+        rawUsage: { input_tokens: 42, output_tokens: 3 },
+      },
     });
   });
 
@@ -390,12 +400,131 @@ describe("ClaudeProvider.chat - cost splits (TD-047)", () => {
       .catch((error: unknown) => error);
 
     expect(failure).toBeInstanceOf(UpstreamCallFailure);
+    // incr/04 convention: promptTokens counts every input token. Anthropic's
+    // input_tokens (84) excludes the cache read (40), so the row holds 124 and
+    // the uncached part is 124 - 40 = 84, not 84 - 40 = 44.
     expect(usageFromError(failure)).toEqual({
-      promptTokens: 84,
+      promptTokens: 124,
       completionTokens: 16,
-      totalTokens: 100,
+      totalTokens: 140,
       cachedInputTokens: 40,
     });
+  });
+
+  // Usage-record batch 1 (E1-E4). Before this, a Claude row stored
+  // input_tokens as sent - excluding both cache kinds - while every
+  // OpenAI-compatible row included the cached part. "uncached = input - cached"
+  // was wrong on exactly the provider that charges for cache WRITES, and those
+  // writes were not recorded at all.
+  it("counts every input token and keeps both cache kinds as subsets", async () => {
+    answerWith({
+      input_tokens: 10,
+      output_tokens: 5,
+      cache_read_input_tokens: 70,
+      cache_creation_input_tokens: 20,
+      cache_creation: { ephemeral_5m_input_tokens: 15, ephemeral_1h_input_tokens: 5 },
+    });
+
+    const r = await new ClaudeProvider().chat(request);
+
+    expect(r.promptTokens).toBe(100);
+    expect(r.totalTokens).toBe(105);
+    expect(r.cachedInputTokens).toBe(70);
+    expect(r.cacheWriteInputTokens).toBe(20);
+    expect(r.cacheWrite1hInputTokens).toBe(5);
+  });
+
+  it("leaves the 1-hour split absent when Anthropic does not break the write down", async () => {
+    answerWith({ input_tokens: 10, output_tokens: 5, cache_creation_input_tokens: 20 });
+
+    const r = await new ClaudeProvider().chat(request);
+
+    expect(r.cacheWriteInputTokens).toBe(20);
+    expect(r.cacheWrite1hInputTokens).toBeUndefined();
+  });
+});
+
+describe("ClaudeProvider - what the vendor said (usage-record batch 1)", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("keeps the message id, model, native stop reason and raw usage", async () => {
+    const usage = { input_tokens: 3, output_tokens: 2, cache_read_input_tokens: 1 };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        text: async () =>
+          JSON.stringify({
+            id: "msg_01abc",
+            model: "claude-sonnet-4-5-20250929",
+            content: [{ type: "text", text: "hi" }],
+            stop_reason: "pause_turn",
+            usage,
+          }),
+      }),
+    );
+
+    const r = await new ClaudeProvider().chat({
+      endpointUrl: "https://anthropic.example/v1",
+      apiKey: "sk-test",
+      modelCode: "claude-x",
+      messages: [{ role: "user", content: "hi" }],
+    });
+
+    expect(r.upstream).toEqual({
+      upstreamRequestId: "msg_01abc",
+      upstreamModel: "claude-sonnet-4-5-20250929",
+      nativeFinishReason: "pause_turn",
+      rawUsage: usage,
+    });
+    // An unmapped reason stays unmapped here; the reqlog row calls it 'other'.
+    expect(r.finishReason).toBeUndefined();
+  });
+
+  it("keeps cache counts and the message id through a stream", async () => {
+    const events = await collect(
+      parseClaudeStream(
+        streamOf(
+          frame("message_start", {
+            message: {
+              id: "msg_stream",
+              model: "claude-x-2026",
+              usage: {
+                input_tokens: 4,
+                output_tokens: 0,
+                cache_read_input_tokens: 90,
+                cache_creation_input_tokens: 6,
+              },
+            },
+          }),
+          frame("content_block_delta", {
+            index: 0,
+            delta: { type: "text_delta", text: "ok" },
+          }),
+          frame("message_delta", {
+            delta: { stop_reason: "end_turn" },
+            usage: { output_tokens: 8 },
+          }),
+          frame("message_stop", {}),
+        ),
+      ),
+    );
+
+    const done = events.at(-1) as Extract<StreamEvent, { type: "done" }>;
+    // The stream used to rebuild usage from input/output alone and drop the
+    // cache read the non-stream path kept.
+    expect(done.usage).toEqual({
+      promptTokens: 100,
+      completionTokens: 8,
+      totalTokens: 108,
+      cachedInputTokens: 90,
+      cacheWriteInputTokens: 6,
+    });
+    expect(done.upstream?.upstreamRequestId).toBe("msg_stream");
+    expect(done.upstream?.upstreamModel).toBe("claude-x-2026");
   });
 });
 

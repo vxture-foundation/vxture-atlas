@@ -31,6 +31,8 @@ export interface OpenAiUsage {
 
 export interface OpenAiCompatibleChatResponse {
   id?: string;
+  /** The model name the upstream says answered (usage-record C4). */
+  model?: string;
   choices?: Array<{
     message?: {
       role?: string;
@@ -58,6 +60,7 @@ export interface OpenAiCompatibleChatResponse {
  */
 export interface OpenAiCompatibleChatStreamChunk {
   id?: string;
+  model?: string;
   choices?: Array<{
     delta?: {
       role?: string;

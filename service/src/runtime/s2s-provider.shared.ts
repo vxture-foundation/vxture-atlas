@@ -44,6 +44,7 @@ import type {
   AiModelRecord,
   IModelProvider,
   TokenUsage,
+  UpstreamCallRecord,
 } from "../types/runtime.types";
 
 export interface S2sProviderRequestBase extends QuotaCheckRequest {
@@ -90,6 +91,8 @@ export interface MeterReading {
   amount?: number;
   /** Upstream-reported token usage, recorded in reqlog when present. */
   usage?: Partial<TokenUsage>;
+  /** Usage-record batch 1: the vendor's id, model and raw usage. */
+  upstream?: UpstreamCallRecord;
 }
 
 /**
@@ -177,6 +180,19 @@ export async function withRequestLog<T>(
         : {}),
       ...(reading.usage?.totalTokens !== undefined
         ? { totalTokens: reading.usage.totalTokens }
+        : {}),
+      // Usage-record batch 1. The call reached the upstream and succeeded,
+      // so whether it reported usage is answerable. Zhipu reports it for
+      // embed and rerank; parse sums per page and says nothing when no page did.
+      usageSource: reading.usage !== undefined ? "reported" : "absent",
+      ...(reading.upstream?.upstreamRequestId !== undefined
+        ? { upstreamRequestId: reading.upstream.upstreamRequestId }
+        : {}),
+      ...(reading.upstream?.upstreamModel !== undefined
+        ? { upstreamModel: reading.upstream.upstreamModel }
+        : {}),
+      ...(reading.upstream?.rawUsage !== undefined
+        ? { upstreamUsage: reading.upstream.rawUsage }
         : {}),
       ...(consumed.billed && metering
         ? {

@@ -71,6 +71,33 @@ export interface RequestLogEntry {
    */
   cachedInputTokens?: number | undefined;
   reasoningTokens?: number | undefined;
+  /**
+   * Usage-record batch 1 (incr/04). Input written to the upstream prompt cache,
+   * and its 1-hour-TTL part. Subsets of `inputTokens`, which counts every input
+   * token. Absent stays NULL, for the same reason as the two above.
+   */
+  cacheWriteInputTokens?: number | undefined;
+  cacheWrite1hInputTokens?: number | undefined;
+  /**
+   * Whether the token counts came from the upstream. `absent` on a row that
+   * reached an upstream and got no usage back (a stream cut short, a deadline
+   * cancel, a timeout); left unset on a row that never reached one (a quota
+   * refusal), where the question does not arise.
+   */
+  usageSource?: "reported" | "absent" | "partial" | undefined;
+  /** The vendor's id for the call, its model name, and its usage verbatim. */
+  upstreamRequestId?: string | undefined;
+  upstreamModel?: string | undefined;
+  upstreamUsage?: Record<string, unknown> | undefined;
+  /** Normalized stop reason, and the vendor's own word for it. */
+  finishReason?:
+    | "stop"
+    | "length"
+    | "tool_calls"
+    | "content_filter"
+    | "other"
+    | undefined;
+  nativeFinishReason?: string | undefined;
   latencyMs?: number | undefined;
   /**
    * TD-037. Zero-based position of this attempt within one logical request.

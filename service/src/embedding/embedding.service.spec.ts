@@ -417,6 +417,56 @@ describe("EmbeddingService.embed", () => {
       expect.objectContaining({ status: "success", workspaceId: AUTH.workspaceId }),
     );
   });
+
+  // Usage-record batch 1. embed / rerank / parse share withRequestLog, so this
+  // covers the injection point all three use.
+  it("records the vendor facts and whether usage was reported", async () => {
+    const model = makeModel();
+    const embed = vi.fn().mockResolvedValue({
+      modelVersion: "embedding-3",
+      dimension: 3,
+      vectors: [[0.1, 0.2, 0.3]],
+      usage: { promptTokens: 7, totalTokens: 7 },
+      upstream: {
+        upstreamModel: "embedding-3",
+        rawUsage: { prompt_tokens: 7, total_tokens: 7 },
+      },
+    });
+    const { service, requestLog } = makeService(model, { embed });
+
+    await service.embed(
+      { taskId: "task-fixture", modelCode: model.modelCode, texts: ["hi"], workspaceId: "ws-1" },
+      AUTH,
+    );
+
+    expect(requestLog.record).toHaveBeenCalledWith(
+      expect.objectContaining({
+        status: "success",
+        usageSource: "reported",
+        upstreamModel: "embedding-3",
+        upstreamUsage: { prompt_tokens: 7, total_tokens: 7 },
+      }),
+    );
+  });
+
+  it("marks a served call that reported no usage as 'absent'", async () => {
+    const model = makeModel();
+    const embed = vi.fn().mockResolvedValue({
+      modelVersion: "embedding-3",
+      dimension: 3,
+      vectors: [[0.1, 0.2, 0.3]],
+    });
+    const { service, requestLog } = makeService(model, { embed });
+
+    await service.embed(
+      { taskId: "task-fixture", modelCode: model.modelCode, texts: ["hi"], workspaceId: "ws-1" },
+      AUTH,
+    );
+
+    expect(requestLog.record).toHaveBeenCalledWith(
+      expect.objectContaining({ status: "success", usageSource: "absent" }),
+    );
+  });
 });
 
 // ── the published request contract names THIS surface ─────────────────────────

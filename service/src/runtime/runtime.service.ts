@@ -24,10 +24,12 @@ import { resolveWireFor, supportedThinkingModes } from "../providers/wire";
 import {
   UpstreamCallFailure,
   usageColumns,
+  upstreamFromError,
   usageFromError,
   type UpstreamUsageSnapshot,
 } from "../providers/upstream-failure";
 import { RequestLogService } from "../reqlog/request-log.service";
+import type { RequestLogEntry } from "../reqlog/request-log.types";
 import { PlatformEntitlementClient } from "../platform/platform-entitlement.client";
 import type { S2sAuthContext } from "./guards/s2s-auth.guard";
 import { ModelCircuitBreakerService } from "./model-circuit-breaker.service";
@@ -51,10 +53,12 @@ import type {
   AiModelRecord,
   ChatRequest,
   ChatResponse,
+  FinishReason,
   ProviderChatRequest,
   StreamEvent,
   ThinkingMode,
   TokenUsage,
+  UpstreamCallRecord,
 } from "../types/runtime.types";
 import { THINKING_MODES } from "../types/runtime.types";
 
@@ -236,6 +240,10 @@ export class ModelRuntimeService {
             auth,
             routed.endpointCode,
             fallbackAttempt,
+            {
+              upstream: providerResponse.upstream,
+              finishReason: providerResponse.finishReason,
+            },
           );
 
           this.logAttempt(
@@ -363,6 +371,9 @@ export class ModelRuntimeService {
       }
 
       let lastUsage: TokenUsage | undefined;
+      /* Usage-record batch 1: the done frame's vendor facts, for the row. */
+      let lastUpstream: UpstreamCallRecord | undefined;
+      let lastFinishReason: FinishReason | undefined;
       let lastProviderError: ModelRuntimeException | undefined;
 
       for (const [fallbackAttempt, model] of models.entries()) {
@@ -382,6 +393,8 @@ export class ModelRuntimeService {
 
         const startedAt = Date.now();
         lastUsage = undefined;
+        lastUpstream = undefined;
+        lastFinishReason = undefined;
         // Once any event reached the client, failing over would concatenate a
         // second answer into the same SSE stream - after first yield, the only
         // honest outcomes are completion or an explicit error frame.
@@ -432,14 +445,20 @@ export class ModelRuntimeService {
             if (event.type === "done" && event.usage) {
               lastUsage = event.usage;
             }
+            if (event.type === "done") {
+              lastUpstream = event.upstream;
+              lastFinishReason = event.finishReason;
+            }
             yieldedThisAttempt = true;
             // The one place a stream can say WHO answered. The adapter cannot:
             // it knows the vendor's upstream name, not the registry code. After
             // a failover this is the candidate that actually served, which is
             // the fact worth reporting - not the one that was tried first.
+            // `upstream` is for the usage record only: vendor ids and raw usage
+            // are not part of the caller contract, so the frame loses it here.
             yield event.type === "done"
               ? {
-                  ...event,
+                  ...withoutUpstream(event),
                   modelCode: model.modelCode,
                   thinking: request.thinking ?? null,
                 }
@@ -497,6 +516,7 @@ export class ModelRuntimeService {
             auth,
             routed.endpointCode,
             fallbackAttempt,
+            { upstream: lastUpstream, finishReason: lastFinishReason },
           );
           this.logAttempt(
             ctx,
@@ -1299,6 +1319,9 @@ export class ModelRuntimeService {
     await this.recordAttemptFailure(ctx, model, fallbackAttempt, {
       error: normalised,
       latencyMs,
+      ...(upstreamFromError(error) !== undefined
+        ? { upstream: upstreamFromError(error) }
+        : {}),
       // Read off the ORIGINAL error, not the normalised one: normalising
       // produces a ModelRuntimeException carrying the runtime vocabulary, and
       // the usage the upstream reported does not survive that translation.
@@ -1400,6 +1423,8 @@ export class ModelRuntimeService {
        * nothing and a failure that cost nothing are different facts.
        */
       usage?: UpstreamUsageSnapshot | undefined;
+      /** Usage-record batch 1: what the upstream said, when it answered at all. */
+      upstream?: UpstreamCallRecord | undefined;
     },
   ): Promise<void> {
     await this.recordFailure(
@@ -1413,6 +1438,7 @@ export class ModelRuntimeService {
       ctx.routed.endpointCode,
       attemptIndex,
       outcome.usage,
+      outcome.upstream,
     );
   }
 
@@ -1427,6 +1453,7 @@ export class ModelRuntimeService {
     routedEndpointCode?: string | null,
     attemptIndex?: number,
     usage?: UpstreamUsageSnapshot,
+    upstream?: UpstreamCallRecord,
   ): Promise<void> {
     const applicationScope = resolveApplicationScope(request);
     const errorCode = readRuntimeErrorCode(error);
@@ -1456,6 +1483,13 @@ export class ModelRuntimeService {
       // for these: nothing was billed, so `billed_amount` stays NULL and the
       // row is the reconciliation signal rather than a charge.
       ...usageColumns(usage),
+      // Usage-record batch 1. `latencyMs` is present exactly when the attempt
+      // reached a provider (a gate refusal passes none), so it decides whether
+      // "did the upstream report usage" is a question this row can answer.
+      ...(latencyMs !== undefined
+        ? { usageSource: usage !== undefined ? "reported" : "absent" }
+        : {}),
+      ...upstreamColumns(upstream, undefined),
       // TD-037. Which candidate this row is. Deliberately NOT expressed by
       // setting usage_type to 'retry', which TD-037's own recovery note
       // suggested: that word is already the CALLER's - `ChatRequest.usageType`
@@ -1497,6 +1531,10 @@ export class ModelRuntimeService {
     auth?: S2sAuthContext,
     routedEndpointCode?: string | null,
     attemptIndex?: number,
+    outcome: {
+      upstream?: UpstreamCallRecord | undefined;
+      finishReason?: FinishReason | undefined;
+    } = {},
   ): Promise<void> {
     const applicationScope = resolveApplicationScope(request);
     const reported = usage !== undefined && usage.usageReported !== false;
@@ -1561,8 +1599,19 @@ export class ModelRuntimeService {
             ...(usage.reasoningTokens !== undefined
               ? { reasoningTokens: usage.reasoningTokens }
               : {}),
+            ...(usage.cacheWriteInputTokens !== undefined
+              ? { cacheWriteInputTokens: usage.cacheWriteInputTokens }
+              : {}),
+            ...(usage.cacheWrite1hInputTokens !== undefined
+              ? { cacheWrite1hInputTokens: usage.cacheWrite1hInputTokens }
+              : {}),
           }
         : {}),
+      // Usage-record batch 1. This row reached an upstream, so whether it
+      // reported usage is a fact worth writing: NULL counts on an 'absent'
+      // row mean "unknown", which a reader must not total as free.
+      usageSource: reported ? "reported" : "absent",
+      ...upstreamColumns(outcome.upstream, outcome.finishReason),
       latencyMs,
       // TD-037. The candidate that actually served this request - which is not
       // always the one the caller named, and until now was not recorded
@@ -1628,4 +1677,41 @@ function runtimeStatusFromError(error: unknown): string {
   if (code === "NOT_ENTITLED") return "denied";
   if (code === "QUOTA_EXCEEDED") return "quota_exceeded";
   return "provider_error";
+}
+
+/**
+ * Usage-record batch 1 (A3, C4, G2, H3): the vendor's facts for the reqlog row.
+ * `finish_reason` is the normalized word; a vendor value the mapping does not
+ * know becomes 'other' - its own word survives in `native_finish_reason`, so
+ * nothing is lost and the CHECK vocabulary stays closed.
+ */
+function upstreamColumns(
+  upstream: UpstreamCallRecord | undefined,
+  finishReason: FinishReason | undefined,
+): Partial<RequestLogEntry> {
+  const normalized: RequestLogEntry["finishReason"] =
+    finishReason ?? (upstream?.nativeFinishReason ? "other" : undefined);
+  return {
+    ...(upstream?.upstreamRequestId !== undefined
+      ? { upstreamRequestId: upstream.upstreamRequestId }
+      : {}),
+    ...(upstream?.upstreamModel !== undefined
+      ? { upstreamModel: upstream.upstreamModel }
+      : {}),
+    ...(upstream?.rawUsage !== undefined
+      ? { upstreamUsage: upstream.rawUsage }
+      : {}),
+    ...(upstream?.nativeFinishReason !== undefined
+      ? { nativeFinishReason: upstream.nativeFinishReason }
+      : {}),
+    ...(normalized !== undefined ? { finishReason: normalized } : {}),
+  };
+}
+
+/** The done frame as the caller may see it: `upstream` is internal. */
+function withoutUpstream(
+  event: Extract<StreamEvent, { type: "done" }>,
+): Extract<StreamEvent, { type: "done" }> {
+  const { upstream: _internal, ...rest } = event;
+  return rest;
 }
