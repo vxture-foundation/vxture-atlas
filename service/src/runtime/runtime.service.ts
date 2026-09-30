@@ -22,6 +22,7 @@ import {
 } from "../providers/context-overflow";
 import { resolveWireFor, supportedThinkingModes } from "../providers/wire";
 import {
+  UpstreamCallFailure,
   usageColumns,
   usageFromError,
   type UpstreamUsageSnapshot,
@@ -88,6 +89,7 @@ const NOT_A_HEALTH_SIGNAL: ReadonlySet<ModelRuntimeErrorCode> = new Set([
   "UPSTREAM_REJECTED_REQUEST",
   "CONTEXT_LENGTH_EXCEEDED",
   "DEADLINE_EXCEEDED",
+  "OUTPUT_BUDGET_EXHAUSTED",
 ]);
 
 /** B6 bounds on `timeoutMs`. */
@@ -938,6 +940,18 @@ export class ModelRuntimeService {
         modelCode: model.modelCode,
         provider: model.provider,
       });
+    }
+
+    // Walkthrough 2026-09-30: this was PROVIDER_UNAVAILABLE (retryable, breaker
+    // counted) - liveness pings with a tiny maxTokens on a thinking model could
+    // have tripped it for every product.
+    if (error instanceof UpstreamCallFailure && error.outputBudgetExhausted) {
+      return new ModelRuntimeException(
+        HttpStatus.UNPROCESSABLE_ENTITY,
+        "OUTPUT_BUDGET_EXHAUSTED",
+        error.message,
+        { requestId, modelCode: model.modelCode, provider: model.provider },
+      );
     }
 
     if (

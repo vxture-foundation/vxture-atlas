@@ -98,6 +98,15 @@ describe("tenantId/applicationId UUID validation (vxture-atlas#47)", () => {
       }),
     ).rejects.toMatchObject({ code: "INVALID_APPLICATION_ID" });
   });
+
+  // The product axis had no guard: a non-UUID reached the uuid column and came
+  // back as Postgres's cast error - a codeless 500, three times in production
+  // on 2026-09-28 (found by the 2026-09-30 walkthrough).
+  it("listProductEndpointGrants rejects a non-UUID applicationId with a clean 400", async () => {
+    await expect(
+      repo.listProductEndpointGrants("yucer", "not-a-uuid", "agent"),
+    ).rejects.toMatchObject({ code: "INVALID_APPLICATION_ID" });
+  });
 });
 
 // Postgres DESC defaults to NULLS FIRST, so a bare `applicationId: "desc"`

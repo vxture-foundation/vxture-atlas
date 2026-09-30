@@ -201,6 +201,7 @@ export function normalizeOpenAiCompatibleResponse(
           : {}),
         ...readCostSplits(response.usage),
       },
+      { outputBudgetExhausted: response.choices?.[0]?.finish_reason === "length" },
     );
   }
 
@@ -257,8 +258,8 @@ function readCostSplits(
  * 压成了一句什么也没说的话，而运营在管理页面上看到的就是它。最贵的一种是
  * **思考型模型**（DeepSeek V4 默认开思考且 effort=high，思考链算在
  * completion 里）—— 输出预算被思考链吃光，`content` 为空、`finish_reason`
- * 为 `length`，看起来和"上游坏了"一模一样，实际只需要把预算调大或用
- * `config.wire.extraBody` 关掉思考。
+ * 为 `length`，看起来和"上游坏了"一模一样，实际只需要把预算调大，或由调用方
+ * 带 `thinking: "off"`（ADR-009）。
  *
  * 这里只负责把成因说清楚，不负责把它变成成功：一次没有正文的应答对调用方
  * 就是失败，静默地放它过去只会把问题推到更远的地方。
@@ -278,7 +279,7 @@ function describeEmptyResponse(
     return reasoningChars > 0
       ? `output budget exhausted by the reasoning chain before any content was produced ` +
           `(finish_reason=length, ${reasoningChars} chars of reasoning_content) - raise max_tokens, ` +
-          `or turn the thinking mode off via config.wire.extraBody`
+          `or send thinking: "off" (ADR-009)`
       : "output budget exhausted before any content was produced (finish_reason=length) - raise max_tokens";
   }
 

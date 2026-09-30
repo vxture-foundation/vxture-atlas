@@ -198,6 +198,7 @@ export class ClaudeProvider extends BaseProvider {
             ? { cachedInputTokens: response.usage.cache_read_input_tokens }
             : {}),
         },
+        { outputBudgetExhausted: response.stop_reason === "max_tokens" },
       );
     }
 

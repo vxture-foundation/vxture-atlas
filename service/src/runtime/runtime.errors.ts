@@ -91,6 +91,13 @@ export type ModelRuntimeErrorCode =
    * count toward the breaker and no further fallback is tried.
    */
   | "DEADLINE_EXCEEDED"
+  /**
+   * The upstream stopped for length before producing any answer: the
+   * caller's `maxTokens` was spent, on a thinking model usually entirely on
+   * reasoning. Raise `maxTokens` or send `thinking: "off"`. The caller's
+   * budget, not the model's health - no breaker count.
+   */
+  | "OUTPUT_BUDGET_EXHAUSTED"
   // --- request body ---
   // Raised by the JSON parser, before routing, auth, or any /v1 surface code
   // runs - so no requestId exists yet and no reqlog row is written.
@@ -193,6 +200,7 @@ const RETRYABLE: Record<ModelRuntimeErrorCode, boolean> = {
   // The budget is the caller's. The identical request gets the identical
   // budget; what changes the outcome is a larger timeoutMs or a smaller input.
   DEADLINE_EXCEEDED: false,
+  OUTPUT_BUDGET_EXHAUSTED: false,
   PAYLOAD_TOO_LARGE: false,
   REQUEST_BODY_MALFORMED: false,
   // A token problem is never fixed by repeating the same request. The caller's

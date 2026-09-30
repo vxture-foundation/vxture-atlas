@@ -109,7 +109,13 @@ Applies to every `/v1` surface, generation included.
   every product. When the refusal is recognisably a context-window overflow
   (per-vendor signatures, ADR-008), the code is the narrower
   `CONTEXT_LENGTH_EXCEEDED` - same status, same handling - and the caller
-  should split its input. Upstream `401`/`403`/`404` (Atlas's own key or model mapping)
+  should split its input.
+- **The upstream stopped for length before any answer** (`finish_reason=length`
+  / `stop_reason=max_tokens` with nothing produced - on a thinking model,
+  usually the whole `maxTokens` spent on reasoning) -> `422
+  OUTPUT_BUDGET_EXHAUSTED`, `retryable: false`, same breaker exemption. Raise
+  `maxTokens`, or send `thinking: "off"`.
+- Upstream `401`/`403`/`404` (Atlas's own key or model mapping)
   and `408`/`429`/`5xx` stay `PROVIDER_UNAVAILABLE` and do count.
 
 ## 2. A1 - Embedding
