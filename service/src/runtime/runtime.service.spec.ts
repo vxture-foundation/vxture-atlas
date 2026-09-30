@@ -738,6 +738,38 @@ describe("ModelRuntimeService runtime flow", () => {
     expect(entitlements.consume).not.toHaveBeenCalled();
   });
 
+  // Found 2026-08-18, still true until 2026-09-30: the quota gate throws
+  // RATE_LIMITED without a requestId, so enrichRuntimeError rebuilt it - and
+  // the rebuild copied only modelCode/provider. retryAfterMs never reached the
+  // body, so RetryAfterFilter never sent the Retry-After header either.
+  it("keeps retryAfterMs when a rate-limit refusal is enriched with the requestId", async () => {
+    const { service } = makeRuntime({
+      quota: {
+        assertAllowed: vi
+          .fn()
+          .mockRejectedValue(
+            new ModelRuntimeException(
+              HttpStatus.TOO_MANY_REQUESTS,
+              "RATE_LIMITED",
+              "slow down",
+              { modelCode: "primary-model", retryAfterMs: 1_200 },
+            ),
+          ),
+      },
+    });
+
+    const error: unknown = await service
+      .chat(makeRequest({ modelCode: "primary-model" }))
+      .catch((caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(ModelRuntimeException);
+    expect((error as ModelRuntimeException).getResponse()).toMatchObject({
+      code: "RATE_LIMITED",
+      retryAfterMs: 1_200,
+      requestId: expect.any(String),
+    });
+  });
+
   it("falls back to configured model when primary provider fails", async () => {
     const { service, provider, fallbackProvider, requestLog } = makeRuntime();
     provider.chat.mockRejectedValueOnce(new Error("primary unavailable"));
