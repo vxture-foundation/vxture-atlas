@@ -204,6 +204,104 @@ function readPolicy(
   }
 }
 
+/** The price columns of one rule, as strings straight off `numeric(18,8)`. */
+export interface PriceRuleRates {
+  unitTokens: number;
+  inputUnitPrice: string;
+  outputUnitPrice: string;
+  requestUnitPrice: string;
+  /** `null` = no cached rate declared: charged as uncached, never as free. */
+  cachedInputUnitPrice: string | null;
+}
+
+/**
+ * THE cost formula, in scaled integers - shared by the rollup and by the
+ * per-row cost written at request time (usage-record batch 2), so the two can
+ * only disagree by truncation (per group vs per row), never by rule.
+ *
+ * `offPeakPolicy` is the policy to apply when the call ran OFF-peak, and null
+ * when it ran at peak or the provider has none: the caller decides the window.
+ */
+export function priceUsage(
+  usage: { requests: bigint; uncached: bigint; cached: bigint; output: bigint },
+  rates: PriceRuleRates,
+  offPeakPolicy: OffPeakPolicy | null,
+): bigint {
+  const discount = offPeakPolicy !== null ? toScaled(offPeakPolicy.multiplier) : null;
+  const rate = (component: PriceComponent, price: string): bigint => {
+    const scaled = toScaled(price);
+    return discount !== null &&
+      offPeakPolicy !== null &&
+      offPeakPolicy.appliesTo.includes(component)
+      ? discounted(scaled, discount)
+      : scaled;
+  };
+
+  const unitTokens = BigInt(rates.unitTokens);
+  const inputPrice = rate("input", rates.inputUnitPrice);
+  // The fallback happens BEFORE the discount: an undeclared cached rate means
+  // "charge it as uncached", and an uncached rate is discounted off-peak like
+  // any other. Discounting a fallback is not double-counting - it is the same
+  // rate the provider would have charged.
+  const cachedPrice =
+    rates.cachedInputUnitPrice === null
+      ? inputPrice
+      : rate("cachedInput", rates.cachedInputUnitPrice);
+
+  return (
+    usage.requests * rate("request", rates.requestUnitPrice) +
+    priceTokens(usage.uncached, inputPrice, unitTokens) +
+    priceTokens(usage.cached, cachedPrice, unitTokens) +
+    // `output` already includes reasoning tokens, which are billed at this same
+    // rate. Adding a reasoning term here would charge them twice.
+    priceTokens(usage.output, rate("output", rates.outputUnitPrice), unitTokens)
+  );
+}
+
+/**
+ * The cost of ONE call, for the reqlog row (usage-record batch 2, J1/J2).
+ *
+ * Same rules as the rollup: uncached = input - cached (clamped), reasoning is
+ * inside output, an undeclared cached rate falls back to the input rate, the
+ * off-peak discount applies by the policy's `appliesTo`. Cache WRITES are
+ * inside input and priced at the input rate, because a price rule has no
+ * cache-write rate yet (TD-057) - an understatement the row cannot flag.
+ *
+ * Returns null - "unpriced", never "free" - when the policy is unreadable:
+ * the rollup refuses a malformed policy with a 4xx naming the provider, and a
+ * write path must not throw, so it declines instead of guessing a window.
+ */
+export function priceOneCall(
+  tokens: { input: number; cached: number | undefined; output: number },
+  rates: PriceRuleRates,
+  providerPricing: unknown,
+  at: Date,
+): { cost: string; window: "peak" | "off_peak" } | null {
+  let policy: OffPeakPolicy | null;
+  try {
+    policy = parseOffPeakPolicy(providerPricing);
+  } catch {
+    return null;
+  }
+  const isoDow = at.getUTCDay() === 0 ? 7 : at.getUTCDay();
+  const peak = policy === null ? true : isPeak(policy, isoDow, at.getUTCHours());
+
+  const input = BigInt(Math.max(0, Math.trunc(tokens.input)));
+  const rawCached = BigInt(Math.max(0, Math.trunc(tokens.cached ?? 0)));
+  const cached = rawCached > input ? input : rawCached;
+  const cost = priceUsage(
+    {
+      requests: 1n,
+      uncached: input - cached,
+      cached,
+      output: BigInt(Math.max(0, Math.trunc(tokens.output))),
+    },
+    rates,
+    !peak ? policy : null,
+  );
+  return { cost: render(cost), window: peak ? "peak" : "off_peak" };
+}
+
 export function computeCostRollup(rows: readonly CostGroupRow[]): CostRollupResult {
   const byCurrency = new Map<string, bigint>();
   const items = new Map<string, CostRollupItem>();
@@ -305,31 +403,17 @@ export function computeCostRollup(rows: readonly CostGroupRow[]): CostRollupResu
       continue;
     }
 
-    const discount = !peak && policy !== null ? toScaled(policy.multiplier) : null;
-    const rate = (component: PriceComponent, price: string): bigint => {
-      const scaled = toScaled(price);
-      return discount !== null && policy !== null && policy.appliesTo.includes(component)
-        ? discounted(scaled, discount)
-        : scaled;
-    };
-
-    const unitTokens = BigInt(row.unitTokens);
-    const inputPrice = rate("input", row.inputUnitPrice);
-    // The fallback happens BEFORE the discount: an undeclared cached rate means
-    // "charge it as uncached", and an uncached rate is discounted off-peak like
-    // any other. Discounting a fallback is not double-counting - it is the same
-    // rate the provider would have charged.
-    const cachedPrice = cachedPriceFellBack
-      ? inputPrice
-      : rate("cachedInput", row.cachedInputUnitPrice as string);
-
-    const cost =
-      row.requests * rate("request", row.requestUnitPrice) +
-      priceTokens(uncached, inputPrice, unitTokens) +
-      priceTokens(cached, cachedPrice, unitTokens) +
-      // `outputTokens` already includes `reasoningTokens`, which are billed at
-      // this same rate. Adding the reasoning term here would charge them twice.
-      priceTokens(row.outputTokens, rate("output", row.outputUnitPrice), unitTokens);
+    const cost = priceUsage(
+      { requests: row.requests, uncached, cached, output: row.outputTokens },
+      {
+        unitTokens: row.unitTokens,
+        inputUnitPrice: row.inputUnitPrice,
+        outputUnitPrice: row.outputUnitPrice,
+        requestUnitPrice: row.requestUnitPrice,
+        cachedInputUnitPrice: row.cachedInputUnitPrice,
+      },
+      !peak ? policy : null,
+    );
 
     byCurrency.set(row.currency, (byCurrency.get(row.currency) ?? 0n) + cost);
     costs.set(key, (costs.get(key) ?? 0n) + cost);

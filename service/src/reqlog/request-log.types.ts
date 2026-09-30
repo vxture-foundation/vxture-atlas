@@ -98,6 +98,22 @@ export interface RequestLogEntry {
     | "other"
     | undefined;
   nativeFinishReason?: string | undefined;
+  /**
+   * Usage-record batch 2 (incr/05). When the attempt began - off-peak pricing
+   * keys on it, and created_at trails it by the consume round-trip - and, for a
+   * stream, when the first event went out.
+   */
+  startedAt?: Date | undefined;
+  firstTokenAt?: Date | undefined;
+  /** What the caller named, which is not always what served (`modelCode`). */
+  selectorKind?: "model" | "endpoint" | "task_profile" | undefined;
+  selectorValue?: string | undefined;
+  /** The vault key alias the call went out on (with `providerCode`). */
+  providerKeyAlias?: string | undefined;
+  thinkingMode?: "off" | "on" | undefined;
+  maxTokens?: number | undefined;
+  streamed?: boolean | undefined;
+  cancelledBy?: "client" | "deadline" | undefined;
   latencyMs?: number | undefined;
   /**
    * TD-037. Zero-based position of this attempt within one logical request.

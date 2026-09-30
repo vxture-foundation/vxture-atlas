@@ -240,7 +240,17 @@ E - usage reaches the platform (ADR-010, owner 2026-09-30):
       that reached an upstream, chat and S2S; the Claude adapter now counts
       cache read + write inside `input_tokens` (it stored Anthropic's
       cache-exclusive figure), and its streaming path no longer drops the cache
-      read. Batches 2-4 (P1-P3) follow in that order
+      read. Batches 2-4 (P1-P3) follow in that order. Released as v0.7.13
+      (2026-09-30, db-init first)
+- [x] E3c. Usage-record batch 2 (P1): `incr/05` adds started_at, first_token_at,
+      selector kind/value, provider key alias, thinking mode, max_tokens,
+      streamed, cancelled_by, and the row's own upstream_cost / currency /
+      price_rule_id / pricing_window, priced by the rule in force at started_at
+      with the rollup's formula (now one shared `priceUsage`). Completion and
+      TTFT are derived (started_at + latency_ms, first_token_at - started_at).
+      K1: `reqlog_write_failures_total{table,reason}` - a failing reqlog write
+      was a warn line only, which is how the dev database lost a month of rows
+      unseen. Cache writes are costed at the input rate until TD-057
 - [ ] E4. Consume under the caller's product with raw tokens in four
       dimensions, and C2 read by the caller's product - in the shape #547
       settles on

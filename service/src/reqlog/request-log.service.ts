@@ -2,6 +2,8 @@ import { Injectable, Logger } from "@nestjs/common";
 
 import { Prisma } from "../generated/prisma";
 import { prisma } from "../prisma";
+import { priceOneCall } from "../observability/cost-rollup";
+import { metricsRegistry } from "../runtime/metrics.registry";
 import { isUuid } from "../uuid";
 import type { ErrorLogEntry, RequestLogEntry } from "./request-log.types";
 
@@ -77,9 +79,26 @@ export class RequestLogService {
 
   async record(entry: RequestLogEntry): Promise<void> {
     this.warnOnDroppedTenant(entry);
+    const pricing = await this.priceRow(entry);
     try {
       await prisma.requestRecord.create({
         data: {
+          // Usage-record batch 2 (incr/05). Enough on the row to price it
+          // alone, without joining back to state that has since changed.
+          startedAt: entry.startedAt ?? null,
+          firstTokenAt: entry.firstTokenAt ?? null,
+          selectorKind: entry.selectorKind ?? null,
+          selectorValue: clamp(entry.selectorValue, 128),
+          providerKeyAlias: clamp(entry.providerKeyAlias, 128),
+          thinkingMode: entry.thinkingMode ?? null,
+          maxTokens:
+            typeof entry.maxTokens === "number" ? Math.trunc(entry.maxTokens) : null,
+          streamed: entry.streamed ?? null,
+          cancelledBy: entry.cancelledBy ?? null,
+          upstreamCost: pricing?.cost ?? null,
+          costCurrency: pricing?.currency ?? null,
+          priceRuleId: pricing?.priceRuleId ?? null,
+          pricingWindow: pricing?.window ?? null,
           requestId: clamp(entry.requestId, 128) ?? entry.requestId,
           status: entry.status,
           // Clamped but NOT coerced (product_251 X-2 requires it verbatim).
@@ -162,11 +181,83 @@ export class RequestLogService {
         },
       });
     } catch (error) {
+      recordWriteFailure("request_records", error);
       this.logger.warn(
         `request log write failed for requestId=${entry.requestId}: ${
           error instanceof Error ? error.message : String(error)
         }`,
       );
+    }
+  }
+
+  /**
+   * Usage-record batch 2 (J1/J2): what the vendor charged for this row, by the
+   * price rule in force when the attempt STARTED - the same rule the cost
+   * rollup would pick (`effective_at <= t < expires_at`, not deleted, token
+   * billing, `is_active` deliberately ignored), priced by the same formula
+   * (`priceOneCall` shares `priceUsage` with the rollup).
+   *
+   * Never throws and never guesses. No token counts, no model, no rule in
+   * force, or an unreadable provider policy all leave the columns NULL -
+   * "unpriced" - because a 0 would say "this call was free".
+   */
+  private async priceRow(entry: RequestLogEntry): Promise<
+    | { cost: string; currency: string; priceRuleId: string; window: "peak" | "off_peak" }
+    | undefined
+  > {
+    if (!entry.modelCode) return undefined;
+    if (typeof entry.inputTokens !== "number" && typeof entry.outputTokens !== "number") {
+      return undefined;
+    }
+    const at = entry.startedAt ?? new Date();
+    try {
+      const rule = await prisma.modelPriceRule.findFirst({
+        where: {
+          modelDef: { modelCode: entry.modelCode },
+          billingMode: "token",
+          deletedAt: null,
+          effectiveAt: { lte: at },
+          OR: [{ expiresAt: null }, { expiresAt: { gt: at } }],
+        },
+        orderBy: [{ effectiveAt: "desc" }, { createdAt: "desc" }],
+      });
+      if (!rule) return undefined;
+      const provider = entry.providerCode
+        ? await prisma.modelProvider.findFirst({
+            where: { providerCode: entry.providerCode },
+            select: { config: true },
+          })
+        : null;
+      const providerPricing =
+        provider?.config && typeof provider.config === "object"
+          ? (provider.config as Record<string, unknown>)["pricing"]
+          : undefined;
+      const priced = priceOneCall(
+        {
+          input: entry.inputTokens ?? 0,
+          cached: entry.cachedInputTokens,
+          output: entry.outputTokens ?? 0,
+        },
+        {
+          unitTokens: rule.unitTokens,
+          inputUnitPrice: rule.inputUnitPrice.toString(),
+          outputUnitPrice: rule.outputUnitPrice.toString(),
+          requestUnitPrice: rule.requestUnitPrice.toString(),
+          cachedInputUnitPrice:
+            rule.cachedInputUnitPrice === null ? null : rule.cachedInputUnitPrice.toString(),
+        },
+        providerPricing,
+        at,
+      );
+      if (!priced) return undefined;
+      return { ...priced, currency: rule.currency, priceRuleId: rule.id };
+    } catch (error) {
+      this.logger.warn(
+        `request cost not priced for requestId=${entry.requestId}: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+      return undefined;
     }
   }
 
@@ -206,6 +297,7 @@ export class RequestLogService {
         },
       });
     } catch (error) {
+      recordWriteFailure("error_records", error);
       this.logger.warn(
         `error log write failed for requestId=${entry.requestId}: ${
           error instanceof Error ? error.message : String(error)
@@ -213,4 +305,30 @@ export class RequestLogService {
       );
     }
   }
+}
+
+/**
+ * The failure, sorted into a closed vocabulary. The Prisma/Postgres wording is
+ * free text; as a label it would mint one series per message. The classes are
+ * the ones that have actually happened or that the table's design makes
+ * likely: a column the database lacks (a skipped db-init), a CHECK or
+ * permission refusal, and the rest.
+ */
+export function writeFailureReason(error: unknown): string {
+  const text = error instanceof Error ? error.message : String(error);
+  if (/column .* does not exist/i.test(text)) return "missing_column";
+  if (/violates check constraint/i.test(text)) return "check_violation";
+  if (/permission denied/i.test(text)) return "permission_denied";
+  if (/no partition of relation|no partition .* found/i.test(text)) {
+    return "missing_partition";
+  }
+  if (/connect|ECONNREFUSED|timed? ?out/i.test(text)) return "unreachable";
+  return "other";
+}
+
+function recordWriteFailure(table: string, error: unknown): void {
+  metricsRegistry.incCounter("reqlog_write_failures_total", {
+    table,
+    reason: writeFailureReason(error),
+  });
 }

@@ -32,7 +32,7 @@ import {
   rateLimitKey,
 } from "../quota/model-rate-limiter.service";
 import { ProviderKeyService } from "../provider-keys/provider-key.service";
-import { resolveApiKey } from "./resolve-api-key";
+import { resolveApiKey, managedKeyAliasOf } from "./resolve-api-key";
 import { ModelRuntimeException } from "./runtime.errors";
 import { RequestLogService } from "../reqlog/request-log.service";
 import {
@@ -146,6 +146,20 @@ export async function withRequestLog<T>(
       : {}),
     // TD-024: S2S requests carry no usageType field; they are normal traffic.
     usageType: "normal" as const,
+    // Usage-record batch 2 (A4, C1, C5, D4). Same selector precedence as the
+    // route resolution: modelCode, then endpointCode, then taskProfile.
+    startedAt: new Date(startedAt),
+    ...(request.modelCode
+      ? { selectorKind: "model" as const, selectorValue: request.modelCode }
+      : request.endpointCode
+        ? { selectorKind: "endpoint" as const, selectorValue: request.endpointCode }
+        : request.taskProfile
+          ? { selectorKind: "task_profile" as const, selectorValue: request.taskProfile }
+          : {}),
+    ...(managedKeyAliasOf(gated.model) !== undefined
+      ? { providerKeyAlias: managedKeyAliasOf(gated.model) }
+      : {}),
+    streamed: false,
   };
 
   let reading: MeterReading = {};

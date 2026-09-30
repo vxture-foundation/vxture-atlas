@@ -47,7 +47,7 @@ import type {
   ModelRuntimeErrorCode,
   ModelRuntimeErrorResponse,
 } from "./runtime.errors";
-import { resolveApiKey } from "./resolve-api-key";
+import { managedKeyAliasOf, resolveApiKey } from "./resolve-api-key";
 import { ProviderKeyService } from "../provider-keys/provider-key.service";
 import type {
   AiModelRecord,
@@ -157,6 +157,8 @@ interface ChatAttemptContext {
     fallbackModelCodes: string[] | null;
   };
   modelCode: string;
+  /** Usage-record batch 2 (D4): set by the entry point, not by the caller's body. */
+  streamed: boolean;
   /**
    * B6: the caller's total budget, started once per request so every
    * candidate spends the same budget. Absent when no `timeoutMs` was given.
@@ -196,7 +198,7 @@ export class ModelRuntimeService {
     request: ChatRequest,
     auth?: S2sAuthContext,
   ): Promise<ChatResponse> {
-    const ctx = await this.beginChatRequest(request, auth, "model_runtime_request_start");
+    const ctx = await this.beginChatRequest(request, auth, "model_runtime_request_start", false);
     const { routed, modelCode, requestId } = ctx;
 
     try {
@@ -243,6 +245,11 @@ export class ModelRuntimeService {
             {
               upstream: providerResponse.upstream,
               finishReason: providerResponse.finishReason,
+              facts: {
+                ...requestFacts(request, false),
+                startedAt: new Date(startedAt),
+                ...keyAliasColumn(model),
+              },
             },
           );
 
@@ -341,7 +348,7 @@ export class ModelRuntimeService {
     auth?: S2sAuthContext,
     signal?: AbortSignal,
   ): AsyncGenerator<StreamEvent> {
-    const ctx = await this.beginChatRequest(request, auth, "model_runtime_stream_start");
+    const ctx = await this.beginChatRequest(request, auth, "model_runtime_stream_start", true);
     const { routed, modelCode, requestId } = ctx;
 
     try {
@@ -395,6 +402,7 @@ export class ModelRuntimeService {
         lastUsage = undefined;
         lastUpstream = undefined;
         lastFinishReason = undefined;
+        let firstTokenAt: number | undefined;
         // Once any event reached the client, failing over would concatenate a
         // second answer into the same SSE stream - after first yield, the only
         // honest outcomes are completion or an explicit error frame.
@@ -449,6 +457,9 @@ export class ModelRuntimeService {
               lastUpstream = event.upstream;
               lastFinishReason = event.finishReason;
             }
+            // Usage-record batch 2 (A5): the first event this attempt hands
+            // the caller. TTFT = first_token_at - started_at.
+            if (!yieldedThisAttempt) firstTokenAt = Date.now();
             yieldedThisAttempt = true;
             // The one place a stream can say WHO answered. The adapter cannot:
             // it knows the vendor's upstream name, not the registry code. After
@@ -497,6 +508,16 @@ export class ModelRuntimeService {
               auth,
               routed.endpointCode,
               fallbackAttempt,
+              undefined,
+              undefined,
+              {
+                ...requestFacts(request, true),
+                startedAt: new Date(startedAt),
+                ...(firstTokenAt !== undefined
+                  ? { firstTokenAt: new Date(firstTokenAt) }
+                  : {}),
+                ...keyAliasColumn(model),
+              },
             );
             return;
           }
@@ -516,7 +537,18 @@ export class ModelRuntimeService {
             auth,
             routed.endpointCode,
             fallbackAttempt,
-            { upstream: lastUpstream, finishReason: lastFinishReason },
+            {
+              upstream: lastUpstream,
+              finishReason: lastFinishReason,
+              facts: {
+                ...requestFacts(request, true),
+                startedAt: new Date(startedAt),
+                ...(firstTokenAt !== undefined
+                  ? { firstTokenAt: new Date(firstTokenAt) }
+                  : {}),
+                ...keyAliasColumn(model),
+              },
+            },
           );
           this.logAttempt(
             ctx,
@@ -585,6 +617,16 @@ export class ModelRuntimeService {
               auth,
               routed.endpointCode,
               fallbackAttempt,
+              undefined,
+              undefined,
+              {
+                ...requestFacts(request, true),
+                startedAt: new Date(startedAt),
+                ...(firstTokenAt !== undefined
+                  ? { firstTokenAt: new Date(firstTokenAt) }
+                  : {}),
+                ...keyAliasColumn(model),
+              },
             );
             return;
           }
@@ -1129,6 +1171,7 @@ export class ModelRuntimeService {
     request: ChatRequest,
     auth: S2sAuthContext | undefined,
     startEvent: string,
+    streamed: boolean,
   ): Promise<ChatAttemptContext> {
     // Routing joins validation inside the wrapper, not because it is
     // validation but because it fails in the same blind spot: `resolveRoute`
@@ -1164,6 +1207,7 @@ export class ModelRuntimeService {
       auth,
       routed,
       modelCode,
+      streamed,
       ...(request.timeoutMs !== undefined
         ? { deadline: AbortSignal.timeout(request.timeoutMs) }
         : {}),
@@ -1319,6 +1363,7 @@ export class ModelRuntimeService {
     await this.recordAttemptFailure(ctx, model, fallbackAttempt, {
       error: normalised,
       latencyMs,
+      startedAt,
       ...(upstreamFromError(error) !== undefined
         ? { upstream: upstreamFromError(error) }
         : {}),
@@ -1425,6 +1470,8 @@ export class ModelRuntimeService {
       usage?: UpstreamUsageSnapshot | undefined;
       /** Usage-record batch 1: what the upstream said, when it answered at all. */
       upstream?: UpstreamCallRecord | undefined;
+      /** Usage-record batch 2: epoch ms the attempt began; absent on a gate refusal. */
+      startedAt?: number | undefined;
     },
   ): Promise<void> {
     await this.recordFailure(
@@ -1439,6 +1486,13 @@ export class ModelRuntimeService {
       attemptIndex,
       outcome.usage,
       outcome.upstream,
+      {
+        ...requestFacts(ctx.request, ctx.streamed),
+        ...(outcome.startedAt !== undefined
+          ? { startedAt: new Date(outcome.startedAt) }
+          : {}),
+        ...keyAliasColumn(model),
+      },
     );
   }
 
@@ -1454,6 +1508,7 @@ export class ModelRuntimeService {
     attemptIndex?: number,
     usage?: UpstreamUsageSnapshot,
     upstream?: UpstreamCallRecord,
+    facts: Partial<RequestLogEntry> = {},
   ): Promise<void> {
     const applicationScope = resolveApplicationScope(request);
     const errorCode = readRuntimeErrorCode(error);
@@ -1490,6 +1545,9 @@ export class ModelRuntimeService {
         ? { usageSource: usage !== undefined ? "reported" : "absent" }
         : {}),
       ...upstreamColumns(upstream, undefined),
+      // Usage-record batch 2.
+      ...facts,
+      ...cancelledByColumn(errorCode),
       // TD-037. Which candidate this row is. Deliberately NOT expressed by
       // setting usage_type to 'retry', which TD-037's own recovery note
       // suggested: that word is already the CALLER's - `ChatRequest.usageType`
@@ -1534,6 +1592,8 @@ export class ModelRuntimeService {
     outcome: {
       upstream?: UpstreamCallRecord | undefined;
       finishReason?: FinishReason | undefined;
+      /** Usage-record batch 2: timing, selector, key alias, request knobs. */
+      facts?: Partial<RequestLogEntry> | undefined;
     } = {},
   ): Promise<void> {
     const applicationScope = resolveApplicationScope(request);
@@ -1612,6 +1672,7 @@ export class ModelRuntimeService {
       // row mean "unknown", which a reader must not total as free.
       usageSource: reported ? "reported" : "absent",
       ...upstreamColumns(outcome.upstream, outcome.finishReason),
+      ...(outcome.facts ?? {}),
       latencyMs,
       // TD-037. The candidate that actually served this request - which is not
       // always the one the caller named, and until now was not recorded
@@ -1714,4 +1775,43 @@ function withoutUpstream(
 ): Extract<StreamEvent, { type: "done" }> {
   const { upstream: _internal, ...rest } = event;
   return rest;
+}
+
+/**
+ * Usage-record batch 2 (C1, D1, D3, D4): what the caller asked for, from the
+ * request itself. The selector follows `resolveRoute`'s precedence - modelCode,
+ * then endpointCode, then taskProfile - so it names the one that was used.
+ */
+function requestFacts(
+  request: ChatRequest,
+  streamed: boolean,
+): Partial<RequestLogEntry> {
+  const selector: Pick<RequestLogEntry, "selectorKind" | "selectorValue"> =
+    request.modelCode
+      ? { selectorKind: "model", selectorValue: request.modelCode }
+      : request.endpointCode
+        ? { selectorKind: "endpoint", selectorValue: request.endpointCode }
+        : request.taskProfile
+          ? { selectorKind: "task_profile", selectorValue: request.taskProfile }
+          : {};
+  return {
+    ...selector,
+    ...(request.thinking !== undefined ? { thinkingMode: request.thinking } : {}),
+    ...(request.maxTokens !== undefined ? { maxTokens: request.maxTokens } : {}),
+    streamed,
+  };
+}
+
+function keyAliasColumn(model: AiModelRecord): Partial<RequestLogEntry> {
+  const alias = managedKeyAliasOf(model);
+  return alias !== undefined ? { providerKeyAlias: alias } : {};
+}
+
+/** Usage-record batch 2 (H4): a call cut short says who cut it. */
+function cancelledByColumn(
+  errorCode: string | null | undefined,
+): Partial<RequestLogEntry> {
+  if (errorCode === "CLIENT_ABORTED") return { cancelledBy: "client" };
+  if (errorCode === "DEADLINE_EXCEEDED") return { cancelledBy: "deadline" };
+  return {};
 }

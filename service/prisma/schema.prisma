@@ -357,6 +357,27 @@ model RequestRecord {
   finishReason           String?  @map("finish_reason") @db.VarChar(16)
   /// incr/04. The vendor's finish/stop reason, unmapped.
   nativeFinishReason     String?  @map("native_finish_reason") @db.VarChar(64)
+  /// incr/05 (usage-record batch 2). Attempt start; off-peak pricing keys on it.
+  startedAt              DateTime? @map("started_at") @db.Timestamptz(6)
+  /// incr/05. First streamed event; TTFT = firstTokenAt - startedAt.
+  firstTokenAt           DateTime? @map("first_token_at") @db.Timestamptz(6)
+  /// incr/05. model | endpoint | task_profile - what the caller named.
+  selectorKind           String?  @map("selector_kind") @db.VarChar(16)
+  selectorValue          String?  @map("selector_value") @db.VarChar(128)
+  /// incr/05. The vault key alias the call went out on.
+  providerKeyAlias       String?  @map("provider_key_alias") @db.VarChar(128)
+  /// incr/05. off | on as requested (= effective under ADR-009).
+  thinkingMode           String?  @map("thinking_mode") @db.VarChar(8)
+  maxTokens              Int?     @map("max_tokens")
+  streamed               Boolean?
+  /// incr/05. client | deadline.
+  cancelledBy            String?  @map("cancelled_by") @db.VarChar(16)
+  /// incr/05. Vendor charge by the rule in force at startedAt; NULL = unpriced.
+  upstreamCost           Decimal? @map("upstream_cost") @db.Decimal(18, 8)
+  costCurrency           String?  @map("cost_currency") @db.VarChar(16)
+  priceRuleId            String?  @map("price_rule_id") @db.Uuid
+  /// incr/05. peak | off_peak.
+  pricingWindow          String?  @map("pricing_window") @db.VarChar(8)
 
   @@id([id, createdAt])
   @@index([requestId], map: "idx_request_records_request_id")
