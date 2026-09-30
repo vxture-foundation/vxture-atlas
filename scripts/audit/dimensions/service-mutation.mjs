@@ -127,10 +127,11 @@ const MUTATIONS = [
       // (shared with the per-row cost). Both times the harness reported
       // `unreadable`, not a pass - a mutation whose needle stops matching
       // tests nothing, and reads exactly like one that was defended. The
-      // double count is now injected where the rollup hands output in.
-      find: "      { requests: row.requests, uncached, cached, output: row.outputTokens },",
-      replace:
-        "      { requests: row.requests, uncached, cached, output: row.outputTokens + row.reasoningTokens },",
+      // double count is now injected where the rollup hands output in. Batch 3
+      // split that call over several lines and the needle moved a third time;
+      // the harness again said `unreadable`, not pass.
+      find: "        output: row.outputTokens,\n      },",
+      replace: "        output: row.outputTokens + row.reasoningTokens,\n      },",
     },
   },
   {
