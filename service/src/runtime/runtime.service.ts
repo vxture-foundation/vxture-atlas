@@ -1041,6 +1041,11 @@ export class ModelRuntimeService {
         ...((payload?.provider ?? metadata.provider) !== undefined
           ? { provider: payload?.provider ?? metadata.provider }
           : {}),
+        // Dropping this silenced the Retry-After header on every RATE_LIMITED:
+        // the quota gate throws without a requestId, so it always comes here.
+        ...(payload?.retryAfterMs !== undefined
+          ? { retryAfterMs: payload.retryAfterMs }
+          : {}),
       },
     );
   }

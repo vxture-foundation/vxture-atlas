@@ -211,6 +211,12 @@ D - raised during this work:
       and the production approval gate against the live state
 - [ ] D2. Owner decision: review repository content for anything that
       should not have been public during the 2026-09-29 visibility change
+- [x] D3. `RATE_LIMITED` lost `retryAfterMs` (found 2026-08-18, never
+      registered): the quota gate throws without a `requestId`, so
+      `enrichRuntimeError` rebuilt the error and copied only `modelCode` /
+      `provider` - no body field, so no `Retry-After` header, while
+      `200-s2s-provider-surface.md` and letter 10 to karda promised both.
+      Fixed 2026-09-30 with a test through `chat()`, seen red first
 
 Platform-side, not this repo's write-scope:
 
