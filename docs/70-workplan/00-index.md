@@ -195,6 +195,10 @@ Production walkthrough (2026-09-30, v0.7.9):
 - [x] Found: a non-UUID `applicationId` on the product-grant lookup was a
       codeless 500 (Postgres cast error, 3x on 2026-09-28) - now
       `400 INVALID_APPLICATION_ID`
+- [x] Both fixes released as v0.7.10 (2026-09-30), verified in production;
+      tenderforge told in #69 (reasoning cost, probe budget), yucer in
+      `vx-agent-yucer`#525 (`applicationId: "yucer-diagnostics"` is not a
+      UUID)
 - [ ] Observed: tenderforge's `chat/deterministic` on `deepseek-v4-pro`
       averages 4137 output tokens, 3232 of them reasoning, p95 94 s - every
       call so far predates v0.7.8's `thinking: "off"`. Re-read after they
