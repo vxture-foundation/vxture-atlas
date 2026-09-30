@@ -4,7 +4,7 @@ import {
   usageFromError,
 } from "./upstream-failure";
 
-import { buildClaudeBody, ClaudeProvider, parseClaudeStream } from "./claude.provider";
+import { buildClaudeBody, CLAUDE_LACKS, ClaudeProvider, parseClaudeStream } from "./claude.provider";
 import { ANTHROPIC_WIRE_DEFAULTS, resolveWire } from "./wire";
 import { collect, streamOf } from "./stream.fixtures";
 import type { StreamEvent } from "../types/runtime.types";
@@ -58,6 +58,7 @@ describe("parseClaudeStream", () => {
         // Usage-record batch 1: the vendor's own word and its usage object,
         // merged across message_start and message_delta.
         upstream: {
+          notSupported: CLAUDE_LACKS,
           nativeFinishReason: "end_turn",
           rawUsage: { input_tokens: 42, output_tokens: 7 },
         },
@@ -209,6 +210,7 @@ describe("parseClaudeStream", () => {
       usage: { promptTokens: 42, completionTokens: 3, totalTokens: 45 },
       finishReason: "length",
       upstream: {
+        notSupported: CLAUDE_LACKS,
         nativeFinishReason: "max_tokens",
         rawUsage: { input_tokens: 42, output_tokens: 3 },
       },
@@ -255,7 +257,10 @@ describe("parseClaudeStream", () => {
 
     // A zero-token usage would be recorded as a real metering row; absent
     // usage must stay absent so runtime.service skips the write instead.
-    expect(events.at(-1)).toEqual<StreamEvent>({ type: "done" });
+    expect(events.at(-1)).toEqual<StreamEvent>({
+      type: "done",
+      upstream: { notSupported: CLAUDE_LACKS },
+    });
   });
 
   it("reports an unparseable frame as an error event and continues", async () => {
@@ -475,6 +480,7 @@ describe("ClaudeProvider - what the vendor said (usage-record batch 1)", () => {
     });
 
     expect(r.upstream).toEqual({
+      notSupported: CLAUDE_LACKS,
       upstreamRequestId: "msg_01abc",
       upstreamModel: "claude-sonnet-4-5-20250929",
       nativeFinishReason: "pause_turn",
@@ -647,5 +653,46 @@ describe("推理载荷 · Anthropic（TD-046）", () => {
     expect(blocks[0]?.["type"]).toBe("thinking");
     expect(blocks[0]?.["signature"]).toBe("sig-xyz");
     expect(blocks.some((b) => b["type"] === "tool_use")).toBe(true);
+  });
+});
+
+// Usage-record batch 4: Anthropic states its tier and server-side tool use in usage.
+describe("ClaudeProvider - batch 4 extras", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("keeps the service tier and web search count, and declares what it lacks", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        text: async () =>
+          JSON.stringify({
+            content: [{ type: "text", text: "hi" }],
+            stop_reason: "end_turn",
+            usage: {
+              input_tokens: 5,
+              output_tokens: 1,
+              service_tier: "standard",
+              server_tool_use: { web_search_requests: 2 },
+            },
+          }),
+      }),
+    );
+
+    const r = await new ClaudeProvider().chat({
+      endpointUrl: "https://anthropic.example/v1",
+      apiKey: "sk-test",
+      modelCode: "claude-x",
+      messages: [{ role: "user", content: "hi" }],
+    });
+
+    expect(r.upstream).toMatchObject({
+      serviceTier: "standard",
+      webSearchRequests: 2,
+      notSupported: CLAUDE_LACKS,
+    });
   });
 });

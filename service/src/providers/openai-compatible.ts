@@ -1,6 +1,6 @@
 import { joinEndpoint, resolveUpstreamModel } from "./base.provider";
 import { UpstreamCallFailure } from "./upstream-failure";
-import { upstreamField } from "./upstream-record";
+import { statedNumber, upstreamField } from "./upstream-record";
 import type {
   OpenAiCompatibleChatResponse,
   OpenAiCompatibleChatStreamChunk,
@@ -22,6 +22,7 @@ import type {
   ToolChoice,
   ToolDefinition,
   ChatReasoning,
+  UpstreamCallRecord,
 } from "../types/runtime.types";
 
 /**
@@ -209,6 +210,7 @@ export function normalizeOpenAiCompatibleResponse(
           response.model,
           response.choices?.[0]?.finish_reason ?? undefined,
           response.usage,
+          openAiExtras(response.service_tier, response.usage),
         ),
       },
     );
@@ -239,6 +241,7 @@ export function normalizeOpenAiCompatibleResponse(
       response.model,
       choice?.finish_reason ?? undefined,
       response.usage,
+          openAiExtras(response.service_tier, response.usage),
     ),
   };
 }
@@ -393,6 +396,7 @@ export async function* parseOpenAiCompatibleStream(
   let upstreamModel: string | undefined;
   let nativeFinishReason: string | undefined;
   let rawUsage: OpenAiUsage | undefined;
+  let serviceTier: string | undefined;
 
   /* 推理文本的累积。`done` 帧的信封要完整的那一份，而分片是逐个 yield 出去的。 */
   let reasoningText = "";
@@ -417,7 +421,7 @@ export async function* parseOpenAiCompatibleStream(
          不是（Anthropic 的 `signature` 根本不在分片里）。让调用方拼，等于要求
          它发明一个它拿不到的东西。 */
       ...reasoningFromWire(reasoningText.length > 0 ? reasoningText : undefined),
-      ...upstreamField(upstreamId, upstreamModel, nativeFinishReason, rawUsage),
+      ...upstreamField(upstreamId, upstreamModel, nativeFinishReason, rawUsage, openAiExtras(serviceTier, rawUsage)),
     };
   }
 
@@ -445,6 +449,9 @@ export async function* parseOpenAiCompatibleStream(
     }
     if (upstreamModel === undefined && typeof chunk.model === "string" && chunk.model) {
       upstreamModel = chunk.model;
+    }
+    if (typeof chunk.service_tier === "string" && chunk.service_tier) {
+      serviceTier = chunk.service_tier;
     }
 
     if (chunk.usage) {
@@ -515,3 +522,35 @@ export function resolveChatCompletionsEndpoint(
 
   return joinEndpoint(endpointUrl, suffix);
 }
+
+/**
+ * Usage-record batch 4: what an OpenAI-dialect response can state beyond the
+ * token counts, and what the dialect has no field for at all. Audio splits and
+ * the service tier are in the protocol - absent means this vendor or this call
+ * did not send them (not_reported). Cache WRITES, image-token splits, tool-use
+ * prompt tokens and per-call web search are not in it (not_supported).
+ */
+function openAiExtras(
+  serviceTier: string | undefined,
+  usage: OpenAiUsage | undefined,
+): Partial<UpstreamCallRecord> {
+  return {
+    ...(serviceTier ? { serviceTier } : {}),
+    ...(statedNumber(usage?.prompt_tokens_details?.audio_tokens) !== undefined
+      ? { inputAudioTokens: usage?.prompt_tokens_details?.audio_tokens as number }
+      : {}),
+    ...(statedNumber(usage?.completion_tokens_details?.audio_tokens) !== undefined
+      ? { outputAudioTokens: usage?.completion_tokens_details?.audio_tokens as number }
+      : {}),
+    notSupported: OPENAI_DIALECT_LACKS,
+  };
+}
+
+export const OPENAI_DIALECT_LACKS: readonly string[] = [
+  "cacheWriteInputTokens",
+  "cacheWrite1hInputTokens",
+  "inputImageTokens",
+  "outputImageTokens",
+  "toolUsePromptTokens",
+  "webSearchRequests",
+];

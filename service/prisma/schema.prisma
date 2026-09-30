@@ -396,6 +396,26 @@ model RequestRecord {
   /// incr/06. Embed: vectors returned and their dimension.
   vectorCount            Int?     @map("vector_count")
   vectorDimension        Int?     @map("vector_dimension")
+  /// incr/07 (usage-record batch 4).
+  upstreamHost           String?  @map("upstream_host") @db.VarChar(255)
+  serviceTier            String?  @map("service_tier") @db.VarChar(32)
+  isBatch                Boolean? @map("is_batch")
+  reasoningBudgetTokens  Int?     @map("reasoning_budget_tokens")
+  inputImageCount        Int?     @map("input_image_count")
+  inputAudioSeconds      Decimal? @map("input_audio_seconds") @db.Decimal(10, 3)
+  inputFileCount         Int?     @map("input_file_count")
+  inputImageTokens       BigInt?  @map("input_image_tokens")
+  inputAudioTokens       BigInt?  @map("input_audio_tokens")
+  outputAudioTokens      BigInt?  @map("output_audio_tokens")
+  outputImageTokens      BigInt?  @map("output_image_tokens")
+  toolUsePromptTokens    BigInt?  @map("tool_use_prompt_tokens")
+  webSearchRequests      Int?     @map("web_search_requests")
+  generatedImageCount    Int?     @map("generated_image_count")
+  generatedMediaSeconds  Decimal? @map("generated_media_seconds") @db.Decimal(10, 3)
+  contentFiltered        Boolean? @map("content_filtered")
+  queueWaitMs            Int?     @map("queue_wait_ms")
+  /// incr/07. For every NULL usage dimension, why - see reqlog/dimension-status.ts.
+  dimensionStatus        Json?    @map("dimension_status")
 
   @@id([id, createdAt])
   @@index([requestId], map: "idx_request_records_request_id")

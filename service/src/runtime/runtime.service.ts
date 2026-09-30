@@ -30,6 +30,7 @@ import {
 } from "../providers/upstream-failure";
 import { RequestLogService } from "../reqlog/request-log.service";
 import type { RequestLogEntry } from "../reqlog/request-log.types";
+import { batch4Columns, billingReasons, hostOf } from "../reqlog/record-facts";
 import { PlatformEntitlementClient } from "../platform/platform-entitlement.client";
 import type { S2sAuthContext } from "./guards/s2s-auth.guard";
 import { ModelCircuitBreakerService } from "./model-circuit-breaker.service";
@@ -1680,6 +1681,10 @@ export class ModelRuntimeService {
       usageSource: reported ? "reported" : "absent",
       ...upstreamColumns(outcome.upstream, outcome.finishReason),
       ...(outcome.facts ?? {}),
+      nullReasons: billingReasons(consumed, {
+        reported,
+        workspaceKnown: auth?.workspaceId !== undefined,
+      }),
       latencyMs,
       // TD-037. The candidate that actually served this request - which is not
       // always the one the caller named, and until now was not recorded
@@ -1773,8 +1778,11 @@ function upstreamColumns(
       ? { nativeFinishReason: upstream.nativeFinishReason }
       : {}),
     ...(normalized !== undefined ? { finishReason: normalized } : {}),
+    ...batch4Columns(upstream),
   };
 }
+
+
 
 /** The done frame as the caller may see it: `upstream` is internal. */
 function withoutUpstream(
@@ -1809,6 +1817,7 @@ function requestFacts(
     // Usage-record batch 3 (D5, D6).
     messageCount: request.messages.length,
     toolCount: request.tools?.length ?? 0,
+    capability: "chat",
   };
 }
 
@@ -1818,8 +1827,13 @@ function keyAliasColumn(model: AiModelRecord): Partial<RequestLogEntry> {
     ...(alias !== undefined ? { providerKeyAlias: alias } : {}),
     // Usage-record batch 3 (C9): the fingerprint of what served.
     modelBehaviorVersion: modelBehaviorVersion(model),
+    // Usage-record batch 4 (C6): which endpoint host the call went to.
+    ...(hostOf(model.endpointUrl) !== undefined
+      ? { upstreamHost: hostOf(model.endpointUrl) }
+      : {}),
   };
 }
+
 
 /** Usage-record batch 2 (H4): a call cut short says who cut it. */
 function cancelledByColumn(

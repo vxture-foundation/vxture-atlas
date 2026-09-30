@@ -609,3 +609,80 @@ describe("RequestLogService.record - batch 3 facts", () => {
     expect(data["messageCount"]).toBe(32767);
   });
 });
+
+// Usage-record batch 4: the writer stamps, for every empty dimension, why.
+describe("RequestLogService.record - dimension_status", () => {
+  let create: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    create = vi.fn().mockResolvedValue({});
+    vi.spyOn(prisma.requestRecord, "create").mockImplementation(create as never);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  const written = () =>
+    (create.mock.calls[0] as [{ data: Record<string, unknown> }])[0].data;
+
+  it("explains every empty dimension of a served chat row", async () => {
+    await new RequestLogService().record({
+      requestId: "req-b4",
+      status: "success",
+      capability: "chat",
+      usageSource: "reported",
+      streamed: false,
+      modelCode: "deepseek-v4-pro",
+      providerCode: "deepseek",
+      inputTokens: 10,
+      outputTokens: 2,
+      totalTokens: 12,
+      finishReason: "stop",
+      notSupported: ["cacheWriteInputTokens"],
+      nullReasons: { billedAmount: "not_reported" },
+    });
+
+    const data = written();
+    const status = data["dimensionStatus"] as Record<string, string>;
+    expect(status).toMatchObject({
+      cache_write_input_tokens: "not_supported", // declared by the adapter
+      service_tier: "not_reported", // in the protocol, not sent this time
+      upstream_cost: "not_configured", // no price rule in force (mocked: none)
+      thinking_mode: "not_specified", // the caller sent none
+      first_token_at: "not_applicable", // not a stream
+      generated_image_count: "not_integrated", // Atlas has no such mechanism
+      billed_amount: "not_reported", // the caller's own reason wins
+    });
+    // A value present is not marked.
+    expect(status["input_tokens"]).toBeUndefined();
+    // Facts Atlas states on a row that reached a provider.
+    expect(data).toMatchObject({ queueWaitMs: 0, isBatch: false, contentFiltered: false });
+  });
+
+  it("marks the vendor columns not_reached on a row that never reached one", async () => {
+    await new RequestLogService().record({
+      requestId: "req-b4-refused",
+      status: "error",
+      capability: "chat",
+      modelCode: "m",
+    });
+
+    const status = written()["dimensionStatus"] as Record<string, string>;
+    expect(status["input_tokens"]).toBe("not_reached");
+    expect(status["queue_wait_ms"]).toBe("not_reached");
+    expect(written()).toMatchObject({ queueWaitMs: null, isBatch: null });
+  });
+
+  it("says a dropped non-UUID tenant was a capture failure, not an absent one", async () => {
+    vi.spyOn(Logger.prototype, "warn").mockImplementation(() => undefined);
+    await new RequestLogService().record({
+      requestId: "req-b4-tenant",
+      status: "success",
+      tenantId: "org-acme/ws-main",
+    });
+
+    const status = written()["dimensionStatus"] as Record<string, string>;
+    expect(status["tenant_id"]).toBe("capture_failed");
+  });
+});
