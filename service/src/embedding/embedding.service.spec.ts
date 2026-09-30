@@ -447,6 +447,15 @@ describe("EmbeddingService.embed", () => {
         upstreamUsage: { prompt_tokens: 7, total_tokens: 7 },
       }),
     );
+    // Usage-record batch 2: the S2S row carries the same request facts.
+    expect(requestLog.record).toHaveBeenCalledWith(
+      expect.objectContaining({
+        selectorKind: "model",
+        selectorValue: model.modelCode,
+        streamed: false,
+        startedAt: expect.any(Date),
+      }),
+    );
   });
 
   it("marks a served call that reported no usage as 'absent'", async () => {

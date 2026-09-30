@@ -31,6 +31,20 @@ export interface ResolveApiKeyDeps {
  * outage's face. It is now refused here, naming the model, before any request
  * is made.
  */
+/**
+ * The vault alias a model's calls go out on - with the provider code it names
+ * one vault row, i.e. one vendor account. Usage-record batch 2 (C5) writes it on
+ * every row; `resolveApiKey` below resolves the same alias to the secret.
+ */
+export function managedKeyAliasOf(model: AiModelRecord): string | undefined {
+  const config = model.config as Record<string, unknown> | null;
+  const alias =
+    typeof config?.["managedKeyAlias"] === "string"
+      ? config["managedKeyAlias"].trim()
+      : "";
+  return alias || undefined;
+}
+
 export async function resolveApiKey(
   deps: ResolveApiKeyDeps,
   model: AiModelRecord,

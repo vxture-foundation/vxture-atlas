@@ -74,6 +74,14 @@ detailed history layer:
   object verbatim), `finish_reason` (stop/length/tool_calls/content_filter/
   other) with `native_finish_reason`, and `usage_source` (reported/absent/
   partial - NULL on a row that never reached an upstream)
+- What Atlas knew at the call (`incr/05`, batch 2): `started_at` (completion =
+  `started_at + latency_ms`), `first_token_at` (streams), `selector_kind` /
+  `selector_value` (what the caller named), `provider_key_alias`,
+  `thinking_mode`, `max_tokens`, `streamed`, `cancelled_by` (client/deadline)
+- The row's own price (`incr/05`): `upstream_cost`, `cost_currency`,
+  `price_rule_id`, `pricing_window` - by the rule in force at `started_at`,
+  with the same formula as the cost rollup; NULL = unpriced, never free.
+  Cache writes are priced as plain input until TD-057
 - Billing correlation: `billed_metric_key`, `billed_amount`, `cost_unit`,
   `usage_event_id`
 

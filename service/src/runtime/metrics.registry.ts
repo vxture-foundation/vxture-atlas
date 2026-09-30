@@ -23,7 +23,8 @@ type MetricName =
   | "model_reasoning_tool_exposure_total"
   | "capability_legacy_path_requests_total"
   | "data_plane_legacy_path_requests_total"
-  | "platform_consume_outcomes_total";
+  | "platform_consume_outcomes_total"
+  | "reqlog_write_failures_total";
 
 type MetricDefinition = {
   type: "counter" | "gauge" | "histogram";
@@ -107,6 +108,21 @@ const METRIC_DEFINITIONS: Record<MetricName, MetricDefinition> = {
    * until a consumer read Atlas's log (vxture-platform#547). `reason` carries
    * the platform's own refusal word, so the next one names itself.
    */
+  /**
+   * Usage-record K1. A reqlog write that fails is logged and swallowed by
+   * design - the caller was already served - so a table that rejects every
+   * write looks exactly like one that accepts them. It happened: the dev
+   * database never received incr/03, every write failed on the missing
+   * `attempt_index` column for over a month, and the only trace was a warn
+   * line nobody read (found 2026-09-30 by the batch-1 container gate). This is
+   * the number that goes non-zero instead. `reason` is a closed vocabulary so
+   * a driver message cannot mint label values.
+   */
+  reqlog_write_failures_total: {
+    type: "counter",
+    help: "reqlog_write_failures_total 请求记录写入失败数（table=request_records|error_records；reason 为归类后的原因）",
+    labelNames: ["table", "reason"],
+  },
   platform_consume_outcomes_total: {
     type: "counter",
     help: "platform_consume_outcomes_total C3 用量上报结果（billed / rejected / failed / skipped，reason 为平台拒绝原因）",

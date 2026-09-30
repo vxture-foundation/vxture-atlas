@@ -59,6 +59,7 @@ because those are the ones still needing a decision.
 | [TD-054](#td-054) | `model_policies.max_context_tokens` is writable and enforced by nothing | 2026-09-29 |
 | [TD-055](#td-055) | Context-overflow signatures live in code; adding a provider's needs a release | 2026-09-29 |
 | [TD-056](#td-056) | Inference usage never reaches the platform: every C3 consume is refused | 2026-09-30 |
+| [TD-057](#td-057) | A price rule has no cache-write rate, so cache writes are costed as plain input | 2026-09-30 |
 
 ## Closed
 
@@ -894,3 +895,25 @@ open per ADR-001.
 product, in the shape vxture-platform#547 settles on (workplan E3-E5).
 **Detection is in place now**: `platform_consume_outcomes_total` counts
 `outcome="rejected"` with the platform's reason word.
+
+## TD-057
+
+**Wrong**: `model_price_rules` has one input rate and one cached-input (read)
+rate, and no cache-WRITE rate. Since usage-record batch 1 (`incr/04`),
+`input_tokens` counts cache writes, and `cache_write_input_tokens` /
+`cache_write_1h_input_tokens` record them - but the cost formula (`priceUsage`,
+shared by the rollup and the per-row `upstream_cost` of batch 2) prices
+everything that is not a cache READ at the plain input rate. Anthropic charges
+a 5-minute write at 1.25x input and a 1-hour write at 2x, so a Claude row's
+cost is understated by exactly its write premium - the one direction the
+cached-read fallback was designed never to err in.
+
+**Impact today**: nil in production - no route there serves a Claude model,
+and the OpenAI-compatible upstreams in use report no cache writes. It becomes
+real the day a Claude route is live.
+
+**Recovery**: two nullable value columns on `model_price_rules`
+(`cache_write_unit_price`, `cache_write_1h_unit_price`; NULL = not declared),
+the price-rule create path and its operator editor, and one more term in
+`priceUsage`. Until then the fallback understates, and this entry is the record
+that it does.

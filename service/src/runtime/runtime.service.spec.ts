@@ -893,7 +893,7 @@ describe("ModelRuntimeService runtime flow", () => {
         });
 
       it("cancels the upstream call when the budget runs out: 504 DEADLINE_EXCEEDED, no fallback, no breaker count", async () => {
-        const { service, provider, fallbackProvider, circuitBreaker } = makeRuntime();
+        const { service, provider, fallbackProvider, circuitBreaker, requestLog } = makeRuntime();
         provider.chat.mockImplementation(hangUntilAborted);
         const recordFailure = vi.spyOn(circuitBreaker, "recordFailure");
 
@@ -906,6 +906,10 @@ describe("ModelRuntimeService runtime flow", () => {
         expect(provider.chat.mock.calls[0]?.[0].signal).toBeInstanceOf(AbortSignal);
         expect(fallbackProvider.chat).not.toHaveBeenCalled();
         expect(recordFailure).not.toHaveBeenCalled();
+        // Usage-record batch 2 (H4): the row says the budget cut it, not a fault.
+        expect(requestLog.record).toHaveBeenCalledWith(
+          expect.objectContaining({ requestId: "d1", cancelledBy: "deadline", streamed: false }),
+        );
       });
 
       it("on a stream: reported as the budget (not a disconnect), and no fallback starts on a spent budget", async () => {
@@ -1913,6 +1917,17 @@ describe("ModelRuntimeService runtime flow", () => {
       expect(h.requestLog.recordError).toHaveBeenCalledWith(
         expect.objectContaining({ errorCode: "CLIENT_ABORTED" }),
       );
+      // Usage-record batch 2 (H4, A4, A5, D4): who cut it short, and when the
+      // attempt started and first reached the caller.
+      expect(h.requestLog.record).toHaveBeenCalledWith(
+        expect.objectContaining({
+          requestId: "stream-ab",
+          cancelledBy: "client",
+          streamed: true,
+          startedAt: expect.any(Date),
+          firstTokenAt: expect.any(Date),
+        }),
+      );
     });
   });
 
@@ -2155,6 +2170,78 @@ describe("ModelRuntimeService runtime flow", () => {
 
       const row = h.requestLog.record.mock.calls[0]?.[0] as { usageSource?: string };
       expect(row.usageSource).toBeUndefined();
+    });
+
+    // Usage-record batch 2 (A4, C1, C5, D1, D3, D4).
+    it("writes what the caller asked for and which key the call went out on", async () => {
+      // A model that can run thinking "off" - without a mapping ADR-009
+      // refuses the mode before any call, which is the right answer and not
+      // this test's subject.
+      const model = makeModel({
+        modelCode: "primary-model",
+        provider: "primary",
+        config: {
+          managedKeyAlias: "test-key",
+          wire: { thinking: { off: { thinking: { type: "disabled" } } } },
+        },
+      });
+      const h = makeRuntime({
+        registry: { getActiveModel: vi.fn(() => Promise.resolve(model)) },
+      });
+      h.provider.chat.mockResolvedValue({
+        content: "pong",
+        promptTokens: 1,
+        completionTokens: 1,
+        totalTokens: 2,
+      });
+
+      await h.service.chat(
+        makeRequest({
+          modelCode: "primary-model",
+          requestId: "facts-1",
+          thinking: "off",
+          maxTokens: 64,
+        }),
+      );
+
+      const row = h.requestLog.record.mock.calls[0]?.[0] as Record<string, unknown>;
+      expect(row).toMatchObject({
+        selectorKind: "model",
+        selectorValue: "primary-model",
+        thinkingMode: "off",
+        maxTokens: 64,
+        streamed: false,
+        providerKeyAlias: "test-key",
+      });
+      expect(row["startedAt"]).toBeInstanceOf(Date);
+      // Non-stream: there is no first token to time.
+      expect(row["firstTokenAt"]).toBeUndefined();
+      expect(row["cancelledBy"]).toBeUndefined();
+    });
+
+    it("times the first streamed event after the attempt started", async () => {
+      const h = makeRuntime();
+      h.provider.chatStream.mockImplementation(async function* () {
+        yield { type: "text", delta: "hi" };
+        yield { type: "done", usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 } };
+      });
+
+      for await (const _ of h.service.chatStream(
+        makeRequest({ modelCode: "primary-model", requestId: "facts-2" }),
+      )) {
+        // drain
+      }
+
+      const row = h.requestLog.record.mock.calls[0]?.[0] as {
+        startedAt?: Date;
+        firstTokenAt?: Date;
+        streamed?: boolean;
+      };
+      expect(row.streamed).toBe(true);
+      expect(row.firstTokenAt).toBeInstanceOf(Date);
+      expect((row.firstTokenAt as Date).getTime()).toBeGreaterThanOrEqual(
+        (row.startedAt as Date).getTime(),
+      );
     });
   });
 
