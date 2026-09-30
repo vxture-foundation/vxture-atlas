@@ -114,6 +114,19 @@ export interface RequestLogEntry {
   maxTokens?: number | undefined;
   streamed?: boolean | undefined;
   cancelledBy?: "client" | "deadline" | undefined;
+  /**
+   * Usage-record batch 3 (incr/06). The S2S token's jti; the model's behaviour
+   * fingerprint when it served; tool definitions sent and tool calls made;
+   * messages in the request; for embed, vectors returned and their dimension.
+   * The deploy stage is not here: the writer stamps it on every row itself.
+   */
+  tokenJti?: string | undefined;
+  modelBehaviorVersion?: string | undefined;
+  toolCount?: number | undefined;
+  toolCallsMade?: number | undefined;
+  messageCount?: number | undefined;
+  vectorCount?: number | undefined;
+  vectorDimension?: number | undefined;
   latencyMs?: number | undefined;
   /**
    * TD-037. Zero-based position of this attempt within one logical request.

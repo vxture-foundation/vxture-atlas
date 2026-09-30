@@ -557,3 +557,55 @@ describe("RequestLogService.record - the row prices itself", () => {
     });
   });
 });
+
+// Usage-record batch 3 (incr/06).
+describe("RequestLogService.record - batch 3 facts", () => {
+  let create: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    create = vi.fn().mockResolvedValue({});
+    vi.spyOn(prisma.requestRecord, "create").mockImplementation(create as never);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("writes the facts it is given, and stamps the stage on every row", async () => {
+    await new RequestLogService().record({
+      requestId: "req-b3",
+      status: "success",
+      tokenJti: "jti-abc",
+      modelBehaviorVersion: "bv1-0123456789ab",
+      toolCount: 3,
+      toolCallsMade: 1,
+      messageCount: 7,
+      vectorCount: 2,
+      vectorDimension: 1024,
+    });
+
+    const data = (create.mock.calls[0] as [{ data: Record<string, unknown> }])[0].data;
+    expect(data).toMatchObject({
+      tokenJti: "jti-abc",
+      modelBehaviorVersion: "bv1-0123456789ab",
+      toolCount: 3,
+      toolCallsMade: 1,
+      messageCount: 7,
+      vectorCount: 2,
+      vectorDimension: 1024,
+    });
+    // Same source as /healthz; whatever it is, it is written on every row.
+    expect(data).toHaveProperty("deployStage");
+  });
+
+  it("clamps a count past smallint instead of failing the insert", async () => {
+    await new RequestLogService().record({
+      requestId: "req-b3-big",
+      status: "success",
+      messageCount: 100_000,
+    });
+
+    const data = (create.mock.calls[0] as [{ data: Record<string, unknown> }])[0].data;
+    expect(data["messageCount"]).toBe(32767);
+  });
+});

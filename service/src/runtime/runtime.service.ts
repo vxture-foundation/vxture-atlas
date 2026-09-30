@@ -48,6 +48,7 @@ import type {
   ModelRuntimeErrorResponse,
 } from "./runtime.errors";
 import { managedKeyAliasOf, resolveApiKey } from "./resolve-api-key";
+import { modelBehaviorVersion } from "../model-behavior-version";
 import { ProviderKeyService } from "../provider-keys/provider-key.service";
 import type {
   AiModelRecord,
@@ -144,6 +145,8 @@ function callerDimensions(
     applicationType: applicationScope.applicationType,
     agentId: applicationScope.agentId,
     ...(request.featureId !== undefined ? { featureId: request.featureId } : {}),
+    // Usage-record batch 3 (B8): which exchanged credential made the call.
+    ...(auth?.jti !== undefined ? { tokenJti: auth.jti } : {}),
   };
 }
 
@@ -249,6 +252,7 @@ export class ModelRuntimeService {
                 ...requestFacts(request, false),
                 startedAt: new Date(startedAt),
                 ...keyAliasColumn(model),
+                toolCallsMade: providerResponse.toolCalls?.length ?? 0,
               },
             },
           );
@@ -403,6 +407,7 @@ export class ModelRuntimeService {
         lastUpstream = undefined;
         lastFinishReason = undefined;
         let firstTokenAt: number | undefined;
+        let toolCallsMade = 0;
         // Once any event reached the client, failing over would concatenate a
         // second answer into the same SSE stream - after first yield, the only
         // honest outcomes are completion or an explicit error frame.
@@ -457,6 +462,7 @@ export class ModelRuntimeService {
               lastUpstream = event.upstream;
               lastFinishReason = event.finishReason;
             }
+            if (event.type === "tool_call") toolCallsMade += 1;
             // Usage-record batch 2 (A5): the first event this attempt hands
             // the caller. TTFT = first_token_at - started_at.
             if (!yieldedThisAttempt) firstTokenAt = Date.now();
@@ -547,6 +553,7 @@ export class ModelRuntimeService {
                   ? { firstTokenAt: new Date(firstTokenAt) }
                   : {}),
                 ...keyAliasColumn(model),
+                toolCallsMade,
               },
             },
           );
@@ -1799,12 +1806,19 @@ function requestFacts(
     ...(request.thinking !== undefined ? { thinkingMode: request.thinking } : {}),
     ...(request.maxTokens !== undefined ? { maxTokens: request.maxTokens } : {}),
     streamed,
+    // Usage-record batch 3 (D5, D6).
+    messageCount: request.messages.length,
+    toolCount: request.tools?.length ?? 0,
   };
 }
 
 function keyAliasColumn(model: AiModelRecord): Partial<RequestLogEntry> {
   const alias = managedKeyAliasOf(model);
-  return alias !== undefined ? { providerKeyAlias: alias } : {};
+  return {
+    ...(alias !== undefined ? { providerKeyAlias: alias } : {}),
+    // Usage-record batch 3 (C9): the fingerprint of what served.
+    modelBehaviorVersion: modelBehaviorVersion(model),
+  };
 }
 
 /** Usage-record batch 2 (H4): a call cut short says who cut it. */

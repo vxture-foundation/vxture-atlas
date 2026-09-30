@@ -598,6 +598,9 @@ export interface ModelPriceRuleRecord {
    * free - so a cost calculation falls back to `inputUnitPrice`.
    */
   cachedInputUnitPrice: DecimalLike | null;
+  /** TD-057 (incr/06). NULL = not declared: cache writes cost the input rate. */
+  cacheWriteUnitPrice: DecimalLike | null;
+  cacheWrite1hUnitPrice: DecimalLike | null;
   isActive: boolean;
   effectiveAt: Date;
   expiresAt: Date | null;
@@ -860,6 +863,9 @@ export interface CreateModelPriceRuleInput {
   requestUnitPrice?: string;
   /** TD-047. Absent leaves the column NULL; see `ModelPriceRuleRecord`. */
   cachedInputUnitPrice?: string | null;
+  /** TD-057. Same NULL-not-free rule: absent = not declared. */
+  cacheWriteUnitPrice?: string | null;
+  cacheWrite1hUnitPrice?: string | null;
   effectiveAt?: Date;
   expiresAt?: Date | null;
   isActive?: boolean;

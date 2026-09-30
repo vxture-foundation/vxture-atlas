@@ -1462,11 +1462,15 @@ export class ModelRegistryRepository {
       outputUnitPrice: string | null;
       requestUnitPrice: string | null;
       cachedInputUnitPrice: string | null;
+      cacheWriteUnitPrice: string | null;
+      cacheWrite1hUnitPrice: string | null;
       requests: bigint;
       requestsMissingInput: bigint;
       requestsMissingOutput: bigint;
       inputTokens: bigint;
       cachedInputTokens: bigint;
+      cacheWriteInputTokens: bigint;
+      cacheWrite1hInputTokens: bigint;
       outputTokens: bigint;
       reasoningTokens: bigint;
     }>
@@ -1480,8 +1484,11 @@ export class ModelRegistryRepository {
         r.model_code                                       AS "modelCode",
         r.provider_code                                    AS "providerCode",
         p.id::text                                         AS "priceRuleId",
-        EXTRACT(isodow FROM r.created_at AT TIME ZONE 'UTC')::int  AS "isoDow",
-        EXTRACT(hour   FROM r.created_at AT TIME ZONE 'UTC')::int  AS "hourUtc",
+        -- Usage-record batch 3: WHEN a call ran is started_at (incr/05);
+        -- created_at trails it by the consume round-trip. Rows written
+        -- before incr/05 have no started_at and keep created_at.
+        EXTRACT(isodow FROM coalesce(r.started_at, r.created_at) AT TIME ZONE 'UTC')::int  AS "isoDow",
+        EXTRACT(hour   FROM coalesce(r.started_at, r.created_at) AT TIME ZONE 'UTC')::int  AS "hourUtc",
         (pv.config -> 'pricing')::text                     AS "providerPricing",
         p.currency                                         AS "currency",
         p.unit_tokens                                      AS "unitTokens",
@@ -1489,11 +1496,15 @@ export class ModelRegistryRepository {
         p.output_unit_price::text                          AS "outputUnitPrice",
         p.request_unit_price::text                         AS "requestUnitPrice",
         p.cached_input_unit_price::text                    AS "cachedInputUnitPrice",
+        p.cache_write_unit_price::text                     AS "cacheWriteUnitPrice",
+        p.cache_write_1h_unit_price::text                  AS "cacheWrite1hUnitPrice",
         count(*)                                           AS "requests",
         count(*) FILTER (WHERE r.input_tokens IS NULL)     AS "requestsMissingInput",
         count(*) FILTER (WHERE r.output_tokens IS NULL)    AS "requestsMissingOutput",
         coalesce(sum(r.input_tokens), 0)                   AS "inputTokens",
         coalesce(sum(r.cached_input_tokens), 0)            AS "cachedInputTokens",
+        coalesce(sum(r.cache_write_input_tokens), 0)       AS "cacheWriteInputTokens",
+        coalesce(sum(r.cache_write_1h_input_tokens), 0)    AS "cacheWrite1hInputTokens",
         coalesce(sum(r.output_tokens), 0)                  AS "outputTokens",
         coalesce(sum(r.reasoning_tokens), 0)               AS "reasoningTokens"
       FROM reqlog.request_records r
@@ -1508,13 +1519,14 @@ export class ModelRegistryRepository {
       LEFT JOIN LATERAL (
         SELECT pr.id, pr.currency, pr.unit_tokens, pr.input_unit_price,
                pr.output_unit_price, pr.request_unit_price,
-               pr.cached_input_unit_price
+               pr.cached_input_unit_price, pr.cache_write_unit_price,
+               pr.cache_write_1h_unit_price
         FROM model.model_price_rules pr
         WHERE pr.model_id = m.id
           AND pr.billing_mode = 'token'
           AND pr.deleted_at IS NULL
-          AND pr.effective_at <= r.created_at
-          AND (pr.expires_at IS NULL OR pr.expires_at > r.created_at)
+          AND pr.effective_at <= coalesce(r.started_at, r.created_at)
+          AND (pr.expires_at IS NULL OR pr.expires_at > coalesce(r.started_at, r.created_at))
         ORDER BY pr.effective_at DESC, pr.created_at DESC
         LIMIT 1
       ) p ON TRUE
@@ -1524,15 +1536,16 @@ export class ModelRegistryRepository {
         AND ($4::varchar IS NULL OR r.provider_code = $4)
       GROUP BY r.model_code, r.provider_code, p.id, p.currency, p.unit_tokens,
                p.input_unit_price, p.output_unit_price, p.request_unit_price,
-               p.cached_input_unit_price,
+               p.cached_input_unit_price, p.cache_write_unit_price,
+               p.cache_write_1h_unit_price,
                -- The off-peak discount is a property of WHEN a request ran, and
                -- a sum cannot be split after the fact. Bucketing by UTC
                -- hour-of-week is bounded at 168 groups per rule and keeps the
                -- WINDOW DEFINITION out of SQL: which hours count as peak is
                -- provider configuration, applied in pricing-window.ts where a
                -- change costs a config row rather than a query edit.
-               EXTRACT(isodow FROM r.created_at AT TIME ZONE 'UTC'),
-               EXTRACT(hour   FROM r.created_at AT TIME ZONE 'UTC'),
+               EXTRACT(isodow FROM coalesce(r.started_at, r.created_at) AT TIME ZONE 'UTC'),
+               EXTRACT(hour   FROM coalesce(r.started_at, r.created_at) AT TIME ZONE 'UTC'),
                (pv.config -> 'pricing')::text
       ORDER BY "requests" DESC
       `,

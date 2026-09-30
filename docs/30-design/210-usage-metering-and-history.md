@@ -81,7 +81,11 @@ detailed history layer:
 - The row's own price (`incr/05`): `upstream_cost`, `cost_currency`,
   `price_rule_id`, `pricing_window` - by the rule in force at `started_at`,
   with the same formula as the cost rollup; NULL = unpriced, never free.
-  Cache writes are priced as plain input until TD-057
+  Cache writes are priced at the rule's cache-write rates (`incr/06`); an
+  undeclared rate falls back to the input rate
+- Analysis facts (`incr/06`, batch 3): `token_jti`, `deploy_stage` (as
+  `/healthz` reports it), `model_behavior_version`, `tool_count` /
+  `tool_calls_made`, `message_count`, `vector_count` / `vector_dimension`
 - Billing correlation: `billed_metric_key`, `billed_amount`, `cost_unit`,
   `usage_event_id`
 

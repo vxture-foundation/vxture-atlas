@@ -250,7 +250,17 @@ E - usage reaches the platform (ADR-010, owner 2026-09-30):
       TTFT are derived (started_at + latency_ms, first_token_at - started_at).
       K1: `reqlog_write_failures_total{table,reason}` - a failing reqlog write
       was a warn line only, which is how the dev database lost a month of rows
-      unseen. Cache writes are costed at the input rate until TD-057
+      unseen. Cache writes are costed at the input rate until TD-057.
+      Released as v0.7.14 (2026-09-30, db-init first)
+- [x] E3d. Usage-record batch 3 (P2): `incr/06` adds token_jti, deploy_stage,
+      model_behavior_version, tool_count / tool_calls_made, message_count,
+      vector_count / vector_dimension to reqlog, and cache-write rates to price
+      rules (TD-057's Atlas half) - priced in the shared `priceUsage`. The cost
+      rollup now places a row in time by `started_at` (created_at only for rows
+      before incr/05). Reclassified as reserved, because Atlas has no such input
+      today: image/audio/file counts and per-modality tokens (chat content is
+      text only), tool-use prompt tokens (Gemini only), reasoning budget
+      (thinking is off/on only)
 - [ ] E4. Consume under the caller's product with raw tokens in four
       dimensions, and C2 read by the caller's product - in the shape #547
       settles on

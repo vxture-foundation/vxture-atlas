@@ -33,6 +33,7 @@ import {
 } from "../quota/model-rate-limiter.service";
 import { ProviderKeyService } from "../provider-keys/provider-key.service";
 import { resolveApiKey, managedKeyAliasOf } from "./resolve-api-key";
+import { modelBehaviorVersion } from "../model-behavior-version";
 import { ModelRuntimeException } from "./runtime.errors";
 import { RequestLogService } from "../reqlog/request-log.service";
 import {
@@ -93,6 +94,8 @@ export interface MeterReading {
   usage?: Partial<TokenUsage>;
   /** Usage-record batch 1: the vendor's id, model and raw usage. */
   upstream?: UpstreamCallRecord;
+  /** Usage-record batch 3: capability-specific facts (embed: vector count/dimension). */
+  facts?: { vectorCount?: number; vectorDimension?: number };
 }
 
 /**
@@ -160,6 +163,9 @@ export async function withRequestLog<T>(
       ? { providerKeyAlias: managedKeyAliasOf(gated.model) }
       : {}),
     streamed: false,
+    // Usage-record batch 3 (B8, C9).
+    ...(auth?.jti !== undefined ? { tokenJti: auth.jti } : {}),
+    modelBehaviorVersion: modelBehaviorVersion(gated.model),
   };
 
   let reading: MeterReading = {};
@@ -208,6 +214,7 @@ export async function withRequestLog<T>(
       ...(reading.upstream?.rawUsage !== undefined
         ? { upstreamUsage: reading.upstream.rawUsage }
         : {}),
+      ...(reading.facts ?? {}),
       ...(consumed.billed && metering
         ? {
             billedMetricKey: metering.metric,
