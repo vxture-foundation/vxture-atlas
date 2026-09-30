@@ -117,8 +117,14 @@ describe("legacyDataPlaneRouteOf", () => {
  * The `@Get([canonical, retired])` form itself is already proven in production
  * by the `/capability/*` routes, which use it verbatim.
  */
+// The first dynamic import pulls in both controllers' whole module graphs
+// (Prisma client included). Alone that is ~1.6 s; alongside 78 other files in
+// a full run it crossed vitest's 5 s default twice on 2026-09-30, failing a
+// test whose assertions never ran. The budget is for the import, not the test.
+const IMPORT_BUDGET_MS = 30_000;
+
 describe("route registration", () => {
-  it("serves both spellings on /v1 and /tenancy", async () => {
+  it("serves both spellings on /v1 and /tenancy", { timeout: IMPORT_BUDGET_MS }, async () => {
     const { ModelRuntimeController } = await import("./runtime/runtime.controller");
     const { TenancyController } = await import("./tenancy/tenancy.controller");
 
@@ -134,7 +140,7 @@ describe("route registration", () => {
      so the first entry is what `@Res()`-less handlers and any path-echoing
      middleware report. A flipped pair would advertise the retired name as the
      real one for the whole window. */
-  it("registers the canonical spelling first, retired second", async () => {
+  it("registers the canonical spelling first, retired second", { timeout: IMPORT_BUDGET_MS }, async () => {
     const { ModelRuntimeController } = await import("./runtime/runtime.controller");
     const { TenancyController } = await import("./tenancy/tenancy.controller");
 
