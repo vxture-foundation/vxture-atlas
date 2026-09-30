@@ -260,7 +260,8 @@ E - usage reaches the platform (ADR-010, owner 2026-09-30):
       before incr/05). Reclassified as reserved, because Atlas has no such input
       today: image/audio/file counts and per-modality tokens (chat content is
       text only), tool-use prompt tokens (Gemini only), reasoning budget
-      (thinking is off/on only)
+      (thinking is off/on only). Released as v0.7.15 (2026-09-30, db-init
+      first). Batch 4 (P3) is reserved structure only - no such calls today
 - [ ] E4. Consume under the caller's product with raw tokens in four
       dimensions, and C2 read by the caller's product - in the shape #547
       settles on
