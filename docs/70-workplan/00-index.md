@@ -217,6 +217,11 @@ D - raised during this work:
       `provider` - no body field, so no `Retry-After` header, while
       `200-s2s-provider-surface.md` and letter 10 to karda promised both.
       Fixed 2026-09-30 with a test through `chat()`, seen red first
+- [x] Released as v0.7.11 (2026-09-30, `ba521e8`): dev stack showed v0.7.10
+      answering 429 with no `Retry-After` and v0.7.11 with `Retry-After: 59` /
+      `retryAfterMs: 58198`; production deploy verified (health, provenance,
+      readiness, limits). Not reproduced in production - that needs a
+      rate-limit policy written there, not authorized for this change
 
 Platform-side, not this repo's write-scope:
 
