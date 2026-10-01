@@ -50,6 +50,7 @@ export class OpenAiCompatibleProvider extends BaseProvider {
       authHeaders(request, wire),
       buildOpenAiCompatibleBody(request, false, wire),
       request.signal,
+      "whole_response",
     );
 
     return normalizeOpenAiCompatibleResponse(this.providerName, response);
@@ -147,6 +148,8 @@ export class OpenAiCompatibleProvider extends BaseProvider {
           temperature: 0,
           response_format: { type: "json_object" },
         },
+        undefined,
+        "whole_response",
       );
 
       if (response.usage) {

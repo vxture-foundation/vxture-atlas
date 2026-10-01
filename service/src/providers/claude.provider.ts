@@ -167,6 +167,7 @@ export class ClaudeProvider extends BaseProvider {
       buildClaudeHeaders(request, wire),
       buildClaudeBody(request, false, wire),
       request.signal,
+      "whole_response",
     );
 
     /* `thinking` / `redacted_thinking` 块整组留下来（TD-046 已修）。

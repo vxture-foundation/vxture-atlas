@@ -1,4 +1,4 @@
-import { describeAbort, guardTimeToFirstByte } from "./upstream-timeout";
+import { describeAbort, guardTimeToFirstByte, type HeaderWait } from "./upstream-timeout";
 import type {
   IModelProvider,
   ProviderChatRequest,
@@ -97,8 +97,10 @@ export abstract class BaseProvider implements IModelProvider {
     headers: Record<string, string>,
     body: Record<string, unknown>,
     callerSignal?: AbortSignal,
+    /** Non-streaming generation sends headers only once the answer is done. */
+    wait: HeaderWait = "first_byte",
   ): Promise<TResponse> {
-    const guard = guardTimeToFirstByte(this.providerName, callerSignal);
+    const guard = guardTimeToFirstByte(this.providerName, callerSignal, wait);
 
     let response: Response;
     try {

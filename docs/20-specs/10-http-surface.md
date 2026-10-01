@@ -124,8 +124,19 @@ candidate in the chain.
   output already sent.
 - It is the caller's budget, not a provider fault: it does not count toward the
   circuit breaker, and no further fallback is tried once it has run out.
-- Omitted = no total deadline, only the time-to-first-byte guard - as before.
-  A value outside the range is `400 CHAT_TIMEOUT_INVALID`.
+- Omitted = no total deadline. A value outside the range is
+  `400 CHAT_TIMEOUT_INVALID`.
+- **How long Atlas waits for the upstream's response headers** depends on the
+  kind of call, because the headers mean different things:
+  - Streaming chat, embed, rerank: headers come at once; 30 s without them is
+    a hung upstream (`PROVIDER_CONNECT_TIMEOUT_MS`).
+  - **Non-streaming chat and parse: the upstream sends headers only after the
+    whole answer is generated**, so the wait is the generation time. It is
+    bounded by `timeoutMs` when sent, otherwise by 600 s
+    (`PROVIDER_WHOLE_RESPONSE_TIMEOUT_MS`, equal to the largest `timeoutMs`,
+    so a caller's deadline always comes first). Until v0.7.18 this used the
+    30 s window too, and every non-streaming answer longer than 30 s failed
+    as `PROVIDER_UNAVAILABLE` (tenderforge#69).
 
 `GET /v1/models?tenantId=` accepts the tenant id as a caller-supplied filter by
 design: `/v1` is a first-party product plane, and tenant privacy is not a
