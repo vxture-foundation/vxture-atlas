@@ -25,7 +25,8 @@ type MetricName =
   | "data_plane_legacy_path_requests_total"
   | "platform_consume_outcomes_total"
   | "reqlog_write_failures_total"
-  | "upstream_usage_unmapped_keys_total";
+  | "upstream_usage_unmapped_keys_total"
+  | "upstream_http_errors_total";
 
 type MetricDefinition = {
   type: "counter" | "gauge" | "histogram";
@@ -131,6 +132,17 @@ const METRIC_DEFINITIONS: Record<MetricName, MetricDefinition> = {
    * stays NULL and still reads `not_supported`. Non-zero = a vendor field
    * nobody has read yet. `key` is a dotted path from a fixed-depth walk.
    */
+  /**
+   * A failed upstream call by vendor and HTTP status (upstream-status.ts).
+   * `class="account"` (401/402/403) is the one only the owner can fix: on
+   * 2026-10-01 DeepSeek had answered 402 sixteen times, all filed as
+   * PROVIDER_UNAVAILABLE and absorbed by failover, so nothing named it.
+   */
+  upstream_http_errors_total: {
+    type: "counter",
+    help: "upstream_http_errors_total 上游 HTTP 失败（provider；status；class=account|rate_limit|request|server|other）",
+    labelNames: ["provider", "status", "class"],
+  },
   upstream_usage_unmapped_keys_total: {
     type: "counter",
     help: "upstream_usage_unmapped_keys_total 厂商 usage 中 Atlas 未映射的字段（provider；key 为点分路径）",

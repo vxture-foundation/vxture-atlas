@@ -15,6 +15,7 @@ import {
 import { randomUUID } from "node:crypto";
 
 import { ProviderHttpError } from "../providers/base.provider";
+import { recordUpstreamHttpStatus, upstreamStatusHint } from "./upstream-status";
 import {
   CONTEXT_OVERFLOW_SIGNATURES,
   isContextOverflow,
@@ -1005,6 +1006,7 @@ export class ModelRuntimeService {
     model: AiModelRecord,
     requestId: string,
   ): ModelRuntimeException {
+    recordUpstreamHttpStatus(error, model.provider);
     if (error instanceof ModelRuntimeException) {
       return this.enrichRuntimeError(error, requestId, {
         modelCode: model.modelCode,
@@ -1057,7 +1059,7 @@ export class ModelRuntimeService {
 
     const message =
       error instanceof ProviderHttpError
-        ? `${model.provider} provider returned status ${error.status}`
+        ? `${model.provider} provider returned status ${error.status}${upstreamStatusHint(error.status)}`
         : error instanceof Error
           ? error.message
           : "Provider request failed";

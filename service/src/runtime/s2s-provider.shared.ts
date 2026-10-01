@@ -19,7 +19,10 @@ import { randomUUID } from "node:crypto";
 
 import { costUnitForMetric } from "../reqlog/cost-unit";
 
-import { ProviderCapabilityNotImplementedError } from "../providers/base.provider";
+import {
+  ProviderCapabilityNotImplementedError,
+  ProviderHttpError,
+} from "../providers/base.provider";
 import { ModelRegistryService } from "../registry/model-registry.service";
 import { ModelRouterService } from "../router/model-router.service";
 import {
@@ -36,6 +39,7 @@ import { resolveApiKey, managedKeyAliasOf } from "./resolve-api-key";
 import { modelBehaviorVersion } from "../model-behavior-version";
 import { batch4Columns, billingReasons, hostOf } from "../reqlog/record-facts";
 import { ModelRuntimeException } from "./runtime.errors";
+import { recordUpstreamHttpStatus, upstreamStatusHint } from "./upstream-status";
 import { RequestLogService } from "../reqlog/request-log.service";
 import {
   PlatformEntitlementClient,
@@ -577,6 +581,7 @@ export function toS2sProviderError(
   model: AiModelRecord,
   requestId: string,
 ): ModelRuntimeException {
+  recordUpstreamHttpStatus(error, model.provider);
   if (error instanceof ModelRuntimeException) {
     return error;
   }
@@ -590,7 +595,12 @@ export function toS2sProviderError(
     );
   }
 
-  const message = error instanceof Error ? error.message : "Provider request failed";
+  const message =
+    error instanceof ProviderHttpError
+      ? `${model.provider} provider returned status ${error.status}${upstreamStatusHint(error.status)}`
+      : error instanceof Error
+        ? error.message
+        : "Provider request failed";
   return new ModelRuntimeException(
     HttpStatus.SERVICE_UNAVAILABLE,
     "PROVIDER_UNAVAILABLE",
