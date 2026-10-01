@@ -90,6 +90,8 @@ const REFUSED_BY_SERVICE = {
   "model.model_providers": ["providerCode", "providerType"],
   "model.model_price_rules": [
     "billingMode",
+    "cacheWrite1hUnitPrice",
+    "cacheWriteUnitPrice",
     "cachedInputUnitPrice",
     "currency",
     "effectiveAt",

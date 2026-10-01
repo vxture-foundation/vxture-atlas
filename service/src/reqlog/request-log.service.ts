@@ -1,6 +1,12 @@
 import { Injectable, Logger } from "@nestjs/common";
+import { serviceIdentity } from "@vxture/shared";
 
+import { Prisma } from "../generated/prisma";
 import { prisma } from "../prisma";
+import { priceOneCall } from "../observability/cost-rollup";
+import { classifyNulls, type DimensionStatus } from "./dimension-status";
+import { metricsRegistry } from "../runtime/metrics.registry";
+import { unmappedUsagePaths } from "./usage-keys";
 import { isUuid } from "../uuid";
 import type { ErrorLogEntry, RequestLogEntry } from "./request-log.types";
 
@@ -43,9 +49,25 @@ function clamp(value: string | undefined, max: number): string | null {
  * inference call that succeeded must not be turned into an error because the
  * log write failed. Every method swallows its errors into a warning.
  */
+/**
+ * Usage-record batch 3 (B10): the stage that writes every row, read from the
+ * same identity `/healthz` reports - one source, so a row and the health
+ * endpoint cannot name different environments. Clamped to the column.
+ */
+const DEPLOY_STAGE: string | null =
+  serviceIdentity({ service: "atlas" }).stage?.slice(0, 16) || null;
+
+/** smallint columns: counts past its range are clamped rather than failing the whole insert. */
+function smallCount(value: number | undefined): number | null {
+  if (typeof value !== "number" || !Number.isFinite(value)) return null;
+  return Math.min(32767, Math.max(0, Math.trunc(value)));
+}
+
 @Injectable()
 export class RequestLogService {
   private readonly logger = new Logger(RequestLogService.name);
+  /** provider|path pairs already warned about by this process. */
+  private readonly warnedUsagePaths = new Set<string>();
 
   /**
    * Say out loud that a request's tenant attribution is being dropped.
@@ -63,6 +85,32 @@ export class RequestLogService {
    * per-request on purpose - a caller doing it on every call is exactly the
    * case worth being noisy about, and it stops the moment they fix it.
    */
+  /** A tenant the caller sent that the uuid column cannot hold - written NULL. */
+  /**
+   * A vendor usage field Atlas does not map (usage-keys.ts): counted every
+   * time, warned once per provider and field per process - the counter is the
+   * signal, the log line says which field to read.
+   */
+  private reportUnmappedUsage(provider: string | null, usage: unknown): void {
+    if (usage === undefined || usage === null) return;
+    const label = provider ?? "unknown";
+    for (const key of unmappedUsagePaths(usage)) {
+      metricsRegistry.incCounter("upstream_usage_unmapped_keys_total", { provider: label, key });
+      const seen = `${label}|${key}`;
+      if (this.warnedUsagePaths.has(seen)) continue;
+      this.warnedUsagePaths.add(seen);
+      this.logger.warn(
+        `upstream usage from provider=${label} carries "${key}", which Atlas does not map; ` +
+          "map it to a column or list it as known in reqlog/usage-keys.ts",
+      );
+    }
+  }
+
+  private tenantDropped(entry: RequestLogEntry): boolean {
+    const raw = entry.tenantId?.trim();
+    return Boolean(raw) && !isUuid(raw as string);
+  }
+
   private warnOnDroppedTenant(entry: RequestLogEntry): void {
     const raw = entry.tenantId?.trim();
     if (!raw || isUuid(raw)) return;
@@ -76,9 +124,56 @@ export class RequestLogService {
 
   async record(entry: RequestLogEntry): Promise<void> {
     this.warnOnDroppedTenant(entry);
+    const { priced: pricing, why: costWhy } = await this.priceRow(entry);
+    const reached = entry.usageSource !== undefined;
     try {
-      await prisma.requestRecord.create({
-        data: {
+      const data = {
+          // Usage-record batch 2 (incr/05). Enough on the row to price it
+          // alone, without joining back to state that has since changed.
+          startedAt: entry.startedAt ?? null,
+          firstTokenAt: entry.firstTokenAt ?? null,
+          selectorKind: entry.selectorKind ?? null,
+          selectorValue: clamp(entry.selectorValue, 128),
+          providerKeyAlias: clamp(entry.providerKeyAlias, 128),
+          thinkingMode: entry.thinkingMode ?? null,
+          maxTokens:
+            typeof entry.maxTokens === "number" ? Math.trunc(entry.maxTokens) : null,
+          streamed: entry.streamed ?? null,
+          cancelledBy: entry.cancelledBy ?? null,
+          upstreamCost: pricing?.cost ?? null,
+          costCurrency: pricing?.currency ?? null,
+          priceRuleId: pricing?.priceRuleId ?? null,
+          pricingWindow: pricing?.window ?? null,
+          // Usage-record batch 3 (incr/06).
+          tokenJti: clamp(entry.tokenJti, 128),
+          deployStage: DEPLOY_STAGE,
+          modelBehaviorVersion: clamp(entry.modelBehaviorVersion, 64),
+          toolCount: smallCount(entry.toolCount),
+          toolCallsMade: smallCount(entry.toolCallsMade),
+          messageCount: smallCount(entry.messageCount),
+          vectorCount:
+            typeof entry.vectorCount === "number" ? Math.trunc(entry.vectorCount) : null,
+          vectorDimension:
+            typeof entry.vectorDimension === "number" ? Math.trunc(entry.vectorDimension) : null,
+          // Usage-record batch 4 (incr/07).
+          upstreamHost: clamp(entry.upstreamHost, 255),
+          serviceTier: clamp(entry.serviceTier, 32),
+          inputImageCount:
+            typeof entry.inputImageCount === "number" ? Math.trunc(entry.inputImageCount) : null,
+          inputImageTokens: asBigIntOrNull(entry.inputImageTokens),
+          inputAudioTokens: asBigIntOrNull(entry.inputAudioTokens),
+          outputAudioTokens: asBigIntOrNull(entry.outputAudioTokens),
+          outputImageTokens: asBigIntOrNull(entry.outputImageTokens),
+          toolUsePromptTokens: asBigIntOrNull(entry.toolUsePromptTokens),
+          webSearchRequests:
+            typeof entry.webSearchRequests === "number" ? Math.trunc(entry.webSearchRequests) : null,
+          // Follows finish_reason: known only when the reason is.
+          contentFiltered:
+            entry.finishReason !== undefined ? entry.finishReason === "content_filter" : null,
+          // Atlas has neither a queue nor a batch mode: on a row that reached
+          // a provider these are facts - 0 ms queued, not a batch.
+          queueWaitMs: reached ? 0 : null,
+          isBatch: reached ? false : null,
           requestId: clamp(entry.requestId, 128) ?? entry.requestId,
           status: entry.status,
           // Clamped but NOT coerced (product_251 X-2 requires it verbatim).
@@ -112,6 +207,24 @@ export class RequestLogService {
           // being zero are different facts, and only the second one is free.
           cachedInputTokens: asBigIntOrNull(entry.cachedInputTokens),
           reasoningTokens: asBigIntOrNull(entry.reasoningTokens),
+          // Usage-record batch 1 (incr/04). Same NULL-not-zero rule.
+          cacheWriteInputTokens: asBigIntOrNull(entry.cacheWriteInputTokens),
+          cacheWrite1hInputTokens: asBigIntOrNull(entry.cacheWrite1hInputTokens),
+          // CHECK-constrained, like costUnit below: passed through so the
+          // constraint rejects an out-of-vocabulary value instead of clamp()
+          // bending it into one it might accept.
+          usageSource: entry.usageSource ?? null,
+          finishReason: entry.finishReason ?? null,
+          upstreamRequestId: clamp(entry.upstreamRequestId, 200),
+          upstreamModel: clamp(entry.upstreamModel, 200),
+          nativeFinishReason: clamp(entry.nativeFinishReason, 64),
+          // Verbatim: every normalized column above is derived from it, and a
+          // pricing rule written later can re-derive from it. Prisma's
+          // DbNull, not JS null, is what leaves a Json? column NULL.
+          upstreamUsage:
+            entry.upstreamUsage !== undefined
+              ? (entry.upstreamUsage as Prisma.InputJsonValue)
+              : Prisma.DbNull,
           latencyMs:
             typeof entry.latencyMs === "number"
               ? Math.trunc(entry.latencyMs)
@@ -140,14 +253,128 @@ export class RequestLogService {
           // `productId` stays NULL and always will - a uuid FK-shaped
           // reference into the platform's product.products, in another
           // database. The resolvable form is `product_code` above (incr/05).
+      };
+      // Usage-record batch 4: for every usage dimension this row leaves
+      // NULL, the reason - from the row itself plus what only the caller knew.
+      const dimensionStatus = classifyNulls(data, {
+        capability: entry.capability,
+        reached,
+        usageSource: entry.usageSource,
+        streamed: entry.streamed,
+        notSupported: new Set(entry.notSupported ?? []),
+        explicit: {
+          ...(entry.nullReasons ?? {}),
+          ...(costWhy !== undefined
+            ? {
+                upstreamCost: costWhy,
+                costCurrency: costWhy,
+                priceRuleId: costWhy,
+                pricingWindow: costWhy,
+              }
+            : {}),
+          ...(this.tenantDropped(entry) ? { tenantId: "capture_failed" as const } : {}),
+        },
+      });
+      this.reportUnmappedUsage(data.providerCode, entry.upstreamUsage);
+      await prisma.requestRecord.create({
+        data: {
+          ...data,
+          dimensionStatus:
+            dimensionStatus !== undefined
+              ? (dimensionStatus as Prisma.InputJsonValue)
+              : Prisma.DbNull,
         },
       });
     } catch (error) {
+      recordWriteFailure("request_records", error);
       this.logger.warn(
         `request log write failed for requestId=${entry.requestId}: ${
           error instanceof Error ? error.message : String(error)
         }`,
       );
+    }
+  }
+
+  /**
+   * Usage-record batch 2 (J1/J2): what the vendor charged for this row, by the
+   * price rule in force when the attempt STARTED - the same rule the cost
+   * rollup would pick (`effective_at <= t < expires_at`, not deleted, token
+   * billing, `is_active` deliberately ignored), priced by the same formula
+   * (`priceOneCall` shares `priceUsage` with the rollup).
+   *
+   * Never throws and never guesses. No token counts, no model, no rule in
+   * force, or an unreadable provider policy all leave the columns NULL -
+   * "unpriced" - because a 0 would say "this call was free".
+   */
+  private async priceRow(entry: RequestLogEntry): Promise<{
+    priced?: { cost: string; currency: string; priceRuleId: string; window: "peak" | "off_peak" };
+    /**
+     * Why it is unpriced, when that is not already what the token columns
+     * say: no rule in force (the operator has not priced the model) or a
+     * failed lookup / unreadable policy (Atlas could not). Absent = the row
+     * has no token counts, and the cost columns share their reason.
+     */
+    why?: DimensionStatus;
+  }> {
+    if (!entry.modelCode) return {};
+    if (typeof entry.inputTokens !== "number" && typeof entry.outputTokens !== "number") {
+      return {};
+    }
+    const at = entry.startedAt ?? new Date();
+    try {
+      const rule = await prisma.modelPriceRule.findFirst({
+        where: {
+          modelDef: { modelCode: entry.modelCode },
+          billingMode: "token",
+          deletedAt: null,
+          effectiveAt: { lte: at },
+          OR: [{ expiresAt: null }, { expiresAt: { gt: at } }],
+        },
+        orderBy: [{ effectiveAt: "desc" }, { createdAt: "desc" }],
+      });
+      if (!rule) return { why: "not_configured" };
+      const provider = entry.providerCode
+        ? await prisma.modelProvider.findFirst({
+            where: { providerCode: entry.providerCode },
+            select: { config: true },
+          })
+        : null;
+      const providerPricing =
+        provider?.config && typeof provider.config === "object"
+          ? (provider.config as Record<string, unknown>)["pricing"]
+          : undefined;
+      const priced = priceOneCall(
+        {
+          input: entry.inputTokens ?? 0,
+          cached: entry.cachedInputTokens,
+          cacheWrite: entry.cacheWriteInputTokens,
+          cacheWrite1h: entry.cacheWrite1hInputTokens,
+          output: entry.outputTokens ?? 0,
+        },
+        {
+          unitTokens: rule.unitTokens,
+          inputUnitPrice: rule.inputUnitPrice.toString(),
+          outputUnitPrice: rule.outputUnitPrice.toString(),
+          requestUnitPrice: rule.requestUnitPrice.toString(),
+          // `?.` and not `=== null`: an absent value must read as "not
+          // declared" too, never throw and leave the whole row unpriced.
+          cachedInputUnitPrice: rule.cachedInputUnitPrice?.toString() ?? null,
+          cacheWriteUnitPrice: rule.cacheWriteUnitPrice?.toString() ?? null,
+          cacheWrite1hUnitPrice: rule.cacheWrite1hUnitPrice?.toString() ?? null,
+        },
+        providerPricing,
+        at,
+      );
+      // An unreadable off-peak policy: the rule exists, Atlas could not apply it.
+      if (!priced) return { why: "capture_failed" };
+      return { priced: { ...priced, currency: rule.currency, priceRuleId: rule.id } };
+    } catch (error) {
+      this.logger.warn(
+        `request cost not priced for requestId=${entry.requestId}: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+      return { why: "capture_failed" };
     }
   }
 
@@ -187,6 +414,7 @@ export class RequestLogService {
         },
       });
     } catch (error) {
+      recordWriteFailure("error_records", error);
       this.logger.warn(
         `error log write failed for requestId=${entry.requestId}: ${
           error instanceof Error ? error.message : String(error)
@@ -194,4 +422,30 @@ export class RequestLogService {
       );
     }
   }
+}
+
+/**
+ * The failure, sorted into a closed vocabulary. The Prisma/Postgres wording is
+ * free text; as a label it would mint one series per message. The classes are
+ * the ones that have actually happened or that the table's design makes
+ * likely: a column the database lacks (a skipped db-init), a CHECK or
+ * permission refusal, and the rest.
+ */
+export function writeFailureReason(error: unknown): string {
+  const text = error instanceof Error ? error.message : String(error);
+  if (/column .* does not exist/i.test(text)) return "missing_column";
+  if (/violates check constraint/i.test(text)) return "check_violation";
+  if (/permission denied/i.test(text)) return "permission_denied";
+  if (/no partition of relation|no partition .* found/i.test(text)) {
+    return "missing_partition";
+  }
+  if (/connect|ECONNREFUSED|timed? ?out/i.test(text)) return "unreachable";
+  return "other";
+}
+
+function recordWriteFailure(table: string, error: unknown): void {
+  metricsRegistry.incCounter("reqlog_write_failures_total", {
+    table,
+    reason: writeFailureReason(error),
+  });
 }

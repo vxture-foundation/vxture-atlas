@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
+import { DEFAULT_MAX_REQUEST_BODY_BYTES } from "./request-body";
 import { ModelRuntimeController } from "./runtime.controller";
 import { ModelRuntimeException } from "./runtime.errors";
 
@@ -105,11 +106,16 @@ describe("ModelRuntimeController.listEndpoints", () => {
       endpointCode: "chat/default",
       category: "chat",
       state: "active" as const,
+      contextWindow: 131072,
+      thinkingModes: ["off", "on"] as ("off" | "on")[],
+      maxOutputTokens: 16384,
     };
     const { controller } = makeController([row]);
 
     expect(await controller.listEndpoints(request("vxtpl"), {})).toEqual({
       endpoints: [row],
+      // The ceiling the parser enforces, published once for every route.
+      maxRequestBytes: DEFAULT_MAX_REQUEST_BODY_BYTES,
     });
   });
 });

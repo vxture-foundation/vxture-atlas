@@ -1,5 +1,6 @@
 import { joinEndpoint, resolveUpstreamModel } from "./base.provider";
 import { UpstreamCallFailure } from "./upstream-failure";
+import { statedNumber, upstreamField } from "./upstream-record";
 import type {
   OpenAiCompatibleChatResponse,
   OpenAiCompatibleChatStreamChunk,
@@ -7,7 +8,7 @@ import type {
   OpenAiUsage,
 } from "./openai-compatible.types";
 import { openSseRequest, readSseMessages } from "./sse";
-import { OPENAI_WIRE_DEFAULTS } from "./wire";
+import { OPENAI_WIRE_DEFAULTS, thinkingFragment } from "./wire";
 import type { ResolvedWire } from "./wire";
 import { errorFrame } from "../types/runtime.types";
 import type {
@@ -21,6 +22,7 @@ import type {
   ToolChoice,
   ToolDefinition,
   ChatReasoning,
+  UpstreamCallRecord,
 } from "../types/runtime.types";
 
 /**
@@ -43,6 +45,9 @@ export function buildOpenAiCompatibleBody(
   // （wire.ts RESERVED_BODY_KEYS），这里的顺序是第二道保险，不是第一道。
   const body: Record<string, unknown> = {
     ...wire.extraBody,
+    // ADR-009: the per-call thinking fragment beats the per-model extraBody
+    // default and never the adapter's own keys below.
+    ...thinkingFragment(wire, request.thinking),
     model: resolveUpstreamModel(request),
     messages: request.messages.map(toWireMessage),
     stream,
@@ -198,6 +203,16 @@ export function normalizeOpenAiCompatibleResponse(
           : {}),
         ...readCostSplits(response.usage),
       },
+      {
+        outputBudgetExhausted: response.choices?.[0]?.finish_reason === "length",
+        ...upstreamField(
+          response.id,
+          response.model,
+          response.choices?.[0]?.finish_reason ?? undefined,
+          response.usage,
+          openAiExtras(response.service_tier, response.usage),
+        ),
+      },
     );
   }
 
@@ -221,6 +236,13 @@ export function normalizeOpenAiCompatibleResponse(
     // Zeros above are placeholders when the upstream sent no usage object;
     // metering records NULL for those instead of a fabricated free request.
     usageReported: response.usage != null,
+    ...upstreamField(
+      response.id,
+      response.model,
+      choice?.finish_reason ?? undefined,
+      response.usage,
+          openAiExtras(response.service_tier, response.usage),
+    ),
   };
 }
 
@@ -254,8 +276,8 @@ function readCostSplits(
  * 压成了一句什么也没说的话，而运营在管理页面上看到的就是它。最贵的一种是
  * **思考型模型**（DeepSeek V4 默认开思考且 effort=high，思考链算在
  * completion 里）—— 输出预算被思考链吃光，`content` 为空、`finish_reason`
- * 为 `length`，看起来和"上游坏了"一模一样，实际只需要把预算调大或用
- * `config.wire.extraBody` 关掉思考。
+ * 为 `length`，看起来和"上游坏了"一模一样，实际只需要把预算调大，或由调用方
+ * 带 `thinking: "off"`（ADR-009）。
  *
  * 这里只负责把成因说清楚，不负责把它变成成功：一次没有正文的应答对调用方
  * 就是失败，静默地放它过去只会把问题推到更远的地方。
@@ -275,7 +297,7 @@ function describeEmptyResponse(
     return reasoningChars > 0
       ? `output budget exhausted by the reasoning chain before any content was produced ` +
           `(finish_reason=length, ${reasoningChars} chars of reasoning_content) - raise max_tokens, ` +
-          `or turn the thinking mode off via config.wire.extraBody`
+          `or send thinking: "off" (ADR-009)`
       : "output budget exhausted before any content was produced (finish_reason=length) - raise max_tokens";
   }
 
@@ -367,6 +389,14 @@ export async function* parseOpenAiCompatibleStream(
   >();
   let usage: TokenUsage | undefined;
   let finishReason: FinishReason | undefined;
+  /* Usage-record batch 1. The id and model repeat on every chunk; the first
+     seen is kept. The raw usage and native finish reason are the last seen,
+     because that is where the upstream puts the final values. */
+  let upstreamId: string | undefined;
+  let upstreamModel: string | undefined;
+  let nativeFinishReason: string | undefined;
+  let rawUsage: OpenAiUsage | undefined;
+  let serviceTier: string | undefined;
 
   /* 推理文本的累积。`done` 帧的信封要完整的那一份，而分片是逐个 yield 出去的。 */
   let reasoningText = "";
@@ -391,6 +421,7 @@ export async function* parseOpenAiCompatibleStream(
          不是（Anthropic 的 `signature` 根本不在分片里）。让调用方拼，等于要求
          它发明一个它拿不到的东西。 */
       ...reasoningFromWire(reasoningText.length > 0 ? reasoningText : undefined),
+      ...upstreamField(upstreamId, upstreamModel, nativeFinishReason, rawUsage, openAiExtras(serviceTier, rawUsage)),
     };
   }
 
@@ -413,7 +444,18 @@ export async function* parseOpenAiCompatibleStream(
       continue;
     }
 
+    if (upstreamId === undefined && typeof chunk.id === "string" && chunk.id) {
+      upstreamId = chunk.id;
+    }
+    if (upstreamModel === undefined && typeof chunk.model === "string" && chunk.model) {
+      upstreamModel = chunk.model;
+    }
+    if (typeof chunk.service_tier === "string" && chunk.service_tier) {
+      serviceTier = chunk.service_tier;
+    }
+
     if (chunk.usage) {
+      rawUsage = chunk.usage;
       usage = {
         promptTokens: chunk.usage.prompt_tokens ?? 0,
         completionTokens: chunk.usage.completion_tokens ?? 0,
@@ -458,6 +500,7 @@ export async function* parseOpenAiCompatibleStream(
     }
 
     if (choice.finish_reason) {
+      nativeFinishReason = choice.finish_reason;
       finishReason = mapFinishReason(choice.finish_reason) ?? finishReason;
     }
   }
@@ -479,3 +522,35 @@ export function resolveChatCompletionsEndpoint(
 
   return joinEndpoint(endpointUrl, suffix);
 }
+
+/**
+ * Usage-record batch 4: what an OpenAI-dialect response can state beyond the
+ * token counts, and what the dialect has no field for at all. Audio splits and
+ * the service tier are in the protocol - absent means this vendor or this call
+ * did not send them (not_reported). Cache WRITES, image-token splits, tool-use
+ * prompt tokens and per-call web search are not in it (not_supported).
+ */
+function openAiExtras(
+  serviceTier: string | undefined,
+  usage: OpenAiUsage | undefined,
+): Partial<UpstreamCallRecord> {
+  return {
+    ...(serviceTier ? { serviceTier } : {}),
+    ...(statedNumber(usage?.prompt_tokens_details?.audio_tokens) !== undefined
+      ? { inputAudioTokens: usage?.prompt_tokens_details?.audio_tokens as number }
+      : {}),
+    ...(statedNumber(usage?.completion_tokens_details?.audio_tokens) !== undefined
+      ? { outputAudioTokens: usage?.completion_tokens_details?.audio_tokens as number }
+      : {}),
+    notSupported: OPENAI_DIALECT_LACKS,
+  };
+}
+
+export const OPENAI_DIALECT_LACKS: readonly string[] = [
+  "cacheWriteInputTokens",
+  "cacheWrite1hInputTokens",
+  "inputImageTokens",
+  "outputImageTokens",
+  "toolUsePromptTokens",
+  "webSearchRequests",
+];

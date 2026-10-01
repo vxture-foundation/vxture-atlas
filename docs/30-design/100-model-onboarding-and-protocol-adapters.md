@@ -15,9 +15,11 @@ differences into configuration grows a DSL nobody can debug. The value is in
 drawing the boundary, not erasing it.
 
 Also not a goal: **Atlas meters, it does not bill.** Atlas records how many
-tokens a call burned and whose it was. Unit
-prices are an operations concern living in `model_price_rules`. Nothing on the
-request path computes money, and everything below discusses **quantities** only.
+tokens a call burned and whose it was. Unit prices are the vendors' prices,
+entered by operations in `model_price_rules` (ADR-012). The only money Atlas
+computes is what a call cost the platform (`upstream_cost` on the reqlog row,
+written after the answer); nothing decides or charges a price, and everything
+below discusses **quantities** only.
 
 ## 2. Three concepts one word conflates
 
@@ -42,7 +44,8 @@ Onboarding then touches only the first and third.
 | Auth `Authorization: Bearer` vs `x-api-key` | data | same request body |
 | Needs `stream_options.include_usage` | data | one extra switch |
 | Supports tool calling / `top_p` | data | capability declaration, decides which fields are sent |
-| Vendor switch with no canonical equivalent (`thinking`, `reasoning_effort`, `response_format`) | data | a field to pass through, not a shape change - `wire.extraBody` |
+| Vendor switch with no canonical equivalent (`reasoning_effort`, `response_format`) | data | a field to pass through, not a shape change - `wire.extraBody` |
+| Per-call thinking (`off`/`on`), spelled differently per vendor | data | the caller's `thinking` field, translated by `wire.thinking` (ADR-009) |
 | `max_tokens` vs `max_completion_tokens` | data | a rename, not a shape change |
 | Model id differs from `model_code` | data | already `config.upstreamModel` |
 | Response is `choices[].message` vs `content[]` blocks | **code** | different response shape |
@@ -75,15 +78,22 @@ this layer costs **zero DDL**. A `wire` sub-object carries the quirks:
 // model_providers.config - provider-level defaults
 {
   "wire": {
-    "schemaVersion": 2,
+    "schemaVersion": 4,
     "chatPath": "/chat/completions",
     "auth": { "style": "bearer" },          // bearer | x-api-key | header
     "streamUsage": "stream_options",        // stream_options | native | none
     "supports": { "tools": true, "toolChoice": true, "topP": true },
     "paramMap": { "maxTokens": "max_tokens" },  // only names that differ
     "extraBody": {                              // vendor switches, sent verbatim
-      "thinking": { "type": "disabled" }
-    }
+      "response_format": { "type": "json_object" }
+    },
+    "thinking": {                               // per-call mode -> body fragment (ADR-009)
+      "off": { "thinking": { "type": "disabled" } },
+      "on":  { "thinking": { "type": "enabled" } }
+    },
+    "contextOverflow": [                        // this vendor's "input too long" (TD-055)
+      { "code": "InvalidParameter", "message": "exceed max message tokens" }
+    ]
   }
 }
 
@@ -110,6 +120,25 @@ a **new** field: DeepSeek's `thinking` / `reasoning_effort`, `response_format`,
 `stop`, `logprobs`. Without it, section 3's own criterion ("parameters differ ->
 data") had no home and the difference went back into code.
 
+`thinking` maps each per-call mode a caller may ask for (`ChatRequest.thinking`)
+to the body fragment this model needs for it (ADR-009). A mode with no entry is
+a mode the model cannot run: a call asking for it is refused with
+`THINKING_MODE_UNSUPPORTED`, never served on the upstream default. An
+always-on model records `"on": {}` and no `off`. Per mode, a model's fragment
+replaces its provider's; the fragment is spread after `extraBody` (a per-call
+choice beats a per-model default) and under the adapter's reserved keys, which
+it cannot touch - rejected on write like `extraBody`'s.
+
+`contextOverflow` teaches Atlas a vendor's "input too long" refusal without
+a release (ADR-008, TD-055). Each entry matches when every field it declares
+matches: `code` against the body's error code, `message` as a case-insensitive
+**substring** - never a regular expression, because an operator-typed pattern
+run against every upstream error body is a denial-of-service and a
+correctness trap. An entry must declare at least one field (one with neither
+would relabel every refusal as an overflow). Layers concatenate - built-in list,
+then provider, then model - so configuration can add recognition, never remove
+the built-in.
+
 **`wire` is a closed schema, not a free dictionary.** Unknown keys are rejected
 on write - otherwise this becomes a second dumping ground. Validation lives on
 the `/capability/providers` and `/capability/models` write paths, not at
@@ -118,8 +147,8 @@ runtime.
 **Strict on write, lenient at runtime.** Operators change configuration faster
 than the service ships, so an older service reading a newer key must ignore it
 and warn, never take a running model out of service. `wire.schemaVersion` is
-the carrier of that rule: an optional integer, currently `2` (`2` added
-`extraBody`). Write validation
+the carrier of that rule: an optional integer, currently `4` (`2` added
+`extraBody`, `3` added `thinking`, `4` added `contextOverflow`). Write validation
 checks it only when it is present - it must be an integer, and a version newer
 than the running build is rejected - so a `wire` written without the key is
 accepted and resolves to the adapter's base version. At runtime an adapter

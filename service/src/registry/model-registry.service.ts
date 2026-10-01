@@ -1,7 +1,8 @@
 import { HttpStatus, Inject, Injectable } from "@nestjs/common";
 
 import { ModelRegistryRepository } from "./model-registry.repository";
-import type { AiModelRecord, ApplicationType } from "../types/runtime.types";
+import type { AiModelRecord, ApplicationType, ThinkingMode } from "../types/runtime.types";
+import { resolveWireFor, supportedThinkingModes } from "../providers/wire";
 import { ModelRuntimeException } from "../runtime/runtime.errors";
 import { toObjectState, type GrantedEndpointState } from "../object-state";
 
@@ -175,18 +176,46 @@ export class ModelRegistryService {
     const codes = [...new Set(grants.map((grant) => grant.endpointCode))];
     const endpoints = await this.repository.findEndpointsByCodes(codes);
     const byCode = new Map(endpoints.map((row) => [row.code, row]));
+    const modelCodes = [
+      ...new Set(
+        endpoints.flatMap((row) =>
+          row.fallbackModelCode === null
+            ? [row.primaryModelCode]
+            : [row.primaryModelCode, row.fallbackModelCode],
+        ),
+      ),
+    ];
+    const usable = new Map(
+      (await this.repository.findActiveModelsByCodes(modelCodes)).map(
+        (model) => [model.modelCode, model],
+      ),
+    );
 
     return codes
       .sort((left, right) => left.localeCompare(right))
       .map((endpointCode) => {
         const row = byCode.get(endpointCode);
         if (!row) {
-          return { endpointCode, category: null, state: "missing" as const };
+          return {
+            endpointCode,
+            category: null,
+            state: "missing" as const,
+            contextWindow: null,
+            maxOutputTokens: null,
+            thinkingModes: [],
+          };
         }
         return {
           endpointCode,
           category: row.category,
           state: toObjectState(row.isActive && row.deletedAt === null),
+          ...routeCapacity(
+            usable.get(row.primaryModelCode),
+            row.fallbackModelCode === null
+              ? undefined
+              : usable.get(row.fallbackModelCode),
+          ),
+          thinkingModes: routeThinkingModes(usable.get(row.primaryModelCode)),
         };
       });
   }
@@ -208,4 +237,59 @@ export interface GrantedEndpoint {
    * coincidence two files happen to share.
    */
   state: GrantedEndpointState;
+  /**
+   * Tokens the route can take in one call, input and output together - the
+   * SMALLEST context window across the models a call on this route can land
+   * on. `null` means unknown: no usable primary, or a model in the chain with
+   * no window recorded. Never the minimum of only the known values - that can
+   * overstate, and overstating is the one error a budget field must not make
+   * (tenderforge letter 40 item 4).
+   */
+  contextWindow: number | null;
+  /** Same rule, for the largest output a call may request. */
+  maxOutputTokens: number | null;
+  /**
+   * ADR-009: the `thinking` values a call on this route can ask for. The
+   * primary's, because the call path refuses a mode the primary cannot run
+   * and SKIPS a fallback that cannot - so a fallback never narrows this.
+   * Empty for a route with no usable primary, and for one whose model has no
+   * `config.wire.thinking` yet: asking then is `THINKING_MODE_UNSUPPORTED`.
+   */
+  thinkingModes: ThinkingMode[];
+}
+
+/** See `GrantedEndpoint.thinkingModes`. */
+export function routeThinkingModes(primary: AiModelRecord | undefined): ThinkingMode[] {
+  if (primary === undefined) return [];
+  return supportedThinkingModes(
+    resolveWireFor({
+      protocol: primary.protocol,
+      providerConfig: primary.providerConfig,
+      config: primary.config,
+    }),
+  );
+}
+
+type CapacityModel = Pick<AiModelRecord, "contextWindow" | "maxOutputTokens">;
+
+/**
+ * A route's capacity, following the call path exactly
+ * (`ModelRuntimeService.resolveCandidateModels`): an unusable primary fails
+ * the whole request, so the route serves nothing and its capacity is unknown;
+ * an unusable fallback is skipped, so it does not count.
+ */
+export function routeCapacity(
+  primary: CapacityModel | undefined,
+  fallback: CapacityModel | undefined,
+): { contextWindow: number | null; maxOutputTokens: number | null } {
+  if (primary === undefined) return { contextWindow: null, maxOutputTokens: null };
+  const chain = fallback === undefined ? [primary] : [primary, fallback];
+  const smallest = (values: (number | null)[]): number | null =>
+    values.some((value) => value === null)
+      ? null
+      : Math.min(...(values as number[]));
+  return {
+    contextWindow: smallest(chain.map((model) => model.contextWindow)),
+    maxOutputTokens: smallest(chain.map((model) => model.maxOutputTokens)),
+  };
 }

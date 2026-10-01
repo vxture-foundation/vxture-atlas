@@ -16,11 +16,21 @@ import { randomUUID } from "node:crypto";
 
 import { ProviderHttpError } from "../providers/base.provider";
 import {
+  CONTEXT_OVERFLOW_SIGNATURES,
+  isContextOverflow,
+  signaturesFromConfig,
+} from "../providers/context-overflow";
+import { resolveWireFor, supportedThinkingModes } from "../providers/wire";
+import {
+  UpstreamCallFailure,
   usageColumns,
+  upstreamFromError,
   usageFromError,
   type UpstreamUsageSnapshot,
 } from "../providers/upstream-failure";
 import { RequestLogService } from "../reqlog/request-log.service";
+import type { RequestLogEntry } from "../reqlog/request-log.types";
+import { batch4Columns, billingReasons, hostOf } from "../reqlog/record-facts";
 import { PlatformEntitlementClient } from "../platform/platform-entitlement.client";
 import type { S2sAuthContext } from "./guards/s2s-auth.guard";
 import { ModelCircuitBreakerService } from "./model-circuit-breaker.service";
@@ -38,16 +48,21 @@ import type {
   ModelRuntimeErrorCode,
   ModelRuntimeErrorResponse,
 } from "./runtime.errors";
-import { resolveApiKey } from "./resolve-api-key";
+import { managedKeyAliasOf, resolveApiKey } from "./resolve-api-key";
+import { modelBehaviorVersion } from "../model-behavior-version";
 import { ProviderKeyService } from "../provider-keys/provider-key.service";
 import type {
   AiModelRecord,
   ChatRequest,
   ChatResponse,
+  FinishReason,
   ProviderChatRequest,
   StreamEvent,
+  ThinkingMode,
   TokenUsage,
+  UpstreamCallRecord,
 } from "../types/runtime.types";
+import { THINKING_MODES } from "../types/runtime.types";
 
 /**
  * Upstream statuses that refuse the request's content rather than signal an
@@ -58,6 +73,43 @@ import type {
  * 408/429/5xx, which are the upstream's capacity.
  */
 const UPSTREAM_REJECTS_REQUEST: ReadonlySet<number> = new Set([400, 413, 422]);
+
+/** Can this model run with `mode`? Read from the same wire the adapter will use. */
+function honoursThinking(model: AiModelRecord, mode: ThinkingMode): boolean {
+  return supportedThinkingModes(
+    resolveWireFor({
+      protocol: model.protocol,
+      providerConfig: model.providerConfig,
+      config: model.config,
+    }),
+  ).includes(mode);
+}
+
+/**
+ * Failures that say nothing about the model's health, so never the breaker:
+ * refusals of the request's content, and the caller's own budget running out
+ * (B6) - a tight `timeoutMs` from one caller must not take a model offline for
+ * everyone.
+ */
+const NOT_A_HEALTH_SIGNAL: ReadonlySet<ModelRuntimeErrorCode> = new Set([
+  "UPSTREAM_REJECTED_REQUEST",
+  "CONTEXT_LENGTH_EXCEEDED",
+  "DEADLINE_EXCEEDED",
+  "OUTPUT_BUDGET_EXHAUSTED",
+]);
+
+/** B6 bounds on `timeoutMs`. */
+const MIN_TIMEOUT_MS = 1_000;
+const MAX_TIMEOUT_MS = 600_000;
+
+/** Either signal cancels; `undefined` when neither exists. */
+function combineSignals(
+  ...signals: Array<AbortSignal | undefined>
+): AbortSignal | undefined {
+  const present = signals.filter((s): s is AbortSignal => s !== undefined);
+  if (present.length === 0) return undefined;
+  return present.length === 1 ? present[0] : AbortSignal.any(present);
+}
 
 /** Enough of the vendor's error body to name the cause, not to echo a prompt back. */
 const UPSTREAM_DETAIL_MAX_CHARS = 300;
@@ -94,6 +146,8 @@ function callerDimensions(
     applicationType: applicationScope.applicationType,
     agentId: applicationScope.agentId,
     ...(request.featureId !== undefined ? { featureId: request.featureId } : {}),
+    // Usage-record batch 3 (B8): which exchanged credential made the call.
+    ...(auth?.jti !== undefined ? { tokenJti: auth.jti } : {}),
   };
 }
 
@@ -107,6 +161,13 @@ interface ChatAttemptContext {
     fallbackModelCodes: string[] | null;
   };
   modelCode: string;
+  /** Usage-record batch 2 (D4): set by the entry point, not by the caller's body. */
+  streamed: boolean;
+  /**
+   * B6: the caller's total budget, started once per request so every
+   * candidate spends the same budget. Absent when no `timeoutMs` was given.
+   */
+  deadline?: AbortSignal | undefined;
 }
 
 @Injectable()
@@ -141,7 +202,7 @@ export class ModelRuntimeService {
     request: ChatRequest,
     auth?: S2sAuthContext,
   ): Promise<ChatResponse> {
-    const ctx = await this.beginChatRequest(request, auth, "model_runtime_request_start");
+    const ctx = await this.beginChatRequest(request, auth, "model_runtime_request_start", false);
     const { routed, modelCode, requestId } = ctx;
 
     try {
@@ -152,6 +213,9 @@ export class ModelRuntimeService {
       let lastProviderError: ModelRuntimeException | undefined;
 
       for (const [fallbackAttempt, model] of models.entries()) {
+        // B6: a spent budget ends the chain - trying a fallback would spend
+        // time the caller no longer has.
+        if (ctx.deadline?.aborted && lastProviderError !== undefined) break;
         if (this.skipTripped(ctx, model, fallbackAttempt, models.length)) continue;
 
         await this.assertQuotaOrRecordRefusal(
@@ -168,7 +232,7 @@ export class ModelRuntimeService {
           const apiKey = await resolveApiKey({ resolveManagedKey: this.resolveManagedKey }, model, requestId);
           this.logAttempt(ctx, model, fallbackAttempt, "model_runtime_provider_start", "started");
           const providerResponse = await provider.chat(
-            this.buildUpstreamRequest(model, request, apiKey),
+            this.buildUpstreamRequest(model, request, apiKey, ctx.deadline),
           );
           const latencyMs = Date.now() - startedAt;
           this.circuitBreaker.recordSuccess(model.modelCode);
@@ -182,6 +246,16 @@ export class ModelRuntimeService {
             auth,
             routed.endpointCode,
             fallbackAttempt,
+            {
+              upstream: providerResponse.upstream,
+              finishReason: providerResponse.finishReason,
+              facts: {
+                ...requestFacts(request, false),
+                startedAt: new Date(startedAt),
+                ...keyAliasColumn(model),
+                toolCallsMade: providerResponse.toolCalls?.length ?? 0,
+              },
+            },
           );
 
           this.logAttempt(
@@ -196,6 +270,7 @@ export class ModelRuntimeService {
           return {
             id: requestId,
             modelCode: model.modelCode,
+            thinking: request.thinking ?? null,
             message: {
               role: "assistant",
               content: providerResponse.content,
@@ -278,7 +353,7 @@ export class ModelRuntimeService {
     auth?: S2sAuthContext,
     signal?: AbortSignal,
   ): AsyncGenerator<StreamEvent> {
-    const ctx = await this.beginChatRequest(request, auth, "model_runtime_stream_start");
+    const ctx = await this.beginChatRequest(request, auth, "model_runtime_stream_start", true);
     const { routed, modelCode, requestId } = ctx;
 
     try {
@@ -308,6 +383,9 @@ export class ModelRuntimeService {
       }
 
       let lastUsage: TokenUsage | undefined;
+      /* Usage-record batch 1: the done frame's vendor facts, for the row. */
+      let lastUpstream: UpstreamCallRecord | undefined;
+      let lastFinishReason: FinishReason | undefined;
       let lastProviderError: ModelRuntimeException | undefined;
 
       for (const [fallbackAttempt, model] of models.entries()) {
@@ -327,6 +405,10 @@ export class ModelRuntimeService {
 
         const startedAt = Date.now();
         lastUsage = undefined;
+        lastUpstream = undefined;
+        lastFinishReason = undefined;
+        let firstTokenAt: number | undefined;
+        let toolCallsMade = 0;
         // Once any event reached the client, failing over would concatenate a
         // second answer into the same SSE stream - after first yield, the only
         // honest outcomes are completion or an explicit error frame.
@@ -338,7 +420,12 @@ export class ModelRuntimeService {
           const apiKey = await resolveApiKey({ resolveManagedKey: this.resolveManagedKey }, model, requestId);
           this.logAttempt(ctx, model, fallbackAttempt, "model_runtime_provider_stream_start", "started");
           for await (const event of provider.chatStream(
-            this.buildUpstreamRequest(model, request, apiKey, signal),
+            this.buildUpstreamRequest(
+              model,
+              request,
+              apiKey,
+              combineSignals(signal, ctx.deadline),
+            ),
           )) {
             if (event.type === "error") {
               // Adapters emit a RECOVERABLE `UPSTREAM_FRAME_UNPARSEABLE` frame
@@ -372,13 +459,27 @@ export class ModelRuntimeService {
             if (event.type === "done" && event.usage) {
               lastUsage = event.usage;
             }
+            if (event.type === "done") {
+              lastUpstream = event.upstream;
+              lastFinishReason = event.finishReason;
+            }
+            if (event.type === "tool_call") toolCallsMade += 1;
+            // Usage-record batch 2 (A5): the first event this attempt hands
+            // the caller. TTFT = first_token_at - started_at.
+            if (!yieldedThisAttempt) firstTokenAt = Date.now();
             yieldedThisAttempt = true;
             // The one place a stream can say WHO answered. The adapter cannot:
             // it knows the vendor's upstream name, not the registry code. After
             // a failover this is the candidate that actually served, which is
             // the fact worth reporting - not the one that was tried first.
+            // `upstream` is for the usage record only: vendor ids and raw usage
+            // are not part of the caller contract, so the frame loses it here.
             yield event.type === "done"
-              ? { ...event, modelCode: model.modelCode }
+              ? {
+                  ...withoutUpstream(event),
+                  modelCode: model.modelCode,
+                  thinking: request.thinking ?? null,
+                }
               : event;
           }
 
@@ -414,6 +515,16 @@ export class ModelRuntimeService {
               auth,
               routed.endpointCode,
               fallbackAttempt,
+              undefined,
+              undefined,
+              {
+                ...requestFacts(request, true),
+                startedAt: new Date(startedAt),
+                ...(firstTokenAt !== undefined
+                  ? { firstTokenAt: new Date(firstTokenAt) }
+                  : {}),
+                ...keyAliasColumn(model),
+              },
             );
             return;
           }
@@ -433,6 +544,19 @@ export class ModelRuntimeService {
             auth,
             routed.endpointCode,
             fallbackAttempt,
+            {
+              upstream: lastUpstream,
+              finishReason: lastFinishReason,
+              facts: {
+                ...requestFacts(request, true),
+                startedAt: new Date(startedAt),
+                ...(firstTokenAt !== undefined
+                  ? { firstTokenAt: new Date(firstTokenAt) }
+                  : {}),
+                ...keyAliasColumn(model),
+                toolCallsMade,
+              },
+            },
           );
           this.logAttempt(
             ctx,
@@ -450,6 +574,20 @@ export class ModelRuntimeService {
 
           return;
         } catch (error) {
+          // B6, checked BEFORE the client abort: the deadline also aborts the
+          // same fetch, and it must be reported as the caller's budget running
+          // out, not as the caller disconnecting.
+          if (ctx.deadline?.aborted) {
+            lastProviderError = await this.failCandidate(
+              ctx,
+              model,
+              fallbackAttempt,
+              error,
+              startedAt,
+              "model_runtime_provider_stream_failed",
+            );
+            break;
+          }
           // A client-initiated abort is not a provider failure: the model is
           // healthy, so it must not count against the circuit breaker, and
           // the caller is gone, so no fallback may be attempted for it. The
@@ -487,6 +625,16 @@ export class ModelRuntimeService {
               auth,
               routed.endpointCode,
               fallbackAttempt,
+              undefined,
+              undefined,
+              {
+                ...requestFacts(request, true),
+                startedAt: new Date(startedAt),
+                ...(firstTokenAt !== undefined
+                  ? { firstTokenAt: new Date(firstTokenAt) }
+                  : {}),
+                ...keyAliasColumn(model),
+              },
             );
             return;
           }
@@ -642,6 +790,35 @@ export class ModelRuntimeService {
       );
     }
 
+    // ADR-009. A value outside the vocabulary is refused here rather than
+    // treated as "not asked": dropping it would serve the upstream default,
+    // which is exactly the call the caller was trying not to make.
+    if (
+      request.thinking !== undefined &&
+      !THINKING_MODES.includes(request.thinking)
+    ) {
+      throw new ModelRuntimeException(
+        HttpStatus.BAD_REQUEST,
+        "CHAT_THINKING_INVALID",
+        `thinking must be one of: ${THINKING_MODES.join(", ")}`,
+      );
+    }
+
+    // B6. Bounded both ways: below a second no upstream can answer, and
+    // above ten minutes a caller wants the batch path, not a held socket.
+    if (
+      request.timeoutMs !== undefined &&
+      (!Number.isInteger(request.timeoutMs) ||
+        request.timeoutMs < MIN_TIMEOUT_MS ||
+        request.timeoutMs > MAX_TIMEOUT_MS)
+    ) {
+      throw new ModelRuntimeException(
+        HttpStatus.BAD_REQUEST,
+        "CHAT_TIMEOUT_INVALID",
+        `timeoutMs must be a whole number of milliseconds between ${MIN_TIMEOUT_MS} and ${MAX_TIMEOUT_MS}`,
+      );
+    }
+
     const validApplicationTypes = new Set([
       "agent",
       "workflow",
@@ -788,8 +965,20 @@ export class ModelRuntimeService {
   private async resolveCandidateModels(
     modelCode: string,
     routeFallbacks: string[] | null = null,
+    thinking?: ThinkingMode,
   ): Promise<AiModelRecord[]> {
     const primary = await this.registry.getActiveModel(modelCode);
+    // ADR-009 decision 3: the primary must honour the requested mode or the
+    // request is refused - serving it anyway would bill the caller for the
+    // behaviour it asked to avoid, and say nothing.
+    if (thinking !== undefined && !honoursThinking(primary, thinking)) {
+      throw new ModelRuntimeException(
+        HttpStatus.UNPROCESSABLE_ENTITY,
+        "THINKING_MODE_UNSUPPORTED",
+        `model ${primary.modelCode} cannot run with thinking "${thinking}"`,
+        { modelCode: primary.modelCode, provider: primary.provider },
+      );
+    }
     const fallbackCodes = (
       routeFallbacks ??
       readStringArrayConfig(primary.config, "fallbackModelCodes")
@@ -798,7 +987,11 @@ export class ModelRuntimeService {
     const fallbacks: AiModelRecord[] = [];
     for (const fallbackCode of fallbackCodes) {
       try {
-        fallbacks.push(await this.registry.getActiveModel(fallbackCode));
+        const fallback = await this.registry.getActiveModel(fallbackCode);
+        // Skipped, not refused: the primary can serve this mode, and a
+        // fallback that cannot is as unusable for this call as a missing one.
+        if (thinking !== undefined && !honoursThinking(fallback, thinking)) continue;
+        fallbacks.push(fallback);
       } catch {
         // fallback 配置错误不能阻断主模型调用；主模型失败后只尝试可用 fallback。
       }
@@ -819,6 +1012,18 @@ export class ModelRuntimeService {
       });
     }
 
+    // Walkthrough 2026-09-30: this was PROVIDER_UNAVAILABLE (retryable, breaker
+    // counted) - liveness pings with a tiny maxTokens on a thinking model could
+    // have tripped it for every product.
+    if (error instanceof UpstreamCallFailure && error.outputBudgetExhausted) {
+      return new ModelRuntimeException(
+        HttpStatus.UNPROCESSABLE_ENTITY,
+        "OUTPUT_BUDGET_EXHAUSTED",
+        error.message,
+        { requestId, modelCode: model.modelCode, provider: model.provider },
+      );
+    }
+
     if (
       error instanceof ProviderHttpError &&
       UPSTREAM_REJECTS_REQUEST.has(error.status)
@@ -828,9 +1033,22 @@ export class ModelRuntimeService {
       // goes into `message`. The code stays Atlas's: vendor codes differ per
       // provider, and a caller must not branch on which one served the call.
       const detail = (error.responseBody ?? "").replace(/\s+/gu, " ").trim();
+      // ADR-008: the narrower code when the vendor's refusal is recognisably a
+      // context overflow; same status, same handling, only the code differs.
+      // TD-055: the built-in signatures plus any this provider/model declares.
+      const overflow = isContextOverflow(error.status, error.responseBody, [
+        ...CONTEXT_OVERFLOW_SIGNATURES,
+        ...signaturesFromConfig(
+          resolveWireFor({
+            protocol: model.protocol,
+            providerConfig: model.providerConfig,
+            config: model.config,
+          }).contextOverflow,
+        ),
+      ]);
       return new ModelRuntimeException(
         HttpStatus.UNPROCESSABLE_ENTITY,
-        "UPSTREAM_REJECTED_REQUEST",
+        overflow ? "CONTEXT_LENGTH_EXCEEDED" : "UPSTREAM_REJECTED_REQUEST",
         `${model.provider} rejected the request with status ${error.status}` +
           (detail ? `: ${detail.slice(0, UPSTREAM_DETAIL_MAX_CHARS)}` : ""),
         { requestId, modelCode: model.modelCode, provider: model.provider },
@@ -892,6 +1110,11 @@ export class ModelRuntimeService {
           : {}),
         ...((payload?.provider ?? metadata.provider) !== undefined
           ? { provider: payload?.provider ?? metadata.provider }
+          : {}),
+        // Dropping this silenced the Retry-After header on every RATE_LIMITED:
+        // the quota gate throws without a requestId, so it always comes here.
+        ...(payload?.retryAfterMs !== undefined
+          ? { retryAfterMs: payload.retryAfterMs }
           : {}),
       },
     );
@@ -956,6 +1179,7 @@ export class ModelRuntimeService {
     request: ChatRequest,
     auth: S2sAuthContext | undefined,
     startEvent: string,
+    streamed: boolean,
   ): Promise<ChatAttemptContext> {
     // Routing joins validation inside the wrapper, not because it is
     // validation but because it fails in the same blind spot: `resolveRoute`
@@ -984,7 +1208,18 @@ export class ModelRuntimeService {
 
     // TD-049. Returns the context itself rather than its parts. A caller
     // that reassembles them is a caller that can assemble them differently.
-    return { request, requestId, applicationScope, auth, routed, modelCode };
+    return {
+      request,
+      requestId,
+      applicationScope,
+      auth,
+      routed,
+      modelCode,
+      streamed,
+      ...(request.timeoutMs !== undefined
+        ? { deadline: AbortSignal.timeout(request.timeoutMs) }
+        : {}),
+    };
   }
 
   /**
@@ -1001,6 +1236,7 @@ export class ModelRuntimeService {
       return await this.resolveCandidateModels(
         ctx.modelCode,
         ctx.routed.fallbackModelCodes,
+        ctx.request.thinking,
       );
     } catch (error) {
       this.logRuntimeEvent(failedEvent, {
@@ -1111,13 +1347,20 @@ export class ModelRuntimeService {
     startedAt: number,
     event: string,
   ): Promise<ModelRuntimeException> {
-    const normalised = this.toProviderUnavailableError(error, model, ctx.requestId);
+    const normalised = ctx.deadline?.aborted
+      ? new ModelRuntimeException(
+          HttpStatus.GATEWAY_TIMEOUT,
+          "DEADLINE_EXCEEDED",
+          `the caller's ${ctx.request.timeoutMs}ms budget ran out before ${model.provider} finished; the upstream call was cancelled`,
+          { requestId: ctx.requestId, modelCode: model.modelCode, provider: model.provider },
+        )
+      : this.toProviderUnavailableError(error, model, ctx.requestId);
     // A request the upstream refused for its CONTENT says nothing about the
     // model's health. Counting it would let one caller retrying an oversized
     // request trip the breaker and take the model offline for everyone.
     // The candidate loop still moves on to the next model: a fallback with a
     // larger context window may accept what this one refused.
-    if (normalised.code !== "UPSTREAM_REJECTED_REQUEST") {
+    if (!NOT_A_HEALTH_SIGNAL.has(normalised.code)) {
       this.circuitBreaker.recordFailure(model.modelCode);
     }
     const latencyMs = Date.now() - startedAt;
@@ -1128,6 +1371,10 @@ export class ModelRuntimeService {
     await this.recordAttemptFailure(ctx, model, fallbackAttempt, {
       error: normalised,
       latencyMs,
+      startedAt,
+      ...(upstreamFromError(error) !== undefined
+        ? { upstream: upstreamFromError(error) }
+        : {}),
       // Read off the ORIGINAL error, not the normalised one: normalising
       // produces a ModelRuntimeException carrying the runtime vocabulary, and
       // the usage the upstream reported does not survive that translation.
@@ -1202,6 +1449,7 @@ export class ModelRuntimeService {
         ? { maxTokens: request.maxTokens }
         : {}),
       ...(request.topP !== undefined ? { topP: request.topP } : {}),
+      ...(request.thinking !== undefined ? { thinking: request.thinking } : {}),
       ...(request.tools !== undefined ? { tools: request.tools } : {}),
       ...(request.toolChoice !== undefined
         ? { toolChoice: request.toolChoice }
@@ -1228,6 +1476,10 @@ export class ModelRuntimeService {
        * nothing and a failure that cost nothing are different facts.
        */
       usage?: UpstreamUsageSnapshot | undefined;
+      /** Usage-record batch 1: what the upstream said, when it answered at all. */
+      upstream?: UpstreamCallRecord | undefined;
+      /** Usage-record batch 2: epoch ms the attempt began; absent on a gate refusal. */
+      startedAt?: number | undefined;
     },
   ): Promise<void> {
     await this.recordFailure(
@@ -1241,6 +1493,14 @@ export class ModelRuntimeService {
       ctx.routed.endpointCode,
       attemptIndex,
       outcome.usage,
+      outcome.upstream,
+      {
+        ...requestFacts(ctx.request, ctx.streamed),
+        ...(outcome.startedAt !== undefined
+          ? { startedAt: new Date(outcome.startedAt) }
+          : {}),
+        ...keyAliasColumn(model),
+      },
     );
   }
 
@@ -1255,6 +1515,8 @@ export class ModelRuntimeService {
     routedEndpointCode?: string | null,
     attemptIndex?: number,
     usage?: UpstreamUsageSnapshot,
+    upstream?: UpstreamCallRecord,
+    facts: Partial<RequestLogEntry> = {},
   ): Promise<void> {
     const applicationScope = resolveApplicationScope(request);
     const errorCode = readRuntimeErrorCode(error);
@@ -1284,6 +1546,16 @@ export class ModelRuntimeService {
       // for these: nothing was billed, so `billed_amount` stays NULL and the
       // row is the reconciliation signal rather than a charge.
       ...usageColumns(usage),
+      // Usage-record batch 1. `latencyMs` is present exactly when the attempt
+      // reached a provider (a gate refusal passes none), so it decides whether
+      // "did the upstream report usage" is a question this row can answer.
+      ...(latencyMs !== undefined
+        ? { usageSource: usage !== undefined ? "reported" : "absent" }
+        : {}),
+      ...upstreamColumns(upstream, undefined),
+      // Usage-record batch 2.
+      ...facts,
+      ...cancelledByColumn(errorCode),
       // TD-037. Which candidate this row is. Deliberately NOT expressed by
       // setting usage_type to 'retry', which TD-037's own recovery note
       // suggested: that word is already the CALLER's - `ChatRequest.usageType`
@@ -1325,6 +1597,12 @@ export class ModelRuntimeService {
     auth?: S2sAuthContext,
     routedEndpointCode?: string | null,
     attemptIndex?: number,
+    outcome: {
+      upstream?: UpstreamCallRecord | undefined;
+      finishReason?: FinishReason | undefined;
+      /** Usage-record batch 2: timing, selector, key alias, request knobs. */
+      facts?: Partial<RequestLogEntry> | undefined;
+    } = {},
   ): Promise<void> {
     const applicationScope = resolveApplicationScope(request);
     const reported = usage !== undefined && usage.usageReported !== false;
@@ -1389,8 +1667,24 @@ export class ModelRuntimeService {
             ...(usage.reasoningTokens !== undefined
               ? { reasoningTokens: usage.reasoningTokens }
               : {}),
+            ...(usage.cacheWriteInputTokens !== undefined
+              ? { cacheWriteInputTokens: usage.cacheWriteInputTokens }
+              : {}),
+            ...(usage.cacheWrite1hInputTokens !== undefined
+              ? { cacheWrite1hInputTokens: usage.cacheWrite1hInputTokens }
+              : {}),
           }
         : {}),
+      // Usage-record batch 1. This row reached an upstream, so whether it
+      // reported usage is a fact worth writing: NULL counts on an 'absent'
+      // row mean "unknown", which a reader must not total as free.
+      usageSource: reported ? "reported" : "absent",
+      ...upstreamColumns(outcome.upstream, outcome.finishReason),
+      ...(outcome.facts ?? {}),
+      nullReasons: billingReasons(consumed, {
+        reported,
+        workspaceKnown: auth?.workspaceId !== undefined,
+      }),
       latencyMs,
       // TD-037. The candidate that actually served this request - which is not
       // always the one the caller named, and until now was not recorded
@@ -1456,4 +1750,96 @@ function runtimeStatusFromError(error: unknown): string {
   if (code === "NOT_ENTITLED") return "denied";
   if (code === "QUOTA_EXCEEDED") return "quota_exceeded";
   return "provider_error";
+}
+
+/**
+ * Usage-record batch 1 (A3, C4, G2, H3): the vendor's facts for the reqlog row.
+ * `finish_reason` is the normalized word; a vendor value the mapping does not
+ * know becomes 'other' - its own word survives in `native_finish_reason`, so
+ * nothing is lost and the CHECK vocabulary stays closed.
+ */
+function upstreamColumns(
+  upstream: UpstreamCallRecord | undefined,
+  finishReason: FinishReason | undefined,
+): Partial<RequestLogEntry> {
+  const normalized: RequestLogEntry["finishReason"] =
+    finishReason ?? (upstream?.nativeFinishReason ? "other" : undefined);
+  return {
+    ...(upstream?.upstreamRequestId !== undefined
+      ? { upstreamRequestId: upstream.upstreamRequestId }
+      : {}),
+    ...(upstream?.upstreamModel !== undefined
+      ? { upstreamModel: upstream.upstreamModel }
+      : {}),
+    ...(upstream?.rawUsage !== undefined
+      ? { upstreamUsage: upstream.rawUsage }
+      : {}),
+    ...(upstream?.nativeFinishReason !== undefined
+      ? { nativeFinishReason: upstream.nativeFinishReason }
+      : {}),
+    ...(normalized !== undefined ? { finishReason: normalized } : {}),
+    ...batch4Columns(upstream),
+  };
+}
+
+
+
+/** The done frame as the caller may see it: `upstream` is internal. */
+function withoutUpstream(
+  event: Extract<StreamEvent, { type: "done" }>,
+): Extract<StreamEvent, { type: "done" }> {
+  const { upstream: _internal, ...rest } = event;
+  return rest;
+}
+
+/**
+ * Usage-record batch 2 (C1, D1, D3, D4): what the caller asked for, from the
+ * request itself. The selector follows `resolveRoute`'s precedence - modelCode,
+ * then endpointCode, then taskProfile - so it names the one that was used.
+ */
+function requestFacts(
+  request: ChatRequest,
+  streamed: boolean,
+): Partial<RequestLogEntry> {
+  const selector: Pick<RequestLogEntry, "selectorKind" | "selectorValue"> =
+    request.modelCode
+      ? { selectorKind: "model", selectorValue: request.modelCode }
+      : request.endpointCode
+        ? { selectorKind: "endpoint", selectorValue: request.endpointCode }
+        : request.taskProfile
+          ? { selectorKind: "task_profile", selectorValue: request.taskProfile }
+          : {};
+  return {
+    ...selector,
+    ...(request.thinking !== undefined ? { thinkingMode: request.thinking } : {}),
+    ...(request.maxTokens !== undefined ? { maxTokens: request.maxTokens } : {}),
+    streamed,
+    // Usage-record batch 3 (D5, D6).
+    messageCount: request.messages.length,
+    toolCount: request.tools?.length ?? 0,
+    capability: "chat",
+  };
+}
+
+function keyAliasColumn(model: AiModelRecord): Partial<RequestLogEntry> {
+  const alias = managedKeyAliasOf(model);
+  return {
+    ...(alias !== undefined ? { providerKeyAlias: alias } : {}),
+    // Usage-record batch 3 (C9): the fingerprint of what served.
+    modelBehaviorVersion: modelBehaviorVersion(model),
+    // Usage-record batch 4 (C6): which endpoint host the call went to.
+    ...(hostOf(model.endpointUrl) !== undefined
+      ? { upstreamHost: hostOf(model.endpointUrl) }
+      : {}),
+  };
+}
+
+
+/** Usage-record batch 2 (H4): a call cut short says who cut it. */
+function cancelledByColumn(
+  errorCode: string | null | undefined,
+): Partial<RequestLogEntry> {
+  if (errorCode === "CLIENT_ABORTED") return { cancelledBy: "client" };
+  if (errorCode === "DEADLINE_EXCEEDED") return { cancelledBy: "deadline" };
+  return {};
 }

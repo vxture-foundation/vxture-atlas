@@ -107,8 +107,11 @@ const MUTATIONS = [
     spec: "src/providers/wire.spec.ts",
     edit: {
       file: "service/src/providers/wire.ts",
-      find: "    if (RESERVED_BODY_KEYS.has(key)) {",
-      replace: "    if (false) {",
+      // Anchored on the log line that names extraBody: the bare `if` also
+      // occurs in the thinking merge (ADR-009), and a needle matching three
+      // places made this probe unreadable (2026-09-30).
+      find: "    if (RESERVED_BODY_KEYS.has(key)) {\n      logger.warn(\n        `ignoring config.wire.extraBody",
+      replace: "    if (false) {\n      logger.warn(\n        `ignoring config.wire.extraBody",
     },
   },
   {
@@ -119,15 +122,16 @@ const MUTATIONS = [
     spec: "src/observability/cost-rollup.spec.ts",
     edit: {
       file: "service/src/observability/cost-rollup.ts",
-      // The needle moved when off-peak pricing introduced `rate()`. The
-      // harness reported that as `unreadable`, not as a pass - a mutation
-      // whose needle stops matching tests nothing, and reads exactly like
-      // one that was defended.
-      find:
-        '      priceTokens(row.outputTokens, rate("output", row.outputUnitPrice), unitTokens);',
-      replace:
-        '      priceTokens(row.outputTokens, rate("output", row.outputUnitPrice), unitTokens) +\n' +
-        '      priceTokens(row.reasoningTokens, rate("output", row.outputUnitPrice), unitTokens);',
+      // The needle moved twice: when off-peak pricing introduced `rate()`, and
+      // when usage-record batch 2 extracted the formula into `priceUsage`
+      // (shared with the per-row cost). Both times the harness reported
+      // `unreadable`, not a pass - a mutation whose needle stops matching
+      // tests nothing, and reads exactly like one that was defended. The
+      // double count is now injected where the rollup hands output in. Batch 3
+      // split that call over several lines and the needle moved a third time;
+      // the harness again said `unreadable`, not pass.
+      find: "        output: row.outputTokens,\n      },",
+      replace: "        output: row.outputTokens + row.reasoningTokens,\n      },",
     },
   },
   {
@@ -138,8 +142,9 @@ const MUTATIONS = [
     spec: "src/observability/cost-rollup.spec.ts",
     edit: {
       file: "service/src/observability/cost-rollup.ts",
-      find: "    const cachedPrice = cachedPriceFellBack\n      ? inputPrice",
-      replace: "    const cachedPrice = cachedPriceFellBack\n      ? 0n",
+      // Moved into `priceUsage` by usage-record batch 2.
+      find: "    rates.cachedInputUnitPrice === null\n      ? inputPrice",
+      replace: "    rates.cachedInputUnitPrice === null\n      ? 0n",
     },
   },
   {
