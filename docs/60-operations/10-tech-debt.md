@@ -896,6 +896,13 @@ product, in the shape vxture-platform#547 settles on (workplan E3-E5).
 **Detection is in place now**: `platform_consume_outcomes_total` counts
 `outcome="rejected"` with the platform's reason word.
 
+**Still open 2026-10-01**: a production read found 332 reqlog rows since
+2026-07-28 and none in the platform's ledger; the first v0.7.17 calls (yucer,
+chat and rerank) were refused `unknown_product` again. Evidence and the three
+questions Atlas needs answered are on #547. Atlas's side of the recovery is
+ready: rows carry `product_code`, the raw token splits, and `request_id` as an
+idempotency key.
+
 ## TD-057
 
 **Wrong**: `model_price_rules` has one input rate and one cached-input (read)
@@ -918,7 +925,13 @@ real the day a Claude route is live.
    `POST /capability/price-rules`, refused by `PATCH` like every value column,
    and priced in `priceUsage` (1-hour falls back to 5-minute, 5-minute to
    input).~~ **Done 2026-09-30** (`incr/06`, usage-record batch 3).
-2. The operator console's price-rule form does not show the two fields, so
-   today they can be set only through the API. Raised on the platform repo
-   alongside `wire.thinking` (vxture-platform#542). This entry closes when that
-   ships - until then an undeclared write rate still falls back to input.
+2. The admin console's price-rule form does not show the two fields, so
+   today they can be set only through the API. Raised as vxture-platform#554
+   (first raised on #542, which is opera's model drawer; the price form is
+   admin's - ADR-012). This entry closes when that ships - until then an
+   undeclared write rate still falls back to input.
+
+**Found 2026-10-01** (production read): `model_price_rules` has zero rows, so
+no production row is priced at all - every one reads `not_configured`. That is
+an operations gap, not this entry's, but it is why none of the above has met
+real data yet.

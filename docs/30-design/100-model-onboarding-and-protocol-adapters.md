@@ -15,9 +15,11 @@ differences into configuration grows a DSL nobody can debug. The value is in
 drawing the boundary, not erasing it.
 
 Also not a goal: **Atlas meters, it does not bill.** Atlas records how many
-tokens a call burned and whose it was. Unit
-prices are an operations concern living in `model_price_rules`. Nothing on the
-request path computes money, and everything below discusses **quantities** only.
+tokens a call burned and whose it was. Unit prices are the vendors' prices,
+entered by operations in `model_price_rules` (ADR-012). The only money Atlas
+computes is what a call cost the platform (`upstream_cost` on the reqlog row,
+written after the answer); nothing decides or charges a price, and everything
+below discusses **quantities** only.
 
 ## 2. Three concepts one word conflates
 
