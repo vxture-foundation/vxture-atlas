@@ -1,5 +1,5 @@
 {
-  "fingerprint": "c1-c94aa3edad07",
+  "fingerprint": "c1-5f484ea774f6",
   "errorCodes": [
     {
       "code": "APPLICATION_ID_REQUIRED",
@@ -30,7 +30,23 @@
       "retryable": false
     },
     {
+      "code": "CHAT_THINKING_INVALID",
+      "retryable": false
+    },
+    {
+      "code": "CHAT_TIMEOUT_INVALID",
+      "retryable": false
+    },
+    {
       "code": "CLIENT_ABORTED",
+      "retryable": false
+    },
+    {
+      "code": "CONTEXT_LENGTH_EXCEEDED",
+      "retryable": false
+    },
+    {
+      "code": "DEADLINE_EXCEEDED",
       "retryable": false
     },
     {
@@ -71,6 +87,10 @@
     },
     {
       "code": "NOT_ENTITLED",
+      "retryable": false
+    },
+    {
+      "code": "OUTPUT_BUDGET_EXHAUSTED",
       "retryable": false
     },
     {
@@ -163,6 +183,10 @@
     },
     {
       "code": "TENANT_ID_REQUIRED",
+      "retryable": false
+    },
+    {
+      "code": "THINKING_MODE_UNSUPPORTED",
       "retryable": false
     },
     {

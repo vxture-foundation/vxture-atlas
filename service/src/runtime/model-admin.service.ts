@@ -306,6 +306,13 @@ export interface ModelPriceRuleAdminRecord {
    * rather than understates.
    */
   cachedInputUnitPrice: string | null;
+  /**
+   * TD-057. Cache-write rates (5-minute and 1-hour TTL). `null` = not
+   * declared: a write costs the input rate, which understates Anthropic's
+   * 1.25x / 2x - declare them for any provider that charges for writes.
+   */
+  cacheWriteUnitPrice: string | null;
+  cacheWrite1hUnitPrice: string | null;
   state: ObjectState;
   effectiveAt: string;
   expiresAt: string | null;
@@ -476,6 +483,8 @@ export type CreateModelPriceRuleBody = {
   outputUnitPrice?: string | number | null;
   requestUnitPrice?: string | number | null;
   cachedInputUnitPrice?: string | number | null;
+  cacheWriteUnitPrice?: string | number | null;
+  cacheWrite1hUnitPrice?: string | number | null;
   effectiveAt?: string | null;
   expiresAt?: string | null;
   state?: ObjectState;
@@ -1683,6 +1692,9 @@ export class ModelAdminService {
                     "cachedInputUnitPrice",
                   ),
           }),
+      // TD-057. Same rule as the cached rate: absent or empty stays NULL.
+      ...optionalRate(body.cacheWriteUnitPrice, "cacheWriteUnitPrice"),
+      ...optionalRate(body.cacheWrite1hUnitPrice, "cacheWrite1hUnitPrice"),
       effectiveAt: parseDateOrNow(body.effectiveAt, "effectiveAt"),
       expiresAt: parseDateOrNull(body.expiresAt),
       isActive: body.state === undefined ? true : isActiveState(body.state),
@@ -1728,6 +1740,9 @@ export class ModelAdminService {
       // for table model_price_rules` as a 500 - exactly the failure this
       // refusal list was written for.
       "cachedInputUnitPrice",
+      // TD-057. Value columns too; same refusal.
+      "cacheWriteUnitPrice",
+      "cacheWrite1hUnitPrice",
       "effectiveAt",
     ] as const;
 
@@ -2142,6 +2157,8 @@ function mapPriceRule(rule: ModelPriceRuleRecord): ModelPriceRuleAdminRecord {
     outputUnitPrice: rule.outputUnitPrice.toString(),
     requestUnitPrice: rule.requestUnitPrice.toString(),
     cachedInputUnitPrice: rule.cachedInputUnitPrice?.toString() ?? null,
+    cacheWriteUnitPrice: rule.cacheWriteUnitPrice?.toString() ?? null,
+    cacheWrite1hUnitPrice: rule.cacheWrite1hUnitPrice?.toString() ?? null,
     state: toObjectState(rule.isActive),
     effectiveAt: rule.effectiveAt.toISOString(),
     expiresAt: rule.expiresAt?.toISOString() ?? null,
@@ -2750,4 +2767,14 @@ function throwScopeError(message: string): never {
     "MODEL_ADMIN_SCOPE_INVALID",
     message,
   );
+}
+
+/** TD-057: an optional rate - absent/null/empty leaves the column NULL, never 0. */
+function optionalRate(
+  value: string | number | null | undefined,
+  field: string,
+): Record<string, string | null> {
+  if (value === undefined) return {};
+  if (value === null || value === "") return { [field]: null };
+  return { [field]: parseDecimalText(value, field) };
 }

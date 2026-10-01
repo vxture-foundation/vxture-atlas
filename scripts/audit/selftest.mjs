@@ -52,7 +52,12 @@ const results = [];
 
 const PLANTED = `import { describe, it, expect } from "vitest";
 
+/**
+ * Prose that looks like a call and must NOT be reported: the vendor sends it
+ * (as recorded). A scanner that reads comments counts this as a case.
+ */
 describe("audit selftest", () => {
+  // and a line comment that mentions it (the same way)
   it("has an assertion and must NOT be reported", () => {
     expect(1).toBe(1);
   });

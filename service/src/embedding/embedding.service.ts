@@ -93,6 +93,8 @@ export class EmbeddingService {
             ? { amount: result.usage.totalTokens }
             : {}),
           ...(result.usage ? { usage: result.usage } : {}),
+          ...(result.upstream ? { upstream: result.upstream } : {}),
+          facts: { vectorCount: result.vectors.length, vectorDimension: result.dimension },
         });
         return {
           modelCode: gated.model.modelCode,

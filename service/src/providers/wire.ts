@@ -1,6 +1,7 @@
 import { Logger } from "@nestjs/common";
 
-import type { ModelConfig } from "../types/runtime.types";
+import type { ModelConfig, ThinkingMode } from "../types/runtime.types";
+import { THINKING_MODES } from "../types/runtime.types";
 import { normalizeProtocol } from "./protocol";
 
 /**
@@ -23,8 +24,13 @@ const logger = new Logger("ModelWire");
  * 服务读到带 `extraBody` 的行时，会按"运行时宽松"忽略它并 WARN —— 如果版本号
  * 没动，那条 WARN 就不会出现，运营看到的是一个配了却静默不生效的开关。版本号
  * 就是这条静默的唯一防线。
+ *
+ * 3 (2026-09-30) 加入 `thinking`（ADR-009）。同一条理由：没认识它的旧服务
+ * 读到它只会 WARN，版本号不动就连 WARN 都没有。
+ *
+ * 4 (2026-09-30) 加入 `contextOverflow`（TD-055）。
  */
-export const WIRE_SCHEMA_VERSION = 2;
+export const WIRE_SCHEMA_VERSION = 4;
 
 export type WireAuthStyle = "bearer" | "x-api-key" | "none";
 
@@ -67,6 +73,23 @@ export interface ResolvedWire {
    * 不可覆盖：写入时直接拒，见 `RESERVED_BODY_KEYS`。
    */
   extraBody: Readonly<Record<string, unknown>>;
+  /**
+   * ADR-009: the body fragment each thinking mode needs on THIS model, e.g.
+   * DeepSeek `off -> {thinking: {type: "disabled"}}`. A missing mode means the
+   * model cannot honour it; an always-on model has `on: {}` and no `off`.
+   * Spread after `extraBody` - a per-call choice beats a per-model default -
+   * and before the adapter's own keys, which it can never override.
+   */
+  thinking: Readonly<Partial<Record<ThinkingMode, Readonly<Record<string, unknown>>>>>;
+  /**
+   * TD-055: extra context-overflow signatures for this provider/model, added
+   * to the built-in list (providers/context-overflow.ts), never replacing it.
+   * `message` is a case-insensitive SUBSTRING, not a regex: an operator-typed
+   * pattern run against every upstream error body is a ReDoS and a
+   * correctness trap (`.`, `(` mean something). Every declared field must
+   * match, as with the built-ins.
+   */
+  contextOverflow: ReadonlyArray<Readonly<{ code?: string; message?: string }>>;
 }
 
 const KNOWN_KEYS = new Set([
@@ -78,6 +101,8 @@ const KNOWN_KEYS = new Set([
   "supports",
   "paramMap",
   "extraBody",
+  "thinking",
+  "contextOverflow",
 ]);
 
 const KNOWN_SUPPORTS = new Set<keyof WireSupports>([
@@ -132,6 +157,8 @@ export const OPENAI_WIRE_DEFAULTS: ResolvedWire = Object.freeze({
   }),
   paramMap: Object.freeze({}),
   extraBody: Object.freeze({}),
+  thinking: Object.freeze({}),
+  contextOverflow: Object.freeze([]),
 });
 
 /** `anthropic-messages` 的默认怪癖。Anthropic 原生就在流里回 usage。 */
@@ -149,6 +176,8 @@ export const ANTHROPIC_WIRE_DEFAULTS: ResolvedWire = Object.freeze({
   }),
   paramMap: Object.freeze({}),
   extraBody: Object.freeze({}),
+  thinking: Object.freeze({}),
+  contextOverflow: Object.freeze([]),
 });
 
 /**
@@ -211,7 +240,100 @@ function applyOverlay(
     supports: mergeSupports(base.supports, overlay["supports"]),
     paramMap: mergeStringMap(base.paramMap, overlay["paramMap"], "paramMap"),
     extraBody: mergeExtraBody(base.extraBody, overlay["extraBody"]),
+    thinking: mergeThinking(base.thinking, overlay["thinking"]),
+    contextOverflow: mergeContextOverflow(
+      base.contextOverflow,
+      overlay["contextOverflow"],
+    ),
   };
+}
+
+/** Concatenated across layers: each layer adds knowledge, none removes it. */
+function mergeContextOverflow(
+  base: ResolvedWire["contextOverflow"],
+  raw: unknown,
+): ResolvedWire["contextOverflow"] {
+  if (!Array.isArray(raw)) return base;
+  const added: Array<Readonly<{ code?: string; message?: string }>> = [];
+  for (const entry of raw) {
+    if (typeof entry !== "object" || entry === null || Array.isArray(entry)) {
+      logger.warn("ignoring a config.wire.contextOverflow entry: expected an object");
+      continue;
+    }
+    const code = readString((entry as Record<string, unknown>)["code"]);
+    const message = readString((entry as Record<string, unknown>)["message"]);
+    // An entry declaring neither field would match every 400 and relabel all
+    // content refusals as overflows - dropped here, refused on write.
+    if (code === undefined && message === undefined) {
+      logger.warn("ignoring a config.wire.contextOverflow entry with neither code nor message");
+      continue;
+    }
+    added.push(
+      Object.freeze({
+        ...(code !== undefined ? { code } : {}),
+        ...(message !== undefined ? { message } : {}),
+      }),
+    );
+  }
+  return Object.freeze([...base, ...added]);
+}
+
+/**
+ * Per mode, the later layer REPLACES the earlier one's fragment (a model
+ * overriding its provider's `off` should not inherit half of it). Reserved
+ * keys are dropped with a WARN, same as `extraBody`; the real refusal is on
+ * the write path.
+ */
+function mergeThinking(
+  base: ResolvedWire["thinking"],
+  raw: unknown,
+): ResolvedWire["thinking"] {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
+    return base;
+  }
+  const merged: Partial<Record<ThinkingMode, Readonly<Record<string, unknown>>>> = { ...base };
+  for (const [mode, fragment] of Object.entries(raw as Record<string, unknown>)) {
+    if (!THINKING_MODES.includes(mode as ThinkingMode)) {
+      logger.warn(`ignoring unknown config.wire.thinking mode "${mode}"`);
+      continue;
+    }
+    if (typeof fragment !== "object" || fragment === null || Array.isArray(fragment)) {
+      logger.warn(`ignoring config.wire.thinking.${mode}: expected an object`);
+      continue;
+    }
+    const clean: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(fragment as Record<string, unknown>)) {
+      if (RESERVED_BODY_KEYS.has(key)) {
+        logger.warn(`ignoring config.wire.thinking.${mode}["${key}"]: reserved for the adapter`);
+        continue;
+      }
+      clean[key] = value;
+    }
+    merged[mode as ThinkingMode] = Object.freeze(clean);
+  }
+  return Object.freeze(merged);
+}
+
+/** The modes this wire can honour, in canonical order. */
+export function supportedThinkingModes(wire: ResolvedWire): ThinkingMode[] {
+  return THINKING_MODES.filter((mode) => wire.thinking[mode] !== undefined);
+}
+
+/**
+ * The fragment to spread for a call. The runtime refuses an unsupported mode
+ * before any adapter runs, so reaching here without one is a bug - thrown,
+ * not answered with `{}`, because `{}` would be the silent drop ADR-009 forbids.
+ */
+export function thinkingFragment(
+  wire: ResolvedWire,
+  mode: ThinkingMode | undefined,
+): Readonly<Record<string, unknown>> {
+  if (mode === undefined) return {};
+  const fragment = wire.thinking[mode];
+  if (fragment === undefined) {
+    throw new Error(`thinking mode "${mode}" reached an adapter whose wire cannot honour it`);
+  }
+  return fragment;
 }
 
 /**
@@ -380,7 +502,71 @@ export function validateWire(raw: unknown): string[] {
   problems.push(...validateStringMap(wire["headers"], "headers"));
   problems.push(...validateStringMap(wire["paramMap"], "paramMap"));
   problems.push(...validateExtraBody(wire["extraBody"]));
+  problems.push(...validateThinking(wire["thinking"]));
+  problems.push(...validateContextOverflow(wire["contextOverflow"]));
 
+  return problems;
+}
+
+/** Bound on a configured message fragment - it is a substring, not a document. */
+const CONTEXT_OVERFLOW_MESSAGE_MAX = 200;
+
+function validateContextOverflow(raw: unknown): string[] {
+  if (raw === undefined) return [];
+  if (!Array.isArray(raw)) return ["config.wire.contextOverflow must be an array"];
+  const problems: string[] = [];
+  raw.forEach((entry, index) => {
+    const at = `config.wire.contextOverflow[${index}]`;
+    if (typeof entry !== "object" || entry === null || Array.isArray(entry)) {
+      problems.push(`${at} must be an object`);
+      return;
+    }
+    const record = entry as Record<string, unknown>;
+    for (const key of Object.keys(record)) {
+      if (key !== "code" && key !== "message") {
+        problems.push(`${at}.${key} is not a known field (allowed: code, message)`);
+      }
+    }
+    const code = record["code"];
+    const message = record["message"];
+    if (code !== undefined && (typeof code !== "string" || !code.trim())) {
+      problems.push(`${at}.code must be a non-empty string`);
+    }
+    if (message !== undefined && (typeof message !== "string" || !message.trim())) {
+      problems.push(`${at}.message must be a non-empty string`);
+    } else if (typeof message === "string" && message.length > CONTEXT_OVERFLOW_MESSAGE_MAX) {
+      problems.push(`${at}.message is longer than ${CONTEXT_OVERFLOW_MESSAGE_MAX} characters`);
+    }
+    if (code === undefined && message === undefined) {
+      problems.push(`${at} declares neither code nor message - it would match every 400`);
+    }
+  });
+  return problems;
+}
+
+function validateThinking(raw: unknown): string[] {
+  if (raw === undefined) return [];
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
+    return ["config.wire.thinking must be an object"];
+  }
+  const problems: string[] = [];
+  for (const [mode, fragment] of Object.entries(raw as Record<string, unknown>)) {
+    if (!THINKING_MODES.includes(mode as ThinkingMode)) {
+      problems.push(`config.wire.thinking.${mode} is not a mode (allowed: ${THINKING_MODES.join(", ")})`);
+      continue;
+    }
+    if (typeof fragment !== "object" || fragment === null || Array.isArray(fragment)) {
+      problems.push(`config.wire.thinking.${mode} must be an object (use {} for a model that needs no field)`);
+      continue;
+    }
+    for (const key of Object.keys(fragment as Record<string, unknown>)) {
+      if (RESERVED_BODY_KEYS.has(key)) {
+        problems.push(
+          `config.wire.thinking.${mode}.${key} is reserved by the adapter (reserved: ${sortedList(RESERVED_BODY_KEYS)})`,
+        );
+      }
+    }
+  }
   return problems;
 }
 

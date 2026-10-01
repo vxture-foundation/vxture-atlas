@@ -24,8 +24,9 @@ deferral in `docs/60-operations/10-tech-debt.md`.
 - [x] Tenant self-service plane `/tenancy/*` - scope derived from the token
 - [x] C3 provisioning webhook - HMAC verify, dual-secret rotation, idempotent,
       per-workspace `seq` ordering (atomic check-and-write)
-- [x] C2 entitlement client - the quota gate can deny (partial, see TD-016)
-- [x] C3 consume caller + own `reqlog` request/error history, 6-month retention
+- [x] C2 entitlement client - built, but reads `product=atlas`, which the
+      platform no longer resolves (TD-056); the gate falls open until ADR-010 lands
+- [x] Own `reqlog` request/error history, 6-month retention
       with partition maintenance and a `/readyz` runway alarm; gate refusals,
       streamed responses without a usage frame, and probe traffic
       (`usage_type = 'test'`) all land in reqlog
@@ -81,44 +82,213 @@ Gateway capabilities ([ADR-004](../30-design/decisions/ADR-004-reject-portkey-ga
       remains the honest answer for those
 
 Request size and model capacity (tenderforge liaison
-`vx-agent-bid/docs/80-liaison/40-2609291955`, opened 2026-09-29):
+`vx-agent-bid/docs/80-liaison/40-2609291955`, opened 2026-09-29; reply thread
+`vx-agent-tenderforge`#69):
 
-- [x] Body ceiling 16 MiB (`MAX_REQUEST_BODY_BYTES`), X-1 codes
-      `PAYLOAD_TOO_LARGE` / `REQUEST_BODY_MALFORMED`, and an upstream
-      400/413/422 answered as `UPSTREAM_REJECTED_REQUEST` without tripping the
-      circuit breaker - merged in #60. Design: `docs/30-design/200-s2s-provider-surface.md` section 1.4
-- [x] Released as v0.7.6 (2026-09-29): dev stack first, then production;
-      the letter's probes sent to production (a ~2 MB body passes the parser,
-      a 17 MB body gets the 413 envelope)
-- [ ] Verify `UPSTREAM_REJECTED_REQUEST` against a real upstream (an
-      over-context request): unit tests only so far
-- [ ] Confirm nothing in front of Atlas caps the body on tenderforge's
-      production path (e.g. nginx `client_max_body_size`, 1 MB default). The
-      direct tailnet path to `:3100` is clear (a 17 MB body reached Atlas);
-      whether tenderforge uses that path is theirs to confirm, asked in
-      `vx-agent-tenderforge`#69
-- [ ] Measure the request-size limits of the domestic upstreams (Doubao,
-      Zhipu, DeepSeek, MiniMax): none publishes one
-- [ ] Letter 30 (`30-2609142131`), never answered: read from production which
-      models serve `chat/deterministic` / `chat/fast` / `chat/default` /
-      `chat/reasoning`, and their context window, max output, thinking and
-      temperature, against the floors the letter asks for
-- [ ] Letter 40 item 4: fill `contextWindow` / `maxOutputTokens` for the
-      routed models, then publish per-route capacity on `/v1/model-routes`
-      (`contextWindow`, `maxOutputTokens`: the minimum across the fallback
-      chain; `maxRequestBytes`). Data before fields: a published `null` is
-      configured-but-inert
-- [ ] Letter 40 item 3: ADR, then code - recognise each provider's
-      context-overflow refusal and answer it with a structured code, fallback
-      first. No token estimation in the gateway, no truncation
-- [ ] Refusals before routing (`PAYLOAD_TOO_LARGE`,
-      `REQUEST_BODY_MALFORMED`) leave no reqlog row: add a counter metric
-- [x] Reply to letter 40: `vx-agent-tenderforge`#69 (2026-09-29), an issue
-      in the repo that has to act (`docs/80-liaison/` is a frozen archive).
-      Items 3-5 are stated there as open
-- [ ] Follow up in `vx-agent-tenderforge`#69: letter 30's model floors, and
-      items 3 and 4 as they land; their production re-run of the failed
-      interpretation
+Done:
+
+- [x] Body ceiling 16 MiB (`MAX_REQUEST_BODY_BYTES`); X-1 codes
+      `PAYLOAD_TOO_LARGE` / `REQUEST_BODY_MALFORMED`; raw body kept for the
+      webhook only; an upstream 400/413/422 answered as
+      `UPSTREAM_REJECTED_REQUEST` without tripping the circuit breaker (#60).
+      Design: `docs/30-design/200-s2s-provider-surface.md` section 1.4
+- [x] Released as v0.7.6 (2026-09-29), dev stack first; the letter's probes
+      sent to production (~2 MB passes the parser, 17 MB gets the 413 envelope)
+- [x] No input truncation anywhere on the chat path (checked 2026-09-29)
+- [x] Letter 40 answered in `vx-agent-tenderforge`#69 - an issue in the repo
+      that has to act; `docs/80-liaison/` is a frozen archive
+
+A - missed by the first pass:
+
+- [x] A1. Design doc section 1.4: state that the body is parsed BEFORE S2S
+      auth, so an unauthenticated caller can make the process buffer up to the
+      ceiling, and why that is accepted (tailnet-only)
+- [x] A2. X-1 registration for `PAYLOAD_TOO_LARGE`, `REQUEST_BODY_MALFORMED`,
+      `UPSTREAM_REJECTED_REQUEST`: none needed (checked 2026-09-29).
+      product_251 is archived into the platform's integration rules, which
+      keep no per-product code table - Atlas's published contract artifact is
+      the list, and the platform conformance guard counts only `retryable`
+      and the four refusal codes. X-4 vocabulary search: no existing spelling
+      to collide with - platform's `VALIDATION_TOO_LARGE` is a single field's
+      value, not the request body; runos has neither
+
+B - tenderforge is waiting on these:
+
+- [x] B1. Letter 30 checked against production (2026-09-30) and answered
+      in #69: every context and output floor is met (smallest across each
+      chain: 128000 on `chat/default`, 256000 on the other three; output
+      128000). Temperature is the caller's to send. Thinking is not
+      configured on any route - see B5
+- [x] B5a. Thinking analysed (owner, 2026-09-30): a per-call request
+      parameter, not a route - ADR-009 (Proposed)
+- [x] B5b. ADR-009 accepted (owner, 2026-09-30); `thinking: "off"|"on"`,
+      per-model `config.wire.thinking` (wire schema 3),
+      `THINKING_MODE_UNSUPPORTED` / `CHAT_THINKING_INVALID`,
+      `thinkingModes` on `/v1/model-routes`, applied mode echoed on both
+      response paths
+- [x] B5c. Production mapping written (2026-09-30, owner-authorized direct
+      SQL, recorded in #74 because it bypasses the audit log): the five
+      models behind tenderforge's routes carry `off`/`on`. Observed on a real
+      request for Doubao Seed 2.0 lite; the DeepSeek V4 pair and Doubao 2.0
+      pro / 2.1 turbo are from vendor docs. tenderforge told in #69
+- [ ] B5d. An editor for `wire.thinking` in opera's model drawer, so the next
+      mapping goes through the audited operator path (opera's own work; to
+      be raised on the platform line)
+- [x] Released as v0.7.8 (2026-09-30): ADR-009 thinking parameter and B6
+      deadline; both verified on the dev stack against real Doubao
+- [x] B6. `timeoutMs` is a total deadline per call: the upstream call is
+      cancelled when it runs out, `504 DEADLINE_EXCEEDED`, no breaker count,
+      no further fallback
+- [ ] B7. Layer 2, an optional `requirements` block resolved by an
+      operator-configured policy: cross-product vocabulary discussion open
+      as `vxture-platform`#540 (2026-09-30); Atlas designs it after that
+      settles
+- [x] B2a. `max_context_tokens` vs `context_window` settled: the policy
+      column is enforced by nothing (TD-054); capacity is published from the
+      model's own columns
+- [x] B2b. `/v1/model-routes` publishes per-route `contextWindow` /
+      `maxOutputTokens` (smallest across the chain, `null` = unknown) and a
+      top-level `maxRequestBytes` - code merged, not yet released
+- [x] B2c. No fill needed: B1 found both columns set on all eight models
+      behind tenderforge's four routes, so v0.7.7 publishes numbers
+- [x] B3a. Letter 40 item 3 designed: ADR-008 (Proposed) - recognise each
+      provider's refusal, no gateway token estimation, unrecognised overflow
+      degrades to `UPSTREAM_REJECTED_REQUEST`
+- [x] B3b. ADR-008 accepted (owner, 2026-09-29); `CONTEXT_LENGTH_EXCEEDED`
+      with a code-kept signature table pinned by recorded vendor bodies.
+      Doubao's signature still needs C1's real over-context request
+- [x] B3c. Atlas side of TD-055: `config.wire.contextOverflow` (wire
+      schema 4) - literal substrings, concatenated with the built-in list
+- [ ] B3d. Opera editor for `wire.contextOverflow` (with `wire.thinking`,
+      `vxture-platform`#542)
+- [x] Released as v0.7.7 (2026-09-30, first release through the production
+      approval gate): #65, #67, #68, #69; verified in production and on the
+      dev stack against a real Doubao upstream; tenderforge told in #69
+- [ ] B4. tenderforge's production re-run of the failed interpretation, and
+      whether their path to Atlas has a proxy capping the body (asked in #69)
+
+C - verification:
+
+- [x] C1 (Doubao). Real over-context request through the dev stack
+      (2026-09-30): Doubao answers 400 `InvalidParameter` "...exceed max
+      message tokens" - now a signature. Six overflows in a row, then a normal
+      call is still served: the breaker exemption holds on the real path
+- [ ] C1 (rest). Zhipu: the dev key answers 401, so its overflow is
+      untested. DeepSeek: no grant for the dev product. Claude: no usable
+      model in dev - its signature is still observed wording, not recorded
+- [x] C2 (Doubao). 8 MB and 15 MB bodies both reached tokenization (400
+      overflow, not 413): Doubao's byte cap is above 15 MB, so the 16 MiB
+      ceiling does not cut in ahead of it
+- [ ] C2 (rest). Zhipu, DeepSeek, MiniMax - same blockers as C1
+- [x] C3. Refusals before routing are counted in the existing
+      `model_request_rejections_total{code, product="unknown"}` rather than
+      a second metric for the same fact
+
+Production walkthrough (2026-09-30, v0.7.9):
+
+- [x] Outside probes: body ceiling exact at 16 MiB, envelopes for 413 / 400,
+      data plane, operator plane and `/metrics` all refuse anonymous access
+- [x] Inside: the rejection counter shows exactly the walkthrough's own two
+      refusals; no unhandled exceptions since the deploy; the B5c mapping is
+      intact on all five models
+- [x] Found: a reasoning-exhausted `maxTokens` was `PROVIDER_UNAVAILABLE`
+      (retryable, breaker-counted) - now `422 OUTPUT_BUDGET_EXHAUSTED`
+- [x] Found: a non-UUID `applicationId` on the product-grant lookup was a
+      codeless 500 (Postgres cast error, 3x on 2026-09-28) - now
+      `400 INVALID_APPLICATION_ID`
+- [x] Both fixes released as v0.7.10 (2026-09-30), verified in production;
+      tenderforge told in #69 (reasoning cost, probe budget), yucer in
+      `vx-agent-yucer`#525 (`applicationId: "yucer-diagnostics"` is not a
+      UUID)
+- [ ] Observed: tenderforge's `chat/deterministic` on `deepseek-v4-pro`
+      averages 4137 output tokens, 3232 of them reasoning, p95 94 s - every
+      call so far predates v0.7.8's `thinking: "off"`. Re-read after they
+      adopt it (#69)
+
+D - raised during this work:
+
+- [ ] D1. After the repo returns to private: run
+      `pnpm audit:run --only platform-claims` and confirm branch protection
+      and the production approval gate against the live state
+- [ ] D2. Owner decision: review repository content for anything that
+      should not have been public during the 2026-09-29 visibility change
+- [x] D3. `RATE_LIMITED` lost `retryAfterMs` (found 2026-08-18, never
+      registered): the quota gate throws without a `requestId`, so
+      `enrichRuntimeError` rebuilt the error and copied only `modelCode` /
+      `provider` - no body field, so no `Retry-After` header, while
+      `200-s2s-provider-surface.md` and letter 10 to karda promised both.
+      Fixed 2026-09-30 with a test through `chat()`, seen red first
+- [x] Released as v0.7.11 (2026-09-30, `ba521e8`): dev stack showed v0.7.10
+      answering 429 with no `Retry-After` and v0.7.11 with `Retry-After: 59` /
+      `retryAfterMs: 58198`; production deploy verified (health, provenance,
+      readiness, limits). Not reproduced in production - that needs a
+      rate-limit policy written there, not authorized for this change
+
+E - usage reaches the platform (ADR-010, owner 2026-09-30):
+
+- [x] E1. Root cause: consume names `product: "atlas"`, removed from the
+      platform catalog on 2026-09-23, so every report is `400 unknown_product`
+      (TD-056). Raised: vxture-platform#547 (receiving shape, doc fixes),
+      `vxture-arda`#214 (doc fixes), `vx-agent-tenderforge`#69 (told)
+- [x] E2. A refused consume names the platform's reason in the log and counts
+      it in `platform_consume_outcomes_total{metric,outcome,reason}`
+- [x] E3. Capture cache-write tokens in the adapters, plus a `reqlog` column
+      through db-init - done as part of usage-record batch 1 below
+- [x] E3b. Usage-record batch 1 (P0 of the 62-dimension checklist): `incr/04`
+      adds upstream id / model / raw usage / finish reason (normalized + native)
+      / usage source / cache writes (with the 1-hour split) to every reqlog row
+      that reached an upstream, chat and S2S; the Claude adapter now counts
+      cache read + write inside `input_tokens` (it stored Anthropic's
+      cache-exclusive figure), and its streaming path no longer drops the cache
+      read. Batches 2-4 (P1-P3) follow in that order. Released as v0.7.13
+      (2026-09-30, db-init first)
+- [x] E3c. Usage-record batch 2 (P1): `incr/05` adds started_at, first_token_at,
+      selector kind/value, provider key alias, thinking mode, max_tokens,
+      streamed, cancelled_by, and the row's own upstream_cost / currency /
+      price_rule_id / pricing_window, priced by the rule in force at started_at
+      with the rollup's formula (now one shared `priceUsage`). Completion and
+      TTFT are derived (started_at + latency_ms, first_token_at - started_at).
+      K1: `reqlog_write_failures_total{table,reason}` - a failing reqlog write
+      was a warn line only, which is how the dev database lost a month of rows
+      unseen. Cache writes are costed at the input rate until TD-057.
+      Released as v0.7.14 (2026-09-30, db-init first)
+- [x] E3d. Usage-record batch 3 (P2): `incr/06` adds token_jti, deploy_stage,
+      model_behavior_version, tool_count / tool_calls_made, message_count,
+      vector_count / vector_dimension to reqlog, and cache-write rates to price
+      rules (TD-057's Atlas half) - priced in the shared `priceUsage`. The cost
+      rollup now places a row in time by `started_at` (created_at only for rows
+      before incr/05). Reclassified as reserved, because Atlas has no such input
+      today: image/audio/file counts and per-modality tokens (chat content is
+      text only), tool-use prompt tokens (Gemini only), reasoning budget
+      (thinking is off/on only). Released as v0.7.15 (2026-09-30, db-init
+      first)
+- [x] E3e. Usage-record batch 4 (owner: build all 12; ADR-011): `incr/07`
+      adds the last 17 columns (upstream host, service tier, batch, reasoning
+      budget, image/audio/file inputs, modality tokens, tool-use prompt tokens,
+      web search calls, generated media, content filtered, queue wait) and
+      `dimension_status` - for every NULL usage dimension, why, in an
+      eight-word vocabulary the database enforces. Adapters declare what their
+      protocol lacks; a test fails CI on any unregistered nullable column.
+      Released as v0.7.16 (2026-10-01, db-init first)
+- [x] E3f. A vendor usage field Atlas does not map is counted
+      (`upstream_usage_unmapped_keys_total{provider,key}`) and warned once.
+      An adapter's `not_supported` declaration was a claim nothing checked;
+      a vendor that starts reporting a new figure now names it. Known fields:
+      `service/src/reqlog/usage-keys.ts`. Released as v0.7.17 (2026-10-01)
+- [ ] E4. Consume under the caller's product with raw tokens in four
+      dimensions, and C2 read by the caller's product - in the shape #547
+      settles on
+- [ ] E5. Backfill from `reqlog` the calls that were served and never billed,
+      if the platform wants them
+- [x] E6. Price rules mean the vendor's price, written from the admin console
+      (ADR-012); the platform's "sales price" wording and the admin form's
+      missing cache-write fields raised as vxture-platform#554
+- [ ] E7. Operators enter vendor prices (production has none, 2026-10-01).
+      Then: confirm new rows are priced, and decide whether to price the
+      earlier rows with the same formula
+- [x] Decided 2026-10-01: rows written before a dimension existed are not
+      backfilled with derived values. reqlog is append-only, and what was never
+      captured cannot be derived
 
 Platform-side, not this repo's write-scope:
 

@@ -4,6 +4,8 @@ import {
   computeCostRollup,
   InvalidPricingPolicyError,
   type CostGroupRow,
+  priceOneCall,
+  splitInput,
 } from "./cost-rollup";
 
 /**
@@ -427,5 +429,96 @@ describe("computeCostRollup", () => {
     expect(() =>
       computeCostRollup([group({ unitTokens: 0, inputTokens: 1n })]),
     ).toThrow(/unit_tokens must be positive/u);
+  });
+});
+
+// TD-057 (usage-record batch 3). Cache writes are inside input and priced at
+// their own rates; an undeclared rate falls back one step at a time.
+describe("cache-write pricing", () => {
+  const rates = {
+    unitTokens: 1_000_000,
+    inputUnitPrice: "3.00000000",
+    outputUnitPrice: "15.00000000",
+    requestUnitPrice: "0.00000000",
+    cachedInputUnitPrice: "0.30000000",
+  };
+
+  it("splits input into disjoint parts, clamping nonsense", () => {
+    expect(splitInput(1000n, 300n, 200n, 50n)).toEqual({
+      cached: 300n,
+      cacheWrite1h: 50n,
+      cacheWrite: 150n,
+      uncached: 500n,
+    });
+    // More cache than input: clamped, never a negative remainder.
+    expect(splitInput(100n, 80n, 80n, 0n)).toEqual({
+      cached: 80n,
+      cacheWrite1h: 0n,
+      cacheWrite: 20n,
+      uncached: 0n,
+    });
+  });
+
+  it("prices 5-minute and 1-hour writes at their declared rates", () => {
+    // 1M input = 400k uncached + 300k cached + 200k 5m write + 100k 1h write
+    const priced = priceOneCall(
+      { input: 1_000_000, cached: 300_000, cacheWrite: 300_000, cacheWrite1h: 100_000, output: 0 },
+      { ...rates, cacheWriteUnitPrice: "3.75000000", cacheWrite1hUnitPrice: "6.00000000" },
+      undefined,
+      new Date("2026-09-30T03:00:00Z"),
+    );
+    // 0.4*3 + 0.3*0.3 + 0.2*3.75 + 0.1*6 = 1.2 + 0.09 + 0.75 + 0.6
+    expect(priced?.cost).toBe("2.64000000");
+  });
+
+  it("falls back to the input rate when no write rate is declared - the pre-TD-057 cost", () => {
+    const priced = priceOneCall(
+      { input: 1_000_000, cached: 0, cacheWrite: 1_000_000, cacheWrite1h: 0, output: 0 },
+      rates,
+      undefined,
+      new Date("2026-09-30T03:00:00Z"),
+    );
+    expect(priced?.cost).toBe("3.00000000");
+  });
+
+  it("prices an undeclared 1-hour write at the declared 5-minute rate", () => {
+    const priced = priceOneCall(
+      { input: 1_000_000, cached: 0, cacheWrite: 1_000_000, cacheWrite1h: 1_000_000, output: 0 },
+      { ...rates, cacheWriteUnitPrice: "3.75000000" },
+      undefined,
+      new Date("2026-09-30T03:00:00Z"),
+    );
+    expect(priced?.cost).toBe("3.75000000");
+  });
+
+  it("carries writes through the rollup too", () => {
+    const result = computeCostRollup([
+      {
+        modelCode: "claude-x",
+        providerCode: "claude",
+        priceRuleId: "rule-1",
+        currency: "USD",
+        unitTokens: 1_000_000,
+        inputUnitPrice: "3.00000000",
+        outputUnitPrice: "15.00000000",
+        requestUnitPrice: "0.00000000",
+        cachedInputUnitPrice: null,
+        cacheWriteUnitPrice: "3.75000000",
+        cacheWrite1hUnitPrice: null,
+        isoDow: 3,
+        hourUtc: 3,
+        providerPricing: null,
+        requests: 1n,
+        requestsMissingInput: 0n,
+        requestsMissingOutput: 0n,
+        inputTokens: 1_000_000n,
+        cachedInputTokens: 0n,
+        cacheWriteInputTokens: 1_000_000n,
+        cacheWrite1hInputTokens: 0n,
+        outputTokens: 0n,
+        reasoningTokens: 0n,
+      },
+    ]);
+    expect(result.items[0]?.estimatedCost).toBe("3.75000000");
   });
 });

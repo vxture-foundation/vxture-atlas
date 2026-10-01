@@ -28,7 +28,8 @@ const TARGET_SELECTOR_PROPERTIES = {
       "Preferred selector for a product integration. Names a stable entry " +
       "point on the PRODUCT authorization axis; operators repoint it and " +
       "every product holding it follows, with no grant to update and no " +
-      "tenant involved. Discover the codes you hold at GET /v1/endpoints.",
+      "tenant involved. Discover the codes you hold, with each route's " +
+      "context window and output limit, at GET /v1/model-routes.",
   },
   taskProfile: {
     type: "string",

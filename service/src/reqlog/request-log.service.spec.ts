@@ -1,10 +1,21 @@
 import { Logger } from "@nestjs/common";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { Prisma } from "../generated/prisma";
 import { prisma } from "../prisma";
-import { RequestLogService } from "./request-log.service";
+import { metricsRegistry } from "../runtime/metrics.registry";
+import { RequestLogService, writeFailureReason } from "./request-log.service";
 
 const VALID_UUID = "2a4271d4-ac9a-4fa6-b479-4f71d8e996e8";
+
+// Usage-record batch 2: record() prices a row by looking up the rule in force
+// and the provider's pricing policy. Unit tests have no database, so both
+// lookups answer "none" unless a test says otherwise - an unmocked lookup
+// hangs on a connection instead of failing.
+beforeEach(() => {
+  vi.spyOn(prisma.modelPriceRule, "findFirst").mockResolvedValue(null as never);
+  vi.spyOn(prisma.modelProvider, "findFirst").mockResolvedValue(null as never);
+});
 
 describe("RequestLogService.record", () => {
   let create: ReturnType<typeof vi.fn>;
@@ -295,5 +306,426 @@ describe("RequestLogService.record - cost splits (TD-047)", () => {
       cachedInputTokens: 0n,
       reasoningTokens: 0n,
     });
+  });
+});
+
+// Usage-record batch 1 (incr/04). What reaches the table, not what the caller
+// passed: bigint for counts, the vendor's JSON verbatim, and a real SQL NULL -
+// Prisma's DbNull, not JS null - when there is no raw usage.
+describe("RequestLogService.record - usage-record batch 1", () => {
+  let create: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    create = vi.fn().mockResolvedValue({});
+    vi.spyOn(prisma.requestRecord, "create").mockImplementation(
+      create as never,
+    );
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  const written = () =>
+    (create.mock.calls[0] as [{ data: Record<string, unknown> }])[0].data;
+
+  it("writes the vendor facts, the cache writes and the source", async () => {
+    const rawUsage = { input_tokens: 10, cache_creation: { ephemeral_1h_input_tokens: 5 } };
+    await new RequestLogService().record({
+      requestId: "req-b1",
+      status: "success",
+      inputTokens: 35,
+      cacheWriteInputTokens: 20,
+      cacheWrite1hInputTokens: 5,
+      usageSource: "reported",
+      upstreamRequestId: "msg_01abc",
+      upstreamModel: "claude-sonnet-4-5-20250929",
+      upstreamUsage: rawUsage,
+      finishReason: "other",
+      nativeFinishReason: "pause_turn",
+    });
+
+    expect(written()).toMatchObject({
+      cacheWriteInputTokens: 20n,
+      cacheWrite1hInputTokens: 5n,
+      usageSource: "reported",
+      upstreamRequestId: "msg_01abc",
+      upstreamModel: "claude-sonnet-4-5-20250929",
+      upstreamUsage: rawUsage,
+      finishReason: "other",
+      nativeFinishReason: "pause_turn",
+    });
+  });
+
+  it("writes SQL NULL for every new column the entry does not carry", async () => {
+    await new RequestLogService().record({ requestId: "req-b1-empty", status: "success" });
+
+    const data = written();
+    expect(data).toMatchObject({
+      cacheWriteInputTokens: null,
+      cacheWrite1hInputTokens: null,
+      usageSource: null,
+      upstreamRequestId: null,
+      upstreamModel: null,
+      finishReason: null,
+      nativeFinishReason: null,
+    });
+    expect(data["upstreamUsage"]).toBe(Prisma.DbNull);
+  });
+});
+
+// Usage-record K1: a write that fails must be countable, not only a warn line.
+describe("RequestLogService - write failures are counted", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("counts a request_records write refused for a missing column, by class", async () => {
+    vi.spyOn(Logger.prototype, "warn").mockImplementation(() => undefined);
+    vi.spyOn(prisma.requestRecord, "create").mockRejectedValue(
+      new Error(
+        "Invalid `prisma.requestRecord.create()` invocation: The column `attempt_index of relation request_records` does not exist in the current database.",
+      ) as never,
+    );
+
+    await new RequestLogService().record({ requestId: "req-k1", status: "success" });
+
+    expect(await metricsRegistry.scrape()).toContain(
+      'reqlog_write_failures_total{table="request_records",reason="missing_column"',
+    );
+  });
+
+  it("sorts driver wording into a closed vocabulary", () => {
+    expect(writeFailureReason(new Error('new row violates check constraint "chk_x"'))).toBe(
+      "check_violation",
+    );
+    expect(writeFailureReason(new Error("permission denied for table request_records"))).toBe(
+      "permission_denied",
+    );
+    expect(writeFailureReason(new Error("no partition of relation found for row"))).toBe(
+      "missing_partition",
+    );
+    expect(writeFailureReason(new Error("something new"))).toBe("other");
+  });
+});
+
+// Usage-record batch 2 (J1/J2): the row carries its own price, by the rule in
+// force when the attempt STARTED, with the same formula the cost rollup uses.
+describe("RequestLogService.record - the row prices itself", () => {
+  let create: ReturnType<typeof vi.fn>;
+  const rule = {
+    id: "3f6b2f7e-1d7e-4b8a-9c4e-2d5f6a7b8c9d",
+    currency: "CNY",
+    unitTokens: 1_000_000,
+    inputUnitPrice: { toString: () => "4.00000000" },
+    outputUnitPrice: { toString: () => "16.00000000" },
+    requestUnitPrice: { toString: () => "0.00000000" },
+    cachedInputUnitPrice: { toString: () => "1.00000000" },
+  };
+
+  beforeEach(() => {
+    create = vi.fn().mockResolvedValue({});
+    vi.spyOn(prisma.requestRecord, "create").mockImplementation(create as never);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  const written = () =>
+    (create.mock.calls[0] as [{ data: Record<string, unknown> }])[0].data;
+
+  it("prices a peak-hour call by the rule in force at startedAt", async () => {
+    const findRule = vi
+      .spyOn(prisma.modelPriceRule, "findFirst")
+      .mockResolvedValue(rule as never);
+    const startedAt = new Date("2026-09-30T03:00:00Z");
+
+    await new RequestLogService().record({
+      requestId: "req-price",
+      status: "success",
+      modelCode: "deepseek-v4-pro",
+      providerCode: "deepseek",
+      inputTokens: 1_000_000,
+      cachedInputTokens: 250_000,
+      outputTokens: 100_000,
+      startedAt,
+    });
+
+    // uncached 750k x 4 + cached 250k x 1 + output 100k x 16, per 1M = 3 + 0.25 + 1.6
+    expect(written()).toMatchObject({
+      upstreamCost: "4.85000000",
+      costCurrency: "CNY",
+      priceRuleId: rule.id,
+      pricingWindow: "peak",
+      startedAt,
+    });
+    const where = (findRule.mock.calls[0]?.[0] as { where: Record<string, unknown> }).where;
+    expect(where).toMatchObject({
+      modelDef: { modelCode: "deepseek-v4-pro" },
+      billingMode: "token",
+      deletedAt: null,
+      effectiveAt: { lte: startedAt },
+    });
+  });
+
+  it("applies the provider's off-peak discount by when the call started", async () => {
+    vi.spyOn(prisma.modelPriceRule, "findFirst").mockResolvedValue(rule as never);
+    vi.spyOn(prisma.modelProvider, "findFirst").mockResolvedValue({
+      config: {
+        pricing: {
+          offPeak: {
+            timezone: "UTC",
+            multiplier: "0.5",
+            appliesTo: ["input", "cachedInput", "output"],
+            peakWindows: [{ days: [1, 2, 3, 4, 5, 6, 7], fromHour: 0, toHour: 16 }],
+          },
+        },
+      },
+    } as never);
+
+    await new RequestLogService().record({
+      requestId: "req-offpeak",
+      status: "success",
+      modelCode: "deepseek-v4-pro",
+      providerCode: "deepseek",
+      inputTokens: 1_000_000,
+      outputTokens: 0,
+      startedAt: new Date("2026-09-30T18:00:00Z"),
+    });
+
+    expect(written()).toMatchObject({ upstreamCost: "2.00000000", pricingWindow: "off_peak" });
+  });
+
+  it("leaves the row unpriced - NULL, not 0 - when no rule is in force", async () => {
+    await new RequestLogService().record({
+      requestId: "req-norule",
+      status: "success",
+      modelCode: "some-model",
+      inputTokens: 10,
+      outputTokens: 5,
+    });
+
+    expect(written()).toMatchObject({
+      upstreamCost: null,
+      costCurrency: null,
+      priceRuleId: null,
+      pricingWindow: null,
+    });
+  });
+
+  it("does not look a price up for a row with no token counts", async () => {
+    const findRule = vi.spyOn(prisma.modelPriceRule, "findFirst");
+
+    await new RequestLogService().record({
+      requestId: "req-notokens",
+      status: "error",
+      modelCode: "some-model",
+    });
+
+    expect(findRule).not.toHaveBeenCalled();
+    expect(written()).toMatchObject({ upstreamCost: null });
+  });
+
+  it("writes the request facts it is given", async () => {
+    const startedAt = new Date("2026-09-30T01:00:00Z");
+    const firstTokenAt = new Date("2026-09-30T01:00:01.200Z");
+    await new RequestLogService().record({
+      requestId: "req-facts",
+      status: "success",
+      startedAt,
+      firstTokenAt,
+      selectorKind: "endpoint",
+      selectorValue: "chat/deterministic",
+      providerKeyAlias: "deepseek-main",
+      thinkingMode: "off",
+      maxTokens: 4096,
+      streamed: true,
+      cancelledBy: "client",
+    });
+
+    expect(written()).toMatchObject({
+      startedAt,
+      firstTokenAt,
+      selectorKind: "endpoint",
+      selectorValue: "chat/deterministic",
+      providerKeyAlias: "deepseek-main",
+      thinkingMode: "off",
+      maxTokens: 4096,
+      streamed: true,
+      cancelledBy: "client",
+    });
+  });
+});
+
+// Usage-record batch 3 (incr/06).
+describe("RequestLogService.record - batch 3 facts", () => {
+  let create: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    create = vi.fn().mockResolvedValue({});
+    vi.spyOn(prisma.requestRecord, "create").mockImplementation(create as never);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("writes the facts it is given, and stamps the stage on every row", async () => {
+    await new RequestLogService().record({
+      requestId: "req-b3",
+      status: "success",
+      tokenJti: "jti-abc",
+      modelBehaviorVersion: "bv1-0123456789ab",
+      toolCount: 3,
+      toolCallsMade: 1,
+      messageCount: 7,
+      vectorCount: 2,
+      vectorDimension: 1024,
+    });
+
+    const data = (create.mock.calls[0] as [{ data: Record<string, unknown> }])[0].data;
+    expect(data).toMatchObject({
+      tokenJti: "jti-abc",
+      modelBehaviorVersion: "bv1-0123456789ab",
+      toolCount: 3,
+      toolCallsMade: 1,
+      messageCount: 7,
+      vectorCount: 2,
+      vectorDimension: 1024,
+    });
+    // Same source as /healthz; whatever it is, it is written on every row.
+    expect(data).toHaveProperty("deployStage");
+  });
+
+  it("clamps a count past smallint instead of failing the insert", async () => {
+    await new RequestLogService().record({
+      requestId: "req-b3-big",
+      status: "success",
+      messageCount: 100_000,
+    });
+
+    const data = (create.mock.calls[0] as [{ data: Record<string, unknown> }])[0].data;
+    expect(data["messageCount"]).toBe(32767);
+  });
+});
+
+// Usage-record batch 4: the writer stamps, for every empty dimension, why.
+describe("RequestLogService.record - dimension_status", () => {
+  let create: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    create = vi.fn().mockResolvedValue({});
+    vi.spyOn(prisma.requestRecord, "create").mockImplementation(create as never);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  const written = () =>
+    (create.mock.calls[0] as [{ data: Record<string, unknown> }])[0].data;
+
+  it("explains every empty dimension of a served chat row", async () => {
+    await new RequestLogService().record({
+      requestId: "req-b4",
+      status: "success",
+      capability: "chat",
+      usageSource: "reported",
+      streamed: false,
+      modelCode: "deepseek-v4-pro",
+      providerCode: "deepseek",
+      inputTokens: 10,
+      outputTokens: 2,
+      totalTokens: 12,
+      finishReason: "stop",
+      notSupported: ["cacheWriteInputTokens"],
+      nullReasons: { billedAmount: "not_reported" },
+    });
+
+    const data = written();
+    const status = data["dimensionStatus"] as Record<string, string>;
+    expect(status).toMatchObject({
+      cache_write_input_tokens: "not_supported", // declared by the adapter
+      service_tier: "not_reported", // in the protocol, not sent this time
+      upstream_cost: "not_configured", // no price rule in force (mocked: none)
+      thinking_mode: "not_specified", // the caller sent none
+      first_token_at: "not_applicable", // not a stream
+      generated_image_count: "not_integrated", // Atlas has no such mechanism
+      billed_amount: "not_reported", // the caller's own reason wins
+    });
+    // A value present is not marked.
+    expect(status["input_tokens"]).toBeUndefined();
+    // Facts Atlas states on a row that reached a provider.
+    expect(data).toMatchObject({ queueWaitMs: 0, isBatch: false, contentFiltered: false });
+  });
+
+  it("marks the vendor columns not_reached on a row that never reached one", async () => {
+    await new RequestLogService().record({
+      requestId: "req-b4-refused",
+      status: "error",
+      capability: "chat",
+      modelCode: "m",
+    });
+
+    const status = written()["dimensionStatus"] as Record<string, string>;
+    expect(status["input_tokens"]).toBe("not_reached");
+    expect(status["queue_wait_ms"]).toBe("not_reached");
+    expect(written()).toMatchObject({ queueWaitMs: null, isBatch: null });
+  });
+
+  it("says a dropped non-UUID tenant was a capture failure, not an absent one", async () => {
+    vi.spyOn(Logger.prototype, "warn").mockImplementation(() => undefined);
+    await new RequestLogService().record({
+      requestId: "req-b4-tenant",
+      status: "success",
+      tenantId: "org-acme/ws-main",
+    });
+
+    const status = written()["dimensionStatus"] as Record<string, string>;
+    expect(status["tenant_id"]).toBe("capture_failed");
+  });
+});
+
+// A vendor that starts reporting a figure Atlas does not map must surface,
+// not just land in upstream_usage while the column keeps saying not_supported.
+describe("RequestLogService.record - unmapped vendor usage", () => {
+  beforeEach(() => {
+    vi.spyOn(prisma.requestRecord, "create").mockResolvedValue({} as never);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("counts every unmapped field and warns once per provider and field", async () => {
+    const warn = vi.spyOn(Logger.prototype, "warn").mockImplementation(() => undefined);
+    const service = new RequestLogService();
+    const entry = {
+      requestId: "req-unmapped",
+      status: "success" as const,
+      providerCode: "doubao",
+      upstreamUsage: { prompt_tokens: 1, prompt_tokens_details: { image_tokens: 7 } },
+    };
+
+    await service.record(entry);
+    await service.record({ ...entry, requestId: "req-unmapped-2" });
+
+    expect(await metricsRegistry.scrape()).toContain(
+      'upstream_usage_unmapped_keys_total{provider="doubao",key="prompt_tokens_details.image_tokens"} 2',
+    );
+    const lines = warn.mock.calls.filter(([m]) => String(m).includes("image_tokens"));
+    expect(lines).toHaveLength(1);
+  });
+
+  it("is silent for a usage object Atlas fully maps", async () => {
+    const warn = vi.spyOn(Logger.prototype, "warn").mockImplementation(() => undefined);
+    await new RequestLogService().record({
+      requestId: "req-mapped",
+      status: "success",
+      providerCode: "deepseek",
+      upstreamUsage: { prompt_tokens: 3, completion_tokens: 1, total_tokens: 4 },
+    });
+    expect(warn.mock.calls.filter(([m]) => String(m).includes("does not map"))).toEqual([]);
   });
 });

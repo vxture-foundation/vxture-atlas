@@ -738,6 +738,38 @@ describe("ModelRuntimeService runtime flow", () => {
     expect(entitlements.consume).not.toHaveBeenCalled();
   });
 
+  // Found 2026-08-18, still true until 2026-09-30: the quota gate throws
+  // RATE_LIMITED without a requestId, so enrichRuntimeError rebuilt it - and
+  // the rebuild copied only modelCode/provider. retryAfterMs never reached the
+  // body, so RetryAfterFilter never sent the Retry-After header either.
+  it("keeps retryAfterMs when a rate-limit refusal is enriched with the requestId", async () => {
+    const { service } = makeRuntime({
+      quota: {
+        assertAllowed: vi
+          .fn()
+          .mockRejectedValue(
+            new ModelRuntimeException(
+              HttpStatus.TOO_MANY_REQUESTS,
+              "RATE_LIMITED",
+              "slow down",
+              { modelCode: "primary-model", retryAfterMs: 1_200 },
+            ),
+          ),
+      },
+    });
+
+    const error: unknown = await service
+      .chat(makeRequest({ modelCode: "primary-model" }))
+      .catch((caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(ModelRuntimeException);
+    expect((error as ModelRuntimeException).getResponse()).toMatchObject({
+      code: "RATE_LIMITED",
+      retryAfterMs: 1_200,
+      requestId: expect.any(String),
+    });
+  });
+
   it("falls back to configured model when primary provider fails", async () => {
     const { service, provider, fallbackProvider, requestLog } = makeRuntime();
     provider.chat.mockRejectedValueOnce(new Error("primary unavailable"));
@@ -849,6 +881,259 @@ describe("ModelRuntimeService runtime flow", () => {
       expect((error.getResponse() as { message: string }).message).toContain(
         "request too large",
       );
+    });
+
+    // B6: the caller's total budget. Real 1s deadlines (the floor), so these
+    // run on real timers; each asserts everything it can in one wait.
+    describe("timeoutMs (B6)", () => {
+      /** Hangs until the signal fires, then rejects with its reason - what fetch does. */
+      const hangUntilAborted = (req: { signal?: AbortSignal }) =>
+        new Promise((_, reject) => {
+          req.signal?.addEventListener("abort", () => reject(req.signal?.reason));
+        });
+
+      it("cancels the upstream call when the budget runs out: 504 DEADLINE_EXCEEDED, no fallback, no breaker count", async () => {
+        const { service, provider, fallbackProvider, circuitBreaker, requestLog } = makeRuntime();
+        provider.chat.mockImplementation(hangUntilAborted);
+        const recordFailure = vi.spyOn(circuitBreaker, "recordFailure");
+
+        const error = (await service
+          .chat(makeRequest({ modelCode: "primary-model", requestId: "d1", timeoutMs: 1000 }))
+          .catch((e: unknown) => e)) as ModelRuntimeException;
+
+        expect(error.getStatus()).toBe(504);
+        expect(error.getResponse()).toMatchObject({ code: "DEADLINE_EXCEEDED", retryable: false });
+        expect(provider.chat.mock.calls[0]?.[0].signal).toBeInstanceOf(AbortSignal);
+        expect(fallbackProvider.chat).not.toHaveBeenCalled();
+        expect(recordFailure).not.toHaveBeenCalled();
+        // Usage-record batch 2 (H4): the row says the budget cut it, not a fault.
+        expect(requestLog.record).toHaveBeenCalledWith(
+          expect.objectContaining({ requestId: "d1", cancelledBy: "deadline", streamed: false }),
+        );
+      });
+
+      it("on a stream: reported as the budget (not a disconnect), and no fallback starts on a spent budget", async () => {
+        const { service, provider, fallbackProvider } = makeRuntime();
+        // Deadline fires before any output, so the "partial output already
+        // sent" rule does not stop the fallback - only the deadline check can.
+        provider.chatStream.mockImplementation(async function* (req: { signal?: AbortSignal }) {
+          await hangUntilAborted(req);
+        });
+        // The controller always passes a client signal on a stream.
+        const client = new AbortController();
+
+        let caught: unknown;
+        try {
+          for await (const _ of service.chatStream(
+            makeRequest({ modelCode: "primary-model", requestId: "d2", timeoutMs: 1000 }),
+            undefined,
+            client.signal,
+          )) {
+            // drain
+          }
+        } catch (error) {
+          caught = error;
+        }
+
+        expect((caught as ModelRuntimeException).getResponse()).toMatchObject({ code: "DEADLINE_EXCEEDED" });
+        expect(fallbackProvider.chatStream).not.toHaveBeenCalled();
+      });
+
+      it.each([0, 999, 600_001, 1500.5])("refuses timeoutMs %s before any upstream call", async (timeoutMs) => {
+        const { service, provider } = makeRuntime();
+
+        const error = (await service
+          .chat(makeRequest({ modelCode: "primary-model", requestId: "d3", timeoutMs }))
+          .catch((e: unknown) => e)) as ModelRuntimeException;
+
+        expect(error.getResponse()).toMatchObject({ code: "CHAT_TIMEOUT_INVALID" });
+        expect(provider.chat).not.toHaveBeenCalled();
+      });
+
+      it("adds no deadline when none was asked - today's behaviour", async () => {
+        const { service, provider } = makeRuntime();
+
+        await service.chat(makeRequest({ modelCode: "primary-model", requestId: "d4" }));
+
+        expect(provider.chat.mock.calls[0]?.[0]).not.toHaveProperty("signal");
+      });
+    });
+
+    // ADR-009: thinking is a per-call parameter, honoured through the
+    // model's config.wire.thinking or refused - never silently dropped.
+    describe("thinking (ADR-009)", () => {
+      const BOTH = { off: { thinking: { type: "disabled" } }, on: { thinking: { type: "enabled" } } };
+      function withWire(
+        primaryThinking: Record<string, unknown> | undefined,
+        fallbackThinking: Record<string, unknown> | undefined,
+      ) {
+        const primary = makeModel({
+          modelCode: "primary-model",
+          provider: "primary",
+          config: {
+            managedKeyAlias: "test-key",
+            fallbackModelCodes: ["fallback-model"],
+            ...(primaryThinking ? { wire: { thinking: primaryThinking } } : {}),
+          },
+        });
+        const fallback = makeModel({
+          id: "model-2",
+          modelCode: "fallback-model",
+          provider: "fallback",
+          config: {
+            managedKeyAlias: "test-key",
+            ...(fallbackThinking ? { wire: { thinking: fallbackThinking } } : {}),
+          },
+        });
+        return makeRuntime({
+          registry: {
+            getActiveModel: vi.fn((code: string) =>
+              Promise.resolve(code === "primary-model" ? primary : fallback),
+            ),
+          },
+        });
+      }
+
+      it("refuses a mode the primary cannot run, before any upstream call", async () => {
+        const { service, provider } = withWire({ on: {} }, BOTH);
+
+        const error = (await service
+          .chat(makeRequest({ modelCode: "primary-model", requestId: "t1", thinking: "off" }))
+          .catch((e: unknown) => e)) as ModelRuntimeException;
+
+        expect(error.getStatus()).toBe(422);
+        expect(error.getResponse()).toMatchObject({
+          code: "THINKING_MODE_UNSUPPORTED",
+          retryable: false,
+          modelCode: "primary-model",
+        });
+        expect(provider.chat).not.toHaveBeenCalled();
+      });
+
+      it("passes the mode to the adapter and echoes it", async () => {
+        const { service, provider } = withWire(BOTH, BOTH);
+
+        const response = await service.chat(
+          makeRequest({ modelCode: "primary-model", requestId: "t2", thinking: "off" }),
+        );
+
+        expect(provider.chat).toHaveBeenCalledWith(expect.objectContaining({ thinking: "off" }));
+        expect(response.thinking).toBe("off");
+      });
+
+      it("skips a fallback that cannot run the mode, rather than serving it the default", async () => {
+        const { service, provider, fallbackProvider } = withWire(BOTH, undefined);
+        provider.chat.mockRejectedValue(new Error("primary down"));
+
+        await service
+          .chat(makeRequest({ modelCode: "primary-model", requestId: "t3", thinking: "off" }))
+          .catch(() => undefined);
+
+        expect(fallbackProvider.chat).not.toHaveBeenCalled();
+      });
+
+      it("echoes null and sends no mode when none was asked - today's behaviour", async () => {
+        const { service, provider } = withWire(undefined, undefined);
+
+        const response = await service.chat(makeRequest({ modelCode: "primary-model", requestId: "t4" }));
+
+        expect(response.thinking).toBeNull();
+        expect(provider.chat.mock.calls[0]?.[0]).not.toHaveProperty("thinking");
+      });
+
+      it("refuses a value outside the vocabulary instead of treating it as not asked", async () => {
+        const { service, provider } = withWire(BOTH, BOTH);
+
+        const error = (await service
+          .chat(makeRequest({ modelCode: "primary-model", requestId: "t5", thinking: "auto" as never }))
+          .catch((e: unknown) => e)) as ModelRuntimeException;
+
+        expect(error.getStatus()).toBe(400);
+        expect(error.getResponse()).toMatchObject({ code: "CHAT_THINKING_INVALID" });
+        expect(provider.chat).not.toHaveBeenCalled();
+      });
+    });
+
+    // ADR-008: the narrower code when the refusal is recognisably a context
+    // overflow - same status, same handling, only the code differs.
+    it("answers a recognised context overflow as CONTEXT_LENGTH_EXCEEDED, with the same handling", async () => {
+      const { service, provider, fallbackProvider, circuitBreaker } = makeRuntime();
+      const overflow = new ProviderHttpError(
+        "status 400",
+        400,
+        "primary",
+        JSON.stringify({ error: { code: "context_length_exceeded", message: "maximum context length is 131072 tokens" } }),
+      );
+      provider.chat.mockRejectedValue(overflow);
+      fallbackProvider.chat.mockRejectedValue(overflow);
+
+      let last: unknown;
+      for (let i = 0; i < 6; i += 1) {
+        last = await service
+          .chat(makeRequest({ modelCode: "primary-model", requestId: `o-${i}` }))
+          .catch((error: unknown) => error);
+      }
+
+      expect(circuitBreaker.isTripped("primary-model")).toBe(false);
+      expect(fallbackProvider.chat).toHaveBeenCalledTimes(6);
+      expect((last as ModelRuntimeException).getStatus()).toBe(422);
+      expect((last as ModelRuntimeException).getResponse()).toMatchObject({
+        code: "CONTEXT_LENGTH_EXCEEDED",
+        retryable: false,
+      });
+    });
+
+    // Walkthrough 2026-09-30: a thinking model that spent a tiny maxTokens on
+    // reasoning was PROVIDER_UNAVAILABLE, retryable and breaker-counted.
+    it("answers an exhausted output budget as the caller's, not the provider's", async () => {
+      const { service, provider, fallbackProvider, circuitBreaker } = makeRuntime();
+      const exhausted = () =>
+        new UpstreamCallFailure("primary returned invalid response: output budget exhausted", { completionTokens: 8 }, {
+          outputBudgetExhausted: true,
+        });
+      provider.chat.mockRejectedValue(exhausted());
+      fallbackProvider.chat.mockRejectedValue(exhausted());
+      const recordFailure = vi.spyOn(circuitBreaker, "recordFailure");
+
+      const error = (await service
+        .chat(makeRequest({ modelCode: "primary-model", requestId: "ob-1" }))
+        .catch((e: unknown) => e)) as ModelRuntimeException;
+
+      expect(error.getStatus()).toBe(422);
+      expect(error.getResponse()).toMatchObject({ code: "OUTPUT_BUDGET_EXHAUSTED", retryable: false });
+      expect(recordFailure).not.toHaveBeenCalled();
+    });
+
+    // TD-055: a provider's own wording, added in config, with no release.
+    it("recognises an overflow by a signature from the model's provider config", async () => {
+      const refusal = () =>
+        new ProviderHttpError("400", 400, "primary", JSON.stringify({ error: { code: "NEWVENDOR_TOO_LONG", message: "x" } }));
+      const withSignature = makeModel({
+        modelCode: "primary-model",
+        provider: "primary",
+        config: { managedKeyAlias: "test-key" },
+        providerConfig: { wire: { contextOverflow: [{ code: "NEWVENDOR_TOO_LONG" }] } },
+      });
+      const { service, provider } = makeRuntime({
+        registry: { getActiveModel: vi.fn(() => Promise.resolve(withSignature)) },
+      });
+      provider.chat.mockRejectedValue(refusal());
+
+      const error = (await service
+        .chat(makeRequest({ modelCode: "primary-model", requestId: "cfg-1" }))
+        .catch((e: unknown) => e)) as ModelRuntimeException;
+
+      expect(error.getResponse()).toMatchObject({ code: "CONTEXT_LENGTH_EXCEEDED" });
+
+      // Same refusal without the configured signature: the generic code.
+      const bare = makeRuntime({
+        registry: { getActiveModel: vi.fn(() => Promise.resolve({ ...withSignature, providerConfig: null })) },
+      });
+      bare.provider.chat.mockRejectedValue(refusal());
+      const plain = (await bare.service
+        .chat(makeRequest({ modelCode: "primary-model", requestId: "cfg-2" }))
+        .catch((e: unknown) => e)) as ModelRuntimeException;
+      expect(plain.getResponse()).toMatchObject({ code: "UPSTREAM_REJECTED_REQUEST" });
     });
 
     it("keeps the vendor's wording in the message, bounded", async () => {
@@ -1369,7 +1654,7 @@ describe("ModelRuntimeService runtime flow", () => {
         { type: "text", delta: "hello" },
         // `modelCode` rides on every done frame now - see the "who answered"
         // block below for why it is not optional in practice.
-        { type: "done", modelCode: "primary-model" },
+        { type: "done", modelCode: "primary-model", thinking: null },
       ]);
       expect(h.requestLog.record).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -1632,6 +1917,17 @@ describe("ModelRuntimeService runtime flow", () => {
       expect(h.requestLog.recordError).toHaveBeenCalledWith(
         expect.objectContaining({ errorCode: "CLIENT_ABORTED" }),
       );
+      // Usage-record batch 2 (H4, A4, A5, D4): who cut it short, and when the
+      // attempt started and first reached the caller.
+      expect(h.requestLog.record).toHaveBeenCalledWith(
+        expect.objectContaining({
+          requestId: "stream-ab",
+          cancelledBy: "client",
+          streamed: true,
+          startedAt: expect.any(Date),
+          firstTokenAt: expect.any(Date),
+        }),
+      );
     });
   });
 
@@ -1706,6 +2002,276 @@ describe("ModelRuntimeService runtime flow", () => {
       expect(row.inputTokens).toBeUndefined();
       expect(row.cachedInputTokens).toBeUndefined();
       expect(row.reasoningTokens).toBeUndefined();
+    });
+  });
+
+  // ── usage-record batch 1 (ADR-010, checklist A3 C4 E3 E4 G1 G2 H3) ─────
+  //
+  // Atlas reports raw usage and the platform prices it with rules operators
+  // change at will. A fact the row never received cannot be re-derived when a
+  // rule changes, so these are the facts that must reach it on every path.
+  describe("the usage record carries what the vendor said", () => {
+    const upstream = {
+      upstreamRequestId: "msg_01abc",
+      upstreamModel: "claude-sonnet-4-5-20250929",
+      nativeFinishReason: "pause_turn",
+      rawUsage: { input_tokens: 10, cache_creation_input_tokens: 20 },
+    };
+
+    it("writes the vendor id, model, raw usage, cache writes and source on a success row", async () => {
+      const h = makeRuntime();
+      h.provider.chat.mockResolvedValue({
+        content: "pong",
+        promptTokens: 30,
+        completionTokens: 3,
+        totalTokens: 33,
+        cacheWriteInputTokens: 20,
+        cacheWrite1hInputTokens: 5,
+        upstream,
+      });
+
+      await h.service.chat(makeRequest({ modelCode: "primary-model", requestId: "rec-1" }));
+
+      expect(h.requestLog.record).toHaveBeenCalledWith(
+        expect.objectContaining({
+          usageSource: "reported",
+          upstreamRequestId: "msg_01abc",
+          upstreamModel: "claude-sonnet-4-5-20250929",
+          upstreamUsage: { input_tokens: 10, cache_creation_input_tokens: 20 },
+          cacheWriteInputTokens: 20,
+          cacheWrite1hInputTokens: 5,
+          nativeFinishReason: "pause_turn",
+          // Unmapped vendor reason: normalized word is 'other', the vendor's
+          // own word survives beside it.
+          finishReason: "other",
+        }),
+      );
+    });
+
+    it("keeps the normalized reason when the adapter mapped one", async () => {
+      const h = makeRuntime();
+      h.provider.chat.mockResolvedValue({
+        content: "pong",
+        promptTokens: 1,
+        completionTokens: 1,
+        totalTokens: 2,
+        finishReason: "length",
+        upstream: { nativeFinishReason: "max_tokens" },
+      });
+
+      await h.service.chat(makeRequest({ modelCode: "primary-model", requestId: "rec-2" }));
+
+      expect(h.requestLog.record).toHaveBeenCalledWith(
+        expect.objectContaining({ finishReason: "length", nativeFinishReason: "max_tokens" }),
+      );
+    });
+
+    it("marks a served call whose upstream reported no usage as 'absent', and writes no cache split", async () => {
+      const h = makeRuntime();
+      h.provider.chat.mockResolvedValue({
+        content: "pong",
+        promptTokens: 0,
+        completionTokens: 0,
+        totalTokens: 0,
+        cacheWriteInputTokens: 9,
+        usageReported: false,
+      });
+
+      await h.service.chat(makeRequest({ modelCode: "primary-model", requestId: "rec-3" }));
+
+      const row = h.requestLog.record.mock.calls[0]?.[0] as {
+        usageSource?: string;
+        cacheWriteInputTokens?: number;
+      };
+      expect(row.usageSource).toBe("absent");
+      expect(row.cacheWriteInputTokens).toBeUndefined();
+    });
+
+    it("records the stream's vendor facts and keeps them off the caller's done frame", async () => {
+      const h = makeRuntime();
+      h.provider.chatStream.mockImplementation(async function* () {
+        yield { type: "text", delta: "hi" };
+        yield {
+          type: "done",
+          usage: { promptTokens: 4, completionTokens: 1, totalTokens: 5 },
+          finishReason: "stop",
+          upstream: { upstreamRequestId: "chatcmpl-9", upstreamModel: "deepseek-v4-pro" },
+        };
+      });
+
+      const events: StreamEvent[] = [];
+      for await (const event of h.service.chatStream(
+        makeRequest({ modelCode: "primary-model", requestId: "rec-4" }),
+      )) {
+        events.push(event);
+      }
+
+      const done = events.at(-1) as Record<string, unknown>;
+      // Vendor ids and raw usage are not part of the caller contract.
+      expect(done).not.toHaveProperty("upstream");
+      expect(h.requestLog.record).toHaveBeenCalledWith(
+        expect.objectContaining({
+          usageSource: "reported",
+          upstreamRequestId: "chatcmpl-9",
+          upstreamModel: "deepseek-v4-pro",
+          finishReason: "stop",
+        }),
+      );
+    });
+
+    it("marks a failed attempt that reached the upstream and got nothing back as 'absent'", async () => {
+      const h = makeRuntime();
+      h.provider.chat.mockRejectedValueOnce(new Error("socket hang up"));
+
+      await h.service.chat(makeRequest({ modelCode: "primary-model", requestId: "rec-5" }));
+
+      const failed = h.requestLog.record.mock.calls
+        .map(([entry]) => entry as { status?: string; usageSource?: string })
+        .find((row) => row.status === "error");
+      expect(failed?.usageSource).toBe("absent");
+    });
+
+    it("carries the vendor facts of a failed attempt the vendor charged for", async () => {
+      const h = makeRuntime();
+      h.provider.chat.mockRejectedValueOnce(
+        new UpstreamCallFailure(
+          "empty model response",
+          { promptTokens: 84, completionTokens: 16, totalTokens: 100 },
+          { upstream: { upstreamRequestId: "chatcmpl-empty", nativeFinishReason: "length" } },
+        ),
+      );
+
+      await h.service.chat(makeRequest({ modelCode: "primary-model", requestId: "rec-6" }));
+
+      const failed = h.requestLog.record.mock.calls
+        .map(([entry]) => entry as Record<string, unknown>)
+        .find((row) => row["status"] === "error");
+      expect(failed).toMatchObject({
+        usageSource: "reported",
+        upstreamRequestId: "chatcmpl-empty",
+        nativeFinishReason: "length",
+      });
+    });
+
+    it("leaves the source unset on a gate refusal, which never reached an upstream", async () => {
+      const h = makeRuntime({
+        quota: {
+          assertAllowed: vi
+            .fn()
+            .mockRejectedValue(
+              new ModelRuntimeException(HttpStatus.FORBIDDEN, "QUOTA_EXCEEDED", "quota exhausted"),
+            ),
+        },
+      });
+
+      await expect(
+        h.service.chat(makeRequest({ modelCode: "primary-model", requestId: "rec-7" })),
+      ).rejects.toMatchObject({ code: "QUOTA_EXCEEDED" });
+
+      const row = h.requestLog.record.mock.calls[0]?.[0] as { usageSource?: string };
+      expect(row.usageSource).toBeUndefined();
+    });
+
+    // Usage-record batch 2 (A4, C1, C5, D1, D3, D4).
+    it("writes what the caller asked for and which key the call went out on", async () => {
+      // A model that can run thinking "off" - without a mapping ADR-009
+      // refuses the mode before any call, which is the right answer and not
+      // this test's subject.
+      const model = makeModel({
+        modelCode: "primary-model",
+        provider: "primary",
+        config: {
+          managedKeyAlias: "test-key",
+          wire: { thinking: { off: { thinking: { type: "disabled" } } } },
+        },
+      });
+      const h = makeRuntime({
+        registry: { getActiveModel: vi.fn(() => Promise.resolve(model)) },
+      });
+      h.provider.chat.mockResolvedValue({
+        content: "pong",
+        promptTokens: 1,
+        completionTokens: 1,
+        totalTokens: 2,
+      });
+
+      await h.service.chat(
+        makeRequest({
+          modelCode: "primary-model",
+          requestId: "facts-1",
+          thinking: "off",
+          maxTokens: 64,
+        }),
+      );
+
+      const row = h.requestLog.record.mock.calls[0]?.[0] as Record<string, unknown>;
+      expect(row).toMatchObject({
+        selectorKind: "model",
+        selectorValue: "primary-model",
+        thinkingMode: "off",
+        maxTokens: 64,
+        streamed: false,
+        providerKeyAlias: "test-key",
+      });
+      expect(row["startedAt"]).toBeInstanceOf(Date);
+      // Non-stream: there is no first token to time.
+      expect(row["firstTokenAt"]).toBeUndefined();
+      expect(row["cancelledBy"]).toBeUndefined();
+    });
+
+    // Usage-record batch 3 (B8, C9, D5, D6).
+    it("writes message and tool counts, the token jti and the behaviour fingerprint", async () => {
+      const h = makeRuntime();
+      h.provider.chat.mockResolvedValue({
+        content: "",
+        toolCalls: [{ id: "c1", name: "search", arguments: {} }],
+        promptTokens: 1,
+        completionTokens: 1,
+        totalTokens: 2,
+      });
+
+      await h.service.chat(
+        makeRequest({
+          modelCode: "primary-model",
+          requestId: "facts-3",
+          tools: [{ name: "search", description: "d", parameters: {} }],
+        }),
+        { jti: "jti-123", callerProductCode: "karda" } as never,
+      );
+
+      const row = h.requestLog.record.mock.calls[0]?.[0] as Record<string, unknown>;
+      expect(row).toMatchObject({
+        messageCount: 1,
+        toolCount: 1,
+        toolCallsMade: 1,
+        tokenJti: "jti-123",
+      });
+      expect(typeof row["modelBehaviorVersion"]).toBe("string");
+    });
+
+    it("times the first streamed event after the attempt started", async () => {
+      const h = makeRuntime();
+      h.provider.chatStream.mockImplementation(async function* () {
+        yield { type: "text", delta: "hi" };
+        yield { type: "done", usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 } };
+      });
+
+      for await (const _ of h.service.chatStream(
+        makeRequest({ modelCode: "primary-model", requestId: "facts-2" }),
+      )) {
+        // drain
+      }
+
+      const row = h.requestLog.record.mock.calls[0]?.[0] as {
+        startedAt?: Date;
+        firstTokenAt?: Date;
+        streamed?: boolean;
+      };
+      expect(row.streamed).toBe(true);
+      expect(row.firstTokenAt).toBeInstanceOf(Date);
+      expect((row.firstTokenAt as Date).getTime()).toBeGreaterThanOrEqual(
+        (row.startedAt as Date).getTime(),
+      );
     });
   });
 

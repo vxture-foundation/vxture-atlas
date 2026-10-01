@@ -71,6 +71,33 @@ export type ModelRuntimeErrorCode =
    * request takes the model offline for every other product.
    */
   | "UPSTREAM_REJECTED_REQUEST"
+  /**
+   * The narrower case of the above: the upstream refused because the input
+   * does not fit the model's context window (ADR-008). Recognised from the
+   * vendor's own refusal, never estimated. The caller's move is to split the
+   * input; an unrecognised overflow still arrives as UPSTREAM_REJECTED_REQUEST.
+   */
+  | "CONTEXT_LENGTH_EXCEEDED"
+  /**
+   * ADR-009: the routed primary cannot run with the requested thinking mode
+   * (e.g. `off` on an always-on model, or no mapping recorded for it yet).
+   * Refused rather than served on the upstream default, which would bill the
+   * caller for the behaviour it asked to avoid.
+   */
+  | "THINKING_MODE_UNSUPPORTED"
+  /**
+   * The caller's own `timeoutMs` ran out; the upstream call was cancelled.
+   * Not a provider failure - the budget was the caller's - so it does not
+   * count toward the breaker and no further fallback is tried.
+   */
+  | "DEADLINE_EXCEEDED"
+  /**
+   * The upstream stopped for length before producing any answer: the
+   * caller's `maxTokens` was spent, on a thinking model usually entirely on
+   * reasoning. Raise `maxTokens` or send `thinking: "off"`. The caller's
+   * budget, not the model's health - no breaker count.
+   */
+  | "OUTPUT_BUDGET_EXHAUSTED"
   // --- request body ---
   // Raised by the JSON parser, before routing, auth, or any /v1 surface code
   // runs - so no requestId exists yet and no reqlog row is written.
@@ -119,6 +146,10 @@ export type ModelRuntimeErrorCode =
   | "USAGE_TYPE_INVALID"
   | "CHAT_MESSAGES_REQUIRED"
   | "CHAT_MESSAGES_INVALID"
+  /** `thinking` arrived outside the vocabulary (`off` / `on`). */
+  | "CHAT_THINKING_INVALID"
+  /** `timeoutMs` arrived outside the accepted range. */
+  | "CHAT_TIMEOUT_INVALID"
   | "EMBED_TEXTS_REQUIRED"
   | "EMBED_TEXTS_INVALID"
   | "RERANK_QUERY_REQUIRED"
@@ -162,6 +193,14 @@ const RETRYABLE: Record<ModelRuntimeErrorCode, boolean> = {
   // The identical request is refused identically; the caller has to shrink or
   // split it. The same reasoning covers both body codes below.
   UPSTREAM_REJECTED_REQUEST: false,
+  CONTEXT_LENGTH_EXCEEDED: false,
+  // Waiting does not change what the routed model can do; an operator or a
+  // different route does.
+  THINKING_MODE_UNSUPPORTED: false,
+  // The budget is the caller's. The identical request gets the identical
+  // budget; what changes the outcome is a larger timeoutMs or a smaller input.
+  DEADLINE_EXCEEDED: false,
+  OUTPUT_BUDGET_EXHAUSTED: false,
   PAYLOAD_TOO_LARGE: false,
   REQUEST_BODY_MALFORMED: false,
   // A token problem is never fixed by repeating the same request. The caller's
@@ -192,6 +231,8 @@ const RETRYABLE: Record<ModelRuntimeErrorCode, boolean> = {
   USAGE_TYPE_INVALID: false,
   CHAT_MESSAGES_REQUIRED: false,
   CHAT_MESSAGES_INVALID: false,
+  CHAT_THINKING_INVALID: false,
+  CHAT_TIMEOUT_INVALID: false,
   EMBED_TEXTS_REQUIRED: false,
   EMBED_TEXTS_INVALID: false,
   RERANK_QUERY_REQUIRED: false,

@@ -59,6 +59,11 @@ describe("ZhipuProvider.embed", () => {
         [0.1, 0.2],
         [0.4, 0.5],
       ],
+      // Usage-record batch 1: the model Zhipu says answered, for the reqlog row.
+      upstream: {
+        upstreamModel: "embedding-3",
+        notSupported: ["upstreamRequestId", "serviceTier"],
+      },
     });
   });
 
@@ -131,6 +136,11 @@ describe("ZhipuProvider.rerank", () => {
         { id: "c-b", score: 0.9 },
         { id: "c-a", score: 0.2 },
       ],
+      // Usage-record batch 1: Zhipu's id for the call.
+      upstream: {
+        upstreamRequestId: "task-1",
+        notSupported: ["upstreamModel", "serviceTier"],
+      },
     });
   });
 });

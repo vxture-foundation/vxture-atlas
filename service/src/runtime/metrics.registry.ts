@@ -22,7 +22,10 @@ type MetricName =
   | "model_request_rejections_total"
   | "model_reasoning_tool_exposure_total"
   | "capability_legacy_path_requests_total"
-  | "data_plane_legacy_path_requests_total";
+  | "data_plane_legacy_path_requests_total"
+  | "platform_consume_outcomes_total"
+  | "reqlog_write_failures_total"
+  | "upstream_usage_unmapped_keys_total";
 
 type MetricDefinition = {
   type: "counter" | "gauge" | "histogram";
@@ -93,6 +96,50 @@ const METRIC_DEFINITIONS: Record<MetricName, MetricDefinition> = {
     type: "counter",
     help: "model_request_rejections_total 进入日志前被拒的请求数（按错误码与调用产品聚合）",
     labelNames: ["code", "product"],
+  },
+  /**
+   * Every C3 consume, by what became of it - the only place an unbilled
+   * inference is countable.
+   *
+   * A consume that fails is logged and swallowed by design (the answer was
+   * already produced), so a platform that refuses every one of them looks
+   * exactly like a platform that accepts them: the caller is served, reqlog
+   * has its row, nothing errors. That is how a catalog change that made the
+   * platform answer `400 unknown_product` to every Atlas report went unseen
+   * until a consumer read Atlas's log (vxture-platform#547). `reason` carries
+   * the platform's own refusal word, so the next one names itself.
+   */
+  /**
+   * Usage-record K1. A reqlog write that fails is logged and swallowed by
+   * design - the caller was already served - so a table that rejects every
+   * write looks exactly like one that accepts them. It happened: the dev
+   * database never received incr/03, every write failed on the missing
+   * `attempt_index` column for over a month, and the only trace was a warn
+   * line nobody read (found 2026-09-30 by the batch-1 container gate). This is
+   * the number that goes non-zero instead. `reason` is a closed vocabulary so
+   * a driver message cannot mint label values.
+   */
+  reqlog_write_failures_total: {
+    type: "counter",
+    help: "reqlog_write_failures_total 请求记录写入失败数（table=request_records|error_records；reason 为归类后的原因）",
+    labelNames: ["table", "reason"],
+  },
+  /**
+   * Usage-record follow-up to ADR-011. An adapter's `notSupported` list says a
+   * vendor has no such field; nothing checked that it stays true. A vendor that
+   * starts reporting a new figure lands it in `upstream_usage` while the column
+   * stays NULL and still reads `not_supported`. Non-zero = a vendor field
+   * nobody has read yet. `key` is a dotted path from a fixed-depth walk.
+   */
+  upstream_usage_unmapped_keys_total: {
+    type: "counter",
+    help: "upstream_usage_unmapped_keys_total 厂商 usage 中 Atlas 未映射的字段（provider；key 为点分路径）",
+    labelNames: ["provider", "key"],
+  },
+  platform_consume_outcomes_total: {
+    type: "counter",
+    help: "platform_consume_outcomes_total C3 用量上报结果（billed / rejected / failed / skipped，reason 为平台拒绝原因）",
+    labelNames: ["metric", "outcome", "reason"],
   },
   /**
    * TRANSITIONAL (#206): which spelling of a renamed operator route was called.

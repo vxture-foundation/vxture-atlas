@@ -22,15 +22,19 @@ export interface OpenAiUsage {
   prompt_tokens?: number;
   completion_tokens?: number;
   total_tokens?: number;
-  prompt_tokens_details?: { cached_tokens?: number };
+  prompt_tokens_details?: { cached_tokens?: number; audio_tokens?: number };
   /** DeepSeek's top-level spelling of the same fact. */
   prompt_cache_hit_tokens?: number;
   prompt_cache_miss_tokens?: number;
-  completion_tokens_details?: { reasoning_tokens?: number };
+  completion_tokens_details?: { reasoning_tokens?: number; audio_tokens?: number };
 }
 
 export interface OpenAiCompatibleChatResponse {
   id?: string;
+  /** The model name the upstream says answered (usage-record C4). */
+  model?: string;
+  /** OpenAI states it; most compatible vendors do not (usage-record C7). */
+  service_tier?: string;
   choices?: Array<{
     message?: {
       role?: string;
@@ -58,6 +62,8 @@ export interface OpenAiCompatibleChatResponse {
  */
 export interface OpenAiCompatibleChatStreamChunk {
   id?: string;
+  model?: string;
+  service_tier?: string;
   choices?: Array<{
     delta?: {
       role?: string;
