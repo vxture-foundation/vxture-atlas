@@ -144,7 +144,8 @@ export interface ChatRequest {
    * it until the last byte - every candidate in the chain spends the same
    * budget. When it runs out the upstream call is cancelled (no more tokens
    * generated or billed) and the caller gets `DEADLINE_EXCEEDED`. Omitted
-   * means no total limit, only the time-to-first-byte guard - as before.
+   * means no total limit; the adapter's header wait still applies
+   * (providers/upstream-timeout.ts).
    */
   timeoutMs?: number;
   tools?: ToolDefinition[];

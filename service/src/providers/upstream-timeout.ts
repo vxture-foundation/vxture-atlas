@@ -17,19 +17,48 @@
  *
  * 已知边界：头部到了之后 body 再挂住，这里管不了。流式的分片空闲超时是独立的
  * 一件事，留待后续。
+ *
+ * ## 非流式生成不适用上面那条前提（2026-10-01，tenderforge#69）
+ *
+ * "健康的上游会很快回头部"只对**流式**成立。非流式时，豆包与 DeepSeek 要把整段
+ * 答案生成完才回响应头，所以"到头部的时间"就是生成时间。生产上 30 秒的首字节
+ * 门槛因此稳定地杀掉每一个生成超过 30 秒的非流式调用（09-30 一个上午 28 次），
+ * 还先把备选链走一遍、多付一次调用 —— 而调用方送的 `timeoutMs` 根本没起作用。
+ *
+ * 所以等待分两种：
+ * - `first_byte`：流式，以及 embed / rerank 这类不生成长文本的调用 —— 30 秒。
+ * - `whole_response`：非流式的 chat 与 parse —— 头部要等整段答案。上限默认
+ *   600 秒，等于 `timeoutMs` 的最大允许值，所以调用方送了 `timeoutMs` 时，
+ *   **总是它先到**、由它决定；没送时这是挂死连接的兜底。
  */
 
 /** 默认首字节超时。可用 `PROVIDER_CONNECT_TIMEOUT_MS` 覆盖。 */
 export const DEFAULT_TTFB_TIMEOUT_MS = 30_000;
 
-export function resolveTtfbTimeoutMs(): number {
-  const raw = process.env["PROVIDER_CONNECT_TIMEOUT_MS"];
-  if (raw === undefined) return DEFAULT_TTFB_TIMEOUT_MS;
+/**
+ * 非流式生成等头部的默认上限。等于 chat `timeoutMs` 的最大允许值（600000），
+ * 让调用方的总截止永远先生效。可用 `PROVIDER_WHOLE_RESPONSE_TIMEOUT_MS` 覆盖。
+ */
+export const DEFAULT_WHOLE_RESPONSE_TIMEOUT_MS = 600_000;
 
+/** 一次调用的头部何时该到：首字节即到，还是整段答案生成完才到。 */
+export type HeaderWait = "first_byte" | "whole_response";
+
+export function resolveTtfbTimeoutMs(): number {
+  return positiveFromEnv("PROVIDER_CONNECT_TIMEOUT_MS", DEFAULT_TTFB_TIMEOUT_MS);
+}
+
+export function resolveHeaderTimeoutMs(wait: HeaderWait): number {
+  return wait === "whole_response"
+    ? positiveFromEnv("PROVIDER_WHOLE_RESPONSE_TIMEOUT_MS", DEFAULT_WHOLE_RESPONSE_TIMEOUT_MS)
+    : resolveTtfbTimeoutMs();
+}
+
+function positiveFromEnv(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (raw === undefined) return fallback;
   const parsed = Number(raw);
-  return Number.isFinite(parsed) && parsed > 0
-    ? parsed
-    : DEFAULT_TTFB_TIMEOUT_MS;
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
 
 export class UpstreamTimeoutError extends Error {
@@ -51,6 +80,8 @@ export interface TtfbGuard {
   settle(): void;
   /** 判断一个 fetch 抛出的错误是不是本 guard 触发的。 */
   isTimeout(): boolean;
+  /** 本 guard 的等待上限（毫秒），报错时说的就是这个数。 */
+  timeoutMs: number;
 }
 
 /**
@@ -60,8 +91,9 @@ export interface TtfbGuard {
 export function guardTimeToFirstByte(
   providerName: string,
   callerSignal?: AbortSignal,
+  wait: HeaderWait = "first_byte",
 ): TtfbGuard {
-  const timeoutMs = resolveTtfbTimeoutMs();
+  const timeoutMs = resolveHeaderTimeoutMs(wait);
   const controller = new AbortController();
   let timedOut = false;
 
@@ -77,6 +109,7 @@ export function guardTimeToFirstByte(
       : controller.signal,
     settle: () => clearTimeout(timer),
     isTimeout: () => timedOut,
+    timeoutMs,
   };
 }
 
@@ -90,7 +123,7 @@ export function describeAbort(
   providerName: string,
 ): unknown {
   if (guard.isTimeout()) {
-    return new UpstreamTimeoutError(providerName, resolveTtfbTimeoutMs());
+    return new UpstreamTimeoutError(providerName, guard.timeoutMs);
   }
   return error;
 }

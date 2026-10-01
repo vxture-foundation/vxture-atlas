@@ -47,7 +47,11 @@ deferral in `docs/60-operations/10-tech-debt.md`.
       `GET /capability/protocols`, per-model probe self-check; an unroutable
       protocol is an explicit `503 MODEL_NOT_ROUTABLE`
 - [x] Upstream calls carry an `AbortSignal` with a time-to-first-byte guard;
-      a client that disconnects mid-stream aborts the upstream call
+      a client that disconnects mid-stream aborts the upstream call. Since
+      2026-10-01 a non-streaming chat or parse waits for the whole answer
+      instead (bounded by `timeoutMs`, else 600 s): those upstreams send
+      headers only when generation ends, and the 30 s window was failing every
+      longer answer (tenderforge#69)
 - [x] **v0.2.2 declared the stable operational baseline** (owner, 2026-08-10);
       remaining items below are scoped OUT of that baseline and gate the next
       feature version instead

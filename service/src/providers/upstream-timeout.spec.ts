@@ -2,8 +2,10 @@ import { describe, it, expect, afterEach, vi } from "vitest";
 
 import {
   DEFAULT_TTFB_TIMEOUT_MS,
+  DEFAULT_WHOLE_RESPONSE_TIMEOUT_MS,
   describeAbort,
   guardTimeToFirstByte,
+  resolveHeaderTimeoutMs,
   resolveTtfbTimeoutMs,
   UpstreamTimeoutError,
 } from "./upstream-timeout";
@@ -98,5 +100,52 @@ describe("describeAbort", () => {
     const original = new Error("ECONNREFUSED");
 
     expect(describeAbort(original, guard, "zhipu")).toBe(original);
+  });
+});
+
+// tenderforge#69: a non-streaming generation sends headers only after the
+// whole answer, so a 30 s first-byte wait killed every answer longer than that.
+describe("guardTimeToFirstByte - whole_response", () => {
+  afterEach(() => {
+    delete process.env["PROVIDER_WHOLE_RESPONSE_TIMEOUT_MS"];
+  });
+
+  it("is not bound by the first-byte window", async () => {
+    vi.useFakeTimers();
+    process.env["PROVIDER_CONNECT_TIMEOUT_MS"] = "100";
+
+    const guard = guardTimeToFirstByte("doubao", undefined, "whole_response");
+    await vi.advanceTimersByTimeAsync(31_000);
+
+    expect(guard.signal.aborted).toBe(false);
+  });
+
+  it("defaults to the largest timeoutMs a caller may send, so the caller's deadline always comes first", () => {
+    expect(DEFAULT_WHOLE_RESPONSE_TIMEOUT_MS).toBe(600_000);
+    expect(resolveHeaderTimeoutMs("whole_response")).toBe(600_000);
+    expect(resolveHeaderTimeoutMs("first_byte")).toBe(DEFAULT_TTFB_TIMEOUT_MS);
+  });
+
+  it("still aborts a hung upstream at its own cap, and says which cap", async () => {
+    vi.useFakeTimers();
+    process.env["PROVIDER_WHOLE_RESPONSE_TIMEOUT_MS"] = "500";
+
+    const guard = guardTimeToFirstByte("doubao", undefined, "whole_response");
+    await vi.advanceTimersByTimeAsync(501);
+
+    expect(guard.signal.aborted).toBe(true);
+    expect((describeAbort(new Error("aborted"), guard, "doubao") as Error).message).toContain(
+      "within 500ms",
+    );
+  });
+
+  it("lets the caller's deadline end it earlier", () => {
+    const deadline = new AbortController();
+    const guard = guardTimeToFirstByte("doubao", deadline.signal, "whole_response");
+
+    deadline.abort();
+
+    expect(guard.signal.aborted).toBe(true);
+    expect(guard.isTimeout()).toBe(false);
   });
 });
