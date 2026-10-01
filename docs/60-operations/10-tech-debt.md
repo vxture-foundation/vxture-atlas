@@ -198,13 +198,17 @@ actively waiting.
 the platform reports a workspace's pools exhausted. What stays permissive is the
 *uncovered* case - a workspace the platform has no entitlement record for.
 
-**Why**: the platform's `atlas` plan catalog is still a draft skeleton with no
-published `plan_version`. Denying on "uncovered" today would deny everyone.
-The fail-open doctrine itself is
+**Why**: the read asks about the `atlas` product, and since 2026-09-30 there
+is none - L0/L1 are not in the platform's product catalog (the decision behind
+ADR-010). Denying on "uncovered" today would deny everyone. The fail-open
+doctrine itself is
 [ADR-001](../30-design/decisions/ADR-001-fail-open-quota-usage-doctrine.md).
 
-**Recovery**: the platform publishes a real `atlas` plan_version; the uncovered
-branch then flips from permit to deny.
+**Recovery** (revised 2026-10-01): the original one - "the platform publishes
+an `atlas` plan_version" - can no longer happen. The C2 read moves to the
+caller's product together with consume (workplan E4, waiting on
+vxture-platform#547); the uncovered branch is decided against that product's
+entitlement then.
 
 ## TD-019
 

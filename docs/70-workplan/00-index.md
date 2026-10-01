@@ -58,13 +58,13 @@ deferral in `docs/60-operations/10-tech-debt.md`.
 
 ## To do
 
-Provider surface (TD-003):
+Provider surface (TD-003): **not Atlas's work** (owner, 2026-10-01). Which
+vendors and models are procured is the product lines' call; Atlas makes
+whatever is registered reachable. A second embedding/rerank vendor, or a
+vision model for parse, arrives as a product request, not as an Atlas gap.
 
-- [ ] A1 embedding provider beyond Zhipu - procurement decision
-- [ ] A2 parse activation - register a vision-capable model
-      (`config.supportsVision: true`), verify, publish `atlas.parse`
-      (TD-019); deferred by owner decision 2026-08-10
-- [ ] A3 rerank provider beyond Zhipu - procurement decision
+- [x] ~~A1 / A3 second embedding / rerank vendor; A2 register a vision
+      model for parse~~ - removed from this plan 2026-10-01 (see above)
 
 Gateway capabilities ([ADR-004](../30-design/decisions/ADR-004-reject-portkey-gateway-dependency.md)):
 
@@ -168,8 +168,9 @@ B - tenderforge is waiting on these:
 - [x] Released as v0.7.7 (2026-09-30, first release through the production
       approval gate): #65, #67, #68, #69; verified in production and on the
       dev stack against a real Doubao upstream; tenderforge told in #69
-- [ ] B4. tenderforge's production re-run of the failed interpretation, and
-      whether their path to Atlas has a proxy capping the body (asked in #69)
+- [x] B4. tenderforge re-ran the failed interpretation in production on
+      2026-09-30 and it succeeded (their v0.1.21 stopped capping the body);
+      v0.1.22 adopted `thinking` / `timeoutMs` (#69)
 
 C - verification:
 
@@ -177,13 +178,16 @@ C - verification:
       (2026-09-30): Doubao answers 400 `InvalidParameter` "...exceed max
       message tokens" - now a signature. Six overflows in a row, then a normal
       call is still served: the breaker exemption holds on the real path
-- [ ] C1 (rest). Zhipu: the dev key answers 401, so its overflow is
-      untested. DeepSeek: no grant for the dev product. Claude: no usable
-      model in dev - its signature is still observed wording, not recorded
+- [ ] C1 (rest). Zhipu, DeepSeek, Claude: verified on **production
+      traffic**, not dev (owner, 2026-10-01). A production read that day found
+      no oversized request on any vendor yet (zero `CONTEXT_LENGTH_EXCEEDED`
+      / `UPSTREAM_REJECTED_REQUEST` rows), so the signatures stand unobserved
+      until real traffic carries one - re-read `reqlog.error_records` then
 - [x] C2 (Doubao). 8 MB and 15 MB bodies both reached tokenization (400
       overflow, not 413): Doubao's byte cap is above 15 MB, so the 16 MiB
       ceiling does not cut in ahead of it
-- [ ] C2 (rest). Zhipu, DeepSeek, MiniMax - same blockers as C1
+- [ ] C2 (rest). Zhipu, DeepSeek, MiniMax - same as C1: production
+      traffic, not dev
 - [x] C3. Refusals before routing are counted in the existing
       `model_request_rejections_total{code, product="unknown"}` rather than
       a second metric for the same fact
@@ -204,10 +208,13 @@ Production walkthrough (2026-09-30, v0.7.9):
       tenderforge told in #69 (reasoning cost, probe budget), yucer in
       `vx-agent-yucer`#525 (`applicationId: "yucer-diagnostics"` is not a
       UUID)
-- [ ] Observed: tenderforge's `chat/deterministic` on `deepseek-v4-pro`
-      averages 4137 output tokens, 3232 of them reasoning, p95 94 s - every
-      call so far predates v0.7.8's `thinking: "off"`. Re-read after they
-      adopt it (#69)
+- [x] Observed: tenderforge's `chat/deterministic` on `deepseek-v4-pro`
+      averaged 4137 output tokens, 3232 of them reasoning, p95 94 s. Re-read
+      in production 2026-10-01: from 09-30 02:00Z (their `thinking: "off"`)
+      the same model reports 0 reasoning tokens and averages 4.5-5.9 s per
+      call, against 47-49 s before; calls on `chat/reasoning` still reason,
+      as asked. The mapping is now observed on `deepseek-v4-pro` (off and
+      on), `deepseek-v4-flash` and `doubao-seed-2-0-lite-260428` (off)
 
 D - raised during this work:
 
@@ -287,6 +294,12 @@ E - usage reaches the platform (ADR-010, owner 2026-09-30):
 - [x] E6. Price rules mean the vendor's price, written from the admin console
       (ADR-012); the platform's "sales price" wording and the admin form's
       missing cache-write fields raised as vxture-platform#554
+- [x] E8. A failed upstream call is counted by vendor and HTTP status
+      (`upstream_http_errors_total{provider,status,class}`), and a 401/402/403
+      says in its error text that it is a vendor-account problem. Found on
+      production 2026-10-01: DeepSeek had answered **402** sixteen times since
+      09-30 (account balance), every one filed as `PROVIDER_UNAVAILABLE` and
+      absorbed by failover to Doubao, so nothing named it
 - [ ] E7. Operators enter vendor prices (production has none, 2026-10-01).
       Then: confirm new rows are priced, and decide whether to price the
       earlier rows with the same formula
@@ -301,8 +314,10 @@ Platform-side, not this repo's write-scope:
       (TD-009/TD-052): that would be building UI for the retiring tenant
       axis. A product wants `endpointCode`, whose grants already have CRUD.
       Withdrawn on `vxture-platform#52`
-- [ ] Published `atlas` plan_version so the quota gate can deny uncovered
-      workspaces (TD-016)
+- [ ] ~~Published `atlas` plan_version so the quota gate can deny
+      uncovered workspaces~~ - superseded 2026-09-30: L0/L1 are not in the
+      product catalog, so there will be no `atlas` plan. The quota read moves
+      to the caller's product with E4 (TD-016)
 - [x] Action-ref pinning, enforced rather than performed - third-party
       `uses:` refs must be a 40-character SHA carrying a version comment,
       checked by `check-workflows` including composite actions
