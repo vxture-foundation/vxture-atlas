@@ -6,6 +6,7 @@ import { prisma } from "../prisma";
 import { priceOneCall } from "../observability/cost-rollup";
 import { classifyNulls, type DimensionStatus } from "./dimension-status";
 import { metricsRegistry } from "../runtime/metrics.registry";
+import { unmappedUsagePaths } from "./usage-keys";
 import { isUuid } from "../uuid";
 import type { ErrorLogEntry, RequestLogEntry } from "./request-log.types";
 
@@ -65,6 +66,8 @@ function smallCount(value: number | undefined): number | null {
 @Injectable()
 export class RequestLogService {
   private readonly logger = new Logger(RequestLogService.name);
+  /** provider|path pairs already warned about by this process. */
+  private readonly warnedUsagePaths = new Set<string>();
 
   /**
    * Say out loud that a request's tenant attribution is being dropped.
@@ -83,6 +86,26 @@ export class RequestLogService {
    * case worth being noisy about, and it stops the moment they fix it.
    */
   /** A tenant the caller sent that the uuid column cannot hold - written NULL. */
+  /**
+   * A vendor usage field Atlas does not map (usage-keys.ts): counted every
+   * time, warned once per provider and field per process - the counter is the
+   * signal, the log line says which field to read.
+   */
+  private reportUnmappedUsage(provider: string | null, usage: unknown): void {
+    if (usage === undefined || usage === null) return;
+    const label = provider ?? "unknown";
+    for (const key of unmappedUsagePaths(usage)) {
+      metricsRegistry.incCounter("upstream_usage_unmapped_keys_total", { provider: label, key });
+      const seen = `${label}|${key}`;
+      if (this.warnedUsagePaths.has(seen)) continue;
+      this.warnedUsagePaths.add(seen);
+      this.logger.warn(
+        `upstream usage from provider=${label} carries "${key}", which Atlas does not map; ` +
+          "map it to a column or list it as known in reqlog/usage-keys.ts",
+      );
+    }
+  }
+
   private tenantDropped(entry: RequestLogEntry): boolean {
     const raw = entry.tenantId?.trim();
     return Boolean(raw) && !isUuid(raw as string);
@@ -252,6 +275,7 @@ export class RequestLogService {
           ...(this.tenantDropped(entry) ? { tenantId: "capture_failed" as const } : {}),
         },
       });
+      this.reportUnmappedUsage(data.providerCode, entry.upstreamUsage);
       await prisma.requestRecord.create({
         data: {
           ...data,

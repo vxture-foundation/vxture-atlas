@@ -270,6 +270,11 @@ E - usage reaches the platform (ADR-010, owner 2026-09-30):
       eight-word vocabulary the database enforces. Adapters declare what their
       protocol lacks; a test fails CI on any unregistered nullable column.
       Released as v0.7.16 (2026-10-01, db-init first)
+- [x] E3f. A vendor usage field Atlas does not map is counted
+      (`upstream_usage_unmapped_keys_total{provider,key}`) and warned once.
+      An adapter's `not_supported` declaration was a claim nothing checked;
+      a vendor that starts reporting a new figure now names it. Known fields:
+      `service/src/reqlog/usage-keys.ts`
 - [ ] E4. Consume under the caller's product with raw tokens in four
       dimensions, and C2 read by the caller's product - in the shape #547
       settles on
