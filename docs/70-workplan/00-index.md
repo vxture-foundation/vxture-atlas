@@ -274,7 +274,7 @@ E - usage reaches the platform (ADR-010, owner 2026-09-30):
       (`upstream_usage_unmapped_keys_total{provider,key}`) and warned once.
       An adapter's `not_supported` declaration was a claim nothing checked;
       a vendor that starts reporting a new figure now names it. Known fields:
-      `service/src/reqlog/usage-keys.ts`
+      `service/src/reqlog/usage-keys.ts`. Released as v0.7.17 (2026-10-01)
 - [ ] E4. Consume under the caller's product with raw tokens in four
       dimensions, and C2 read by the caller's product - in the shape #547
       settles on
