@@ -268,7 +268,8 @@ E - usage reaches the platform (ADR-010, owner 2026-09-30):
       web search calls, generated media, content filtered, queue wait) and
       `dimension_status` - for every NULL usage dimension, why, in an
       eight-word vocabulary the database enforces. Adapters declare what their
-      protocol lacks; a test fails CI on any unregistered nullable column
+      protocol lacks; a test fails CI on any unregistered nullable column.
+      Released as v0.7.16 (2026-10-01, db-init first)
 - [ ] E4. Consume under the caller's product with raw tokens in four
       dimensions, and C2 read by the caller's product - in the shape #547
       settles on
