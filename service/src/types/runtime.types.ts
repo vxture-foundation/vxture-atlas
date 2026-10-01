@@ -133,6 +133,20 @@ export interface ChatRequest {
   temperature?: number;
   maxTokens?: number;
   topP?: number;
+  /**
+   * ADR-009. Omitted means the upstream's own default - today's behaviour, so
+   * no existing caller changes. A mode the routed model cannot honour is
+   * refused (`THINKING_MODE_UNSUPPORTED`), never silently dropped.
+   */
+  thinking?: ThinkingMode;
+  /**
+   * Total budget for this call in milliseconds, from the moment Atlas accepts
+   * it until the last byte - every candidate in the chain spends the same
+   * budget. When it runs out the upstream call is cancelled (no more tokens
+   * generated or billed) and the caller gets `DEADLINE_EXCEEDED`. Omitted
+   * means no total limit, only the time-to-first-byte guard - as before.
+   */
+  timeoutMs?: number;
   tools?: ToolDefinition[];
   toolChoice?: ToolChoice;
   stream?: boolean;
@@ -154,6 +168,15 @@ export interface ChatRequest {
   usageType?: "normal" | "retry" | "test";
 }
 
+/**
+ * A per-call thinking mode (ADR-009). Vendor-neutral on purpose: each model
+ * translates it through `config.wire.thinking`, so a caller never spells a
+ * vendor's field and never has to know which model served it.
+ */
+export type ThinkingMode = "off" | "on";
+
+export const THINKING_MODES: readonly ThinkingMode[] = ["off", "on"];
+
 export interface ChatResponse {
   id: string;
   modelCode: string;
@@ -161,6 +184,11 @@ export interface ChatResponse {
   usage: TokenUsage;
   latencyMs: number;
   finishReason?: FinishReason;
+  /**
+   * The mode this call ran with: the one asked for, or `null` when none was
+   * asked and the upstream's own default applied (ADR-009 decision 5).
+   */
+  thinking: ThinkingMode | null;
 }
 
 /**
@@ -184,6 +212,8 @@ export type StreamEvent =
       type: "done";
       usage?: TokenUsage;
       finishReason?: FinishReason;
+      /** Stamped by `runtime.service`, like `modelCode` below; see `ChatResponse.thinking`. */
+      thinking?: ThinkingMode | null;
       /**
        * Which model actually answered.
        *
@@ -214,6 +244,12 @@ export type StreamEvent =
        * 缺省 = 上游没给推理载荷。详见 {@link ChatReasoning}。
        */
       reasoning?: ChatReasoning;
+      /**
+       * Internal: `runtime.service` takes it for the usage record and strips it
+       * before the frame leaves. Vendor ids and raw usage are not part of the
+       * caller contract.
+       */
+      upstream?: UpstreamCallRecord;
     }
   /**
    * Same envelope as the HTTP error body, only carried on a different
@@ -262,6 +298,46 @@ export interface TokenUsage {
    */
   cachedInputTokens?: number;
   reasoningTokens?: number;
+  /**
+   * Usage-record batch 1 (E3/E4). Input tokens the upstream WROTE to its prompt
+   * cache, priced above plain input (Anthropic `cache_creation_input_tokens`).
+   * Like `cachedInputTokens` it is a subset of `promptTokens`, which counts
+   * every input token - uncached, cache read and cache write - on every
+   * adapter. `cacheWrite1hInputTokens` is the 1-hour-TTL part of it; absent
+   * means the upstream did not split the write, not that nothing was 1-hour.
+   */
+  cacheWriteInputTokens?: number;
+  cacheWrite1hInputTokens?: number;
+}
+
+/**
+ * What the upstream said about a call, kept for the usage record and never
+ * shown to the caller (usage-record batch 1: A3, C4, G2, H3). Every field is
+ * the vendor's own value, unmapped - the point is that a pricing rule written
+ * later can still be applied to it.
+ */
+export interface UpstreamCallRecord {
+  /** The vendor's id for the call (`chatcmpl-...`, `msg_...`). */
+  upstreamRequestId?: string;
+  /** The model name the vendor says answered. */
+  upstreamModel?: string;
+  /** The vendor's finish/stop reason before `FinishReason` mapping. */
+  nativeFinishReason?: string;
+  /** The vendor's usage object, verbatim. */
+  rawUsage?: Record<string, unknown>;
+  /** Usage-record batch 4 - read when the vendor states them. */
+  serviceTier?: string;
+  inputImageTokens?: number;
+  inputAudioTokens?: number;
+  outputAudioTokens?: number;
+  outputImageTokens?: number;
+  toolUsePromptTokens?: number;
+  webSearchRequests?: number;
+  /**
+   * reqlog fields this adapter's protocol does not offer at all - DECLARED by
+   * the adapter, never inferred from absence (see reqlog/dimension-status.ts).
+   */
+  notSupported?: readonly string[];
 }
 
 export interface IModelProvider {
@@ -293,6 +369,8 @@ export interface ProviderEmbedResponse {
   vectors: number[][];
   /** Upstream-reported usage, when the provider returns it (zhipu does). */
   usage?: Partial<TokenUsage>;
+  /** Usage-record batch 1: the vendor's id, model and raw usage, for reqlog only. */
+  upstream?: UpstreamCallRecord;
 }
 
 // ── A2 parse (layout / OCR / table / formula) ──────────────────────────────────
@@ -397,6 +475,8 @@ export interface ProviderRerankResponse {
   scores: Array<{ id: string; score: number }>;
   /** Upstream-reported usage, when the provider returns it (zhipu does). */
   usage?: Partial<TokenUsage>;
+  /** Usage-record batch 1: the vendor's id, model and raw usage, for reqlog only. */
+  upstream?: UpstreamCallRecord;
 }
 
 export interface ProviderChatRequest {
@@ -407,6 +487,8 @@ export interface ProviderChatRequest {
   temperature?: number;
   maxTokens?: number;
   topP?: number;
+  /** Already checked against the model by the runtime; the adapter only spreads its fragment. */
+  thinking?: ThinkingMode;
   tools?: ToolDefinition[];
   toolChoice?: ToolChoice;
   config?: ModelConfig;
@@ -431,6 +513,8 @@ export interface ProviderChatResponse extends TokenUsage {
    * 0 - "unreported" and "free" are different facts. Absent means reported.
    */
   usageReported?: boolean;
+  /** For the usage record only; see {@link UpstreamCallRecord}. */
+  upstream?: UpstreamCallRecord;
 }
 
 export type ModelConfig = Record<string, unknown>;
@@ -527,6 +611,9 @@ export interface ModelPriceRuleRecord {
    * free - so a cost calculation falls back to `inputUnitPrice`.
    */
   cachedInputUnitPrice: DecimalLike | null;
+  /** TD-057 (incr/06). NULL = not declared: cache writes cost the input rate. */
+  cacheWriteUnitPrice: DecimalLike | null;
+  cacheWrite1hUnitPrice: DecimalLike | null;
   isActive: boolean;
   effectiveAt: Date;
   expiresAt: Date | null;
@@ -789,6 +876,9 @@ export interface CreateModelPriceRuleInput {
   requestUnitPrice?: string;
   /** TD-047. Absent leaves the column NULL; see `ModelPriceRuleRecord`. */
   cachedInputUnitPrice?: string | null;
+  /** TD-057. Same NULL-not-free rule: absent = not declared. */
+  cacheWriteUnitPrice?: string | null;
+  cacheWrite1hUnitPrice?: string | null;
   effectiveAt?: Date;
   expiresAt?: Date | null;
   isActive?: boolean;

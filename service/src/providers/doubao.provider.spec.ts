@@ -5,6 +5,7 @@ import {
   resolveChatCompletionsEndpoint,
 } from "./openai-compatible";
 import type { OpenAiCompatibleChatResponse } from "./openai-compatible.types";
+import type { UpstreamCallFailure } from "./upstream-failure";
 
 // ── resolveChatCompletionsEndpoint ────────────────────────────────────────────
 
@@ -213,7 +214,37 @@ describe("normalizeOpenAiCompatibleResponse - why the response was empty", () =>
     const run = () =>
       normalizeOpenAiCompatibleResponse("openai-compatible", response);
     expect(run).toThrow(/raise max_tokens/);
-    expect(run).toThrow(/config\.wire\.extraBody/);
+    // Since ADR-009 the second way out is the caller's own switch, not an
+    // operator's static extraBody.
+    expect(run).toThrow(/thinking: "off"/);
+  });
+
+  // Walkthrough 2026-09-30: flagged so the runtime answers it as the
+  // caller's budget (OUTPUT_BUDGET_EXHAUSTED), not as provider trouble.
+  it("flags a length stop with no answer as an exhausted output budget", () => {
+    const response: OpenAiCompatibleChatResponse = {
+      choices: [{ message: { content: "", reasoning_content: "..." }, finish_reason: "length" }],
+    };
+    let caught: unknown;
+    try {
+      normalizeOpenAiCompatibleResponse("openai-compatible", response);
+    } catch (error) {
+      caught = error;
+    }
+    expect((caught as UpstreamCallFailure).outputBudgetExhausted).toBe(true);
+  });
+
+  it("does not flag an empty answer that was not cut off for length", () => {
+    const response: OpenAiCompatibleChatResponse = {
+      choices: [{ message: { content: "" }, finish_reason: "content_filter" }],
+    };
+    let caught: unknown;
+    try {
+      normalizeOpenAiCompatibleResponse("openai-compatible", response);
+    } catch (error) {
+      caught = error;
+    }
+    expect((caught as UpstreamCallFailure).outputBudgetExhausted).toBe(false);
   });
 
   it("reports a truncated non-thinking response without inventing a reasoning chain", () => {

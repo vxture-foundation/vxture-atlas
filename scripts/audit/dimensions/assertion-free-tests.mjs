@@ -51,11 +51,30 @@ function* specFiles(dir) {
 }
 
 /**
+ * Comments blanked to spaces, newlines kept, so offsets and line numbers are
+ * unchanged. Without this, prose in a comment reads as a call: "the vendor
+ * sends it (ADR-008 table, ..." matched `it\s*(` and was reported as a test
+ * case with no assertion (2026-09-29, context-overflow.spec.ts:9). Block
+ * comments and whole-line `//` comments only - a trailing `//` can sit inside
+ * a string (a URL), and stripping it would eat real code.
+ */
+export function blankComments(source) {
+  const blank = (text) => text.replace(/[^\n]/gu, " ");
+  return source
+    .replace(/\/\*[\s\S]*?\*\//gu, blank)
+    .replace(/^[ \t]*\/\/.*$/gmu, blank);
+}
+
+/**
  * Slice out each `it(...)`/`test(...)` body by brace balance. Good enough for
  * this codebase's style and deliberately dumb: it reports what it found and
  * how it counted, so a wrong count is visible rather than silent.
+ *
+ * Comments are blanked first (see `blankComments`): prose in a comment reads
+ * as a call otherwise.
  */
-function cases(source) {
+function cases(raw) {
+  const source = blankComments(raw);
   const out = [];
   // The lookbehind is load-bearing. `\b` also matches between a dot and
   // `test`, so `/re/.test(x)` reads as a test case containing no assertion.

@@ -151,6 +151,12 @@ model ModelPriceRule {
   /// than understates. Like the other value columns it is insert-only; the
   /// table grants UPDATE on lifecycle columns alone.
   cachedInputUnitPrice Decimal? @map("cached_input_unit_price") @db.Decimal(18, 8)
+  /// TD-057 (incr/06). 5-minute-TTL cache-write price per unitTokens; NULL = not
+  /// declared, costed at inputUnitPrice.
+  cacheWriteUnitPrice    Decimal? @map("cache_write_unit_price") @db.Decimal(18, 8)
+  /// TD-057 (incr/06). 1-hour-TTL cache-write price; NULL falls back to
+  /// cacheWriteUnitPrice, then inputUnitPrice.
+  cacheWrite1hUnitPrice  Decimal? @map("cache_write_1h_unit_price") @db.Decimal(18, 8)
   @@index([modelId], map: "idx_model_price_rules_model")
   @@index([effectiveAt], map: "idx_model_price_rules_effective")
   @@index([isActive], map: "idx_model_price_rules_is_active")
@@ -340,6 +346,76 @@ model RequestRecord {
   /// chat grain, and a fabricated 0 would claim they were the first attempt of
   /// a chain nothing recorded.
   attemptIndex           Int?     @map("attempt_index") @db.SmallInt
+  /// incr/04 (ADR-010, usage-record batch 1). The vendor's own id for the call.
+  upstreamRequestId      String?  @map("upstream_request_id") @db.VarChar(200)
+  /// incr/04. The model name the vendor says answered.
+  upstreamModel          String?  @map("upstream_model") @db.VarChar(200)
+  /// incr/04. Input tokens written to the upstream prompt cache; subset of
+  /// inputTokens, which counts every input token cached or not.
+  cacheWriteInputTokens  BigInt?  @map("cache_write_input_tokens")
+  /// incr/04. The 1-hour-TTL part of cacheWriteInputTokens. NULL = not split.
+  cacheWrite1hInputTokens BigInt? @map("cache_write_1h_input_tokens")
+  /// incr/04. reported | absent | partial (CHECK-constrained).
+  usageSource            String?  @map("usage_source") @db.VarChar(16)
+  /// incr/04. The upstream usage object verbatim.
+  upstreamUsage          Json?    @map("upstream_usage")
+  /// incr/04. stop | length | tool_calls | content_filter | other.
+  finishReason           String?  @map("finish_reason") @db.VarChar(16)
+  /// incr/04. The vendor's finish/stop reason, unmapped.
+  nativeFinishReason     String?  @map("native_finish_reason") @db.VarChar(64)
+  /// incr/05 (usage-record batch 2). Attempt start; off-peak pricing keys on it.
+  startedAt              DateTime? @map("started_at") @db.Timestamptz(6)
+  /// incr/05. First streamed event; TTFT = firstTokenAt - startedAt.
+  firstTokenAt           DateTime? @map("first_token_at") @db.Timestamptz(6)
+  /// incr/05. model | endpoint | task_profile - what the caller named.
+  selectorKind           String?  @map("selector_kind") @db.VarChar(16)
+  selectorValue          String?  @map("selector_value") @db.VarChar(128)
+  /// incr/05. The vault key alias the call went out on.
+  providerKeyAlias       String?  @map("provider_key_alias") @db.VarChar(128)
+  /// incr/05. off | on as requested (= effective under ADR-009).
+  thinkingMode           String?  @map("thinking_mode") @db.VarChar(8)
+  maxTokens              Int?     @map("max_tokens")
+  streamed               Boolean?
+  /// incr/05. client | deadline.
+  cancelledBy            String?  @map("cancelled_by") @db.VarChar(16)
+  /// incr/05. Vendor charge by the rule in force at startedAt; NULL = unpriced.
+  upstreamCost           Decimal? @map("upstream_cost") @db.Decimal(18, 8)
+  costCurrency           String?  @map("cost_currency") @db.VarChar(16)
+  priceRuleId            String?  @map("price_rule_id") @db.Uuid
+  /// incr/05. peak | off_peak.
+  pricingWindow          String?  @map("pricing_window") @db.VarChar(8)
+  /// incr/06 (usage-record batch 3). The S2S token's jti.
+  tokenJti               String?  @map("token_jti") @db.VarChar(128)
+  /// incr/06. The stage that wrote the row, as /healthz reports it.
+  deployStage            String?  @map("deploy_stage") @db.VarChar(16)
+  /// incr/06. Model behaviour fingerprint at call time.
+  modelBehaviorVersion   String?  @map("model_behavior_version") @db.VarChar(64)
+  toolCount              Int?     @map("tool_count") @db.SmallInt
+  toolCallsMade          Int?     @map("tool_calls_made") @db.SmallInt
+  messageCount           Int?     @map("message_count") @db.SmallInt
+  /// incr/06. Embed: vectors returned and their dimension.
+  vectorCount            Int?     @map("vector_count")
+  vectorDimension        Int?     @map("vector_dimension")
+  /// incr/07 (usage-record batch 4).
+  upstreamHost           String?  @map("upstream_host") @db.VarChar(255)
+  serviceTier            String?  @map("service_tier") @db.VarChar(32)
+  isBatch                Boolean? @map("is_batch")
+  reasoningBudgetTokens  Int?     @map("reasoning_budget_tokens")
+  inputImageCount        Int?     @map("input_image_count")
+  inputAudioSeconds      Decimal? @map("input_audio_seconds") @db.Decimal(10, 3)
+  inputFileCount         Int?     @map("input_file_count")
+  inputImageTokens       BigInt?  @map("input_image_tokens")
+  inputAudioTokens       BigInt?  @map("input_audio_tokens")
+  outputAudioTokens      BigInt?  @map("output_audio_tokens")
+  outputImageTokens      BigInt?  @map("output_image_tokens")
+  toolUsePromptTokens    BigInt?  @map("tool_use_prompt_tokens")
+  webSearchRequests      Int?     @map("web_search_requests")
+  generatedImageCount    Int?     @map("generated_image_count")
+  generatedMediaSeconds  Decimal? @map("generated_media_seconds") @db.Decimal(10, 3)
+  contentFiltered        Boolean? @map("content_filtered")
+  queueWaitMs            Int?     @map("queue_wait_ms")
+  /// incr/07. For every NULL usage dimension, why - see reqlog/dimension-status.ts.
+  dimensionStatus        Json?    @map("dimension_status")
 
   @@id([id, createdAt])
   @@index([requestId], map: "idx_request_records_request_id")

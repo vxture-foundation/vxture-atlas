@@ -1,3 +1,4 @@
+import type { DimensionStatus } from "./dimension-status";
 import type { ApplicationType } from "../types/runtime.types";
 import type { CostUnit } from "./cost-unit";
 
@@ -71,6 +72,80 @@ export interface RequestLogEntry {
    */
   cachedInputTokens?: number | undefined;
   reasoningTokens?: number | undefined;
+  /**
+   * Usage-record batch 1 (incr/04). Input written to the upstream prompt cache,
+   * and its 1-hour-TTL part. Subsets of `inputTokens`, which counts every input
+   * token. Absent stays NULL, for the same reason as the two above.
+   */
+  cacheWriteInputTokens?: number | undefined;
+  cacheWrite1hInputTokens?: number | undefined;
+  /**
+   * Whether the token counts came from the upstream. `absent` on a row that
+   * reached an upstream and got no usage back (a stream cut short, a deadline
+   * cancel, a timeout); left unset on a row that never reached one (a quota
+   * refusal), where the question does not arise.
+   */
+  usageSource?: "reported" | "absent" | "partial" | undefined;
+  /** The vendor's id for the call, its model name, and its usage verbatim. */
+  upstreamRequestId?: string | undefined;
+  upstreamModel?: string | undefined;
+  upstreamUsage?: Record<string, unknown> | undefined;
+  /** Normalized stop reason, and the vendor's own word for it. */
+  finishReason?:
+    | "stop"
+    | "length"
+    | "tool_calls"
+    | "content_filter"
+    | "other"
+    | undefined;
+  nativeFinishReason?: string | undefined;
+  /**
+   * Usage-record batch 2 (incr/05). When the attempt began - off-peak pricing
+   * keys on it, and created_at trails it by the consume round-trip - and, for a
+   * stream, when the first event went out.
+   */
+  startedAt?: Date | undefined;
+  firstTokenAt?: Date | undefined;
+  /** What the caller named, which is not always what served (`modelCode`). */
+  selectorKind?: "model" | "endpoint" | "task_profile" | undefined;
+  selectorValue?: string | undefined;
+  /** The vault key alias the call went out on (with `providerCode`). */
+  providerKeyAlias?: string | undefined;
+  thinkingMode?: "off" | "on" | undefined;
+  maxTokens?: number | undefined;
+  streamed?: boolean | undefined;
+  cancelledBy?: "client" | "deadline" | undefined;
+  /**
+   * Usage-record batch 3 (incr/06). The S2S token's jti; the model's behaviour
+   * fingerprint when it served; tool definitions sent and tool calls made;
+   * messages in the request; for embed, vectors returned and their dimension.
+   * The deploy stage is not here: the writer stamps it on every row itself.
+   */
+  tokenJti?: string | undefined;
+  modelBehaviorVersion?: string | undefined;
+  toolCount?: number | undefined;
+  toolCallsMade?: number | undefined;
+  messageCount?: number | undefined;
+  vectorCount?: number | undefined;
+  vectorDimension?: number | undefined;
+  /** Usage-record batch 4 (incr/07): what the vendor stated beyond the token counts. */
+  upstreamHost?: string | undefined;
+  serviceTier?: string | undefined;
+  inputImageCount?: number | undefined;
+  inputImageTokens?: number | undefined;
+  inputAudioTokens?: number | undefined;
+  outputAudioTokens?: number | undefined;
+  outputImageTokens?: number | undefined;
+  toolUsePromptTokens?: number | undefined;
+  webSearchRequests?: number | undefined;
+  /**
+   * For dimension_status (reqlog/dimension-status.ts): which capability wrote
+   * the row, the fields the adapter declared its protocol lacks, and reasons
+   * the caller determined itself (e.g. why the platform did not bill it).
+   */
+  capability?: "chat" | "embed" | "rerank" | "parse" | undefined;
+  notSupported?: readonly string[] | undefined;
+  nullReasons?: Partial<Record<string, DimensionStatus>> | undefined;
   latencyMs?: number | undefined;
   /**
    * TD-037. Zero-based position of this attempt within one logical request.

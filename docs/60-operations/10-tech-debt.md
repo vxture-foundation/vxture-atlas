@@ -56,6 +56,10 @@ because those are the ones still needing a decision.
 | [TD-050](#td-050) | A credential exposure is tracked only in a published document, so no release checklist can see it | 2026-08-26 |
 | [TD-051](#td-051) | The published contract states what is required, not what a surface accepts or can refuse with | 2026-08-26 |
 | [TD-052](#td-052) | Label routing exists only on the retiring tenant axis, so asking for a label drags a tenant along | 2026-08-26 |
+| [TD-054](#td-054) | `model_policies.max_context_tokens` is writable and enforced by nothing | 2026-09-29 |
+| [TD-055](#td-055) | Context-overflow signatures live in code; adding a provider's needs a release | 2026-09-29 |
+| [TD-056](#td-056) | Inference usage never reaches the platform: every C3 consume is refused | 2026-09-30 |
+| [TD-057](#td-057) | Cache-write rates exist in the API but no operator page can set them | 2026-09-30 |
 
 ## Closed
 
@@ -821,3 +825,113 @@ does not carry that intent. Owner ruling, 2026-08-26.
 actually wanted; `taskProfile` is left to the countdown already in place. No
 code change is required for the correction itself - `endpointCode` has always
 worked and needs no tenant.
+
+## TD-054
+
+**Wrong**: `model_policies.max_context_tokens` can be set by an operator
+(`POST`/`PATCH /capability/policies`, per tenant or global) and is read back on
+the same surface, but nothing on the request path reads it. A policy of 32000
+on a 262144-token model changes nothing about what a call may send. That is the
+configured-but-inert shape: an operator who sets it believes a limit is in
+force. Found 2026-09-29 while deciding what `/v1/model-routes` should publish
+as a route's context window (tenderforge letter 40 item 4).
+
+**Why not simply enforce it**: enforcing a token cap in the gateway needs a
+token count BEFORE the call, which means estimating with a tokenizer Atlas does
+not have per provider - rejected for letter 40 item 3 for the same reason
+(Chinese tokenizes very differently across Doubao, Zhipu and Claude, so an
+estimate either refuses valid requests or lets over-budget ones through).
+
+**What is published instead**: route capacity comes from the model's own
+`context_window` / `max_output_tokens` - what the upstream can take - not from
+this column. See `docs/20-specs/10-http-surface.md` (route capacity).
+
+**Recovery**: decide between (a) retiring the column from the write path, or
+(b) enforcing it after the call from the upstream-reported usage, which bounds
+cost but cannot refuse a request up front. Until then this entry is the
+record that it is not enforced.
+
+## TD-055
+
+**Clause (owner, 2026-09-29):** each upstream reports "input too long" in its
+own way, so recognising it is per-provider knowledge - and per-provider
+knowledge belongs in provider configuration, set where the provider is
+configured, not in a release. ADR-008 decision 3.
+
+**Current state:** the signatures are a list in
+`service/src/providers/context-overflow.ts`, each pinned by a test built from
+a recorded vendor body. A provider whose refusal is not listed still gets the
+right handling - `UPSTREAM_REJECTED_REQUEST` is non-retryable, exempt from the
+breaker and fallback-first, exactly like `CONTEXT_LENGTH_EXCEEDED` - so the
+cost of a missing entry is a less specific code, not a wrong action. The list
+is kept as plain data objects so that moving it is moving data.
+
+**Recovery:**
+1. ~~Atlas: a `contextOverflow` list in provider config~~ **Done 2026-09-30**
+   (wire schema 4): optional `code`, optional `message` - a literal,
+   case-insensitive substring rather than the pattern first planned, since an
+   operator-typed regex is a ReDoS and correctness risk. Refused on write when
+   an entry declares neither field; concatenated with the built-in list.
+2. The page that edits it is the operator console's: raised on
+   `vxture-platform`#542 alongside `wire.thinking`. This entry closes when
+   that ships.
+
+## TD-056
+
+**Wrong**: no inference Atlas serves is recorded by the platform. Every C3
+consume names `product: "atlas"`, and the platform removed atlas from
+`product.products` on 2026-09-23 (vxture-platform #469 / #472); its consume
+handler answers `400 unknown_product`. Consume failures are swallowed by
+design - the answer was already produced - so the caller is served, reqlog
+has its row, and nothing errors. It surfaced only because tenderforge read
+Atlas's production log (`vx-agent-tenderforge`#69). The platform's migration
+aborts if an L1 product has any `usage_events`, so where it ran, atlas had
+none: the reports may never have been accepted.
+
+The C2 read (`product=atlas`) is broken the same way; the quota gate falls
+open per ADR-001.
+
+**Recovery**: ADR-010 - raw tokens in four dimensions under the caller's
+product, in the shape vxture-platform#547 settles on (workplan E3-E5).
+**Detection is in place now**: `platform_consume_outcomes_total` counts
+`outcome="rejected"` with the platform's reason word.
+
+**Still open 2026-10-01**: a production read found 332 reqlog rows since
+2026-07-28 and none in the platform's ledger; the first v0.7.17 calls (yucer,
+chat and rerank) were refused `unknown_product` again. Evidence and the three
+questions Atlas needs answered are on #547. Atlas's side of the recovery is
+ready: rows carry `product_code`, the raw token splits, and `request_id` as an
+idempotency key.
+
+## TD-057
+
+**Wrong**: `model_price_rules` has one input rate and one cached-input (read)
+rate, and no cache-WRITE rate. Since usage-record batch 1 (`incr/04`),
+`input_tokens` counts cache writes, and `cache_write_input_tokens` /
+`cache_write_1h_input_tokens` record them - but the cost formula (`priceUsage`,
+shared by the rollup and the per-row `upstream_cost` of batch 2) prices
+everything that is not a cache READ at the plain input rate. Anthropic charges
+a 5-minute write at 1.25x input and a 1-hour write at 2x, so a Claude row's
+cost is understated by exactly its write premium - the one direction the
+cached-read fallback was designed never to err in.
+
+**Impact today**: nil in production - no route there serves a Claude model,
+and the OpenAI-compatible upstreams in use report no cache writes. It becomes
+real the day a Claude route is live.
+
+**Recovery**:
+1. ~~Two nullable value columns on `model_price_rules`
+   (`cache_write_unit_price`, `cache_write_1h_unit_price`), accepted by
+   `POST /capability/price-rules`, refused by `PATCH` like every value column,
+   and priced in `priceUsage` (1-hour falls back to 5-minute, 5-minute to
+   input).~~ **Done 2026-09-30** (`incr/06`, usage-record batch 3).
+2. The admin console's price-rule form does not show the two fields, so
+   today they can be set only through the API. Raised as vxture-platform#554
+   (first raised on #542, which is opera's model drawer; the price form is
+   admin's - ADR-012). This entry closes when that ships - until then an
+   undeclared write rate still falls back to input.
+
+**Found 2026-10-01** (production read): `model_price_rules` has zero rows, so
+no production row is priced at all - every one reads `not_configured`. That is
+an operations gap, not this entry's, but it is why none of the above has met
+real data yet.

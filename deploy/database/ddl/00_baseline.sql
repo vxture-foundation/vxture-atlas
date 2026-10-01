@@ -123,6 +123,22 @@ CREATE INDEX IF NOT EXISTS idx_gateway_api_keys_deleted_at ON key.gateway_api_ke
 -- provider_code) are bare values, no FK (boundary #1). Failed calls
 -- (status=error/timeout) land only here - they never trigger consume or write
 -- a usage event on the platform side.
+-- incr/07: the closed vocabulary of dimension_status, used by its CHECK below.
+CREATE OR REPLACE FUNCTION reqlog.dimension_status_valid(s jsonb)
+RETURNS boolean
+LANGUAGE sql
+IMMUTABLE
+AS $$
+  SELECT s IS NULL
+      OR (jsonb_typeof(s) = 'object'
+          AND NOT EXISTS (
+            SELECT 1 FROM jsonb_each(s) e
+             WHERE jsonb_typeof(e.value) <> 'string'
+                OR e.value #>> '{}' NOT IN ('not_integrated','not_supported','not_reported',
+                                             'not_configured','capture_failed','not_specified',
+                                             'not_applicable','not_reached')));
+$$;
+
 CREATE TABLE IF NOT EXISTS reqlog.request_records (
     id                       uuid          NOT NULL DEFAULT gen_random_uuid(),
     request_id               varchar(128)  NOT NULL,             -- cross-db correlation key -> platform metering.usage_events.request_id (no FK)
@@ -155,10 +171,64 @@ CREATE TABLE IF NOT EXISTS reqlog.request_records (
     cached_input_tokens      bigint,                             -- TD-047 (incr/01): input tokens served from the upstream prompt cache, billed at the cached rate (1/30 of uncached on DeepSeek). Subset of input_tokens; the uncached half is the difference. Declared AFTER created_at on purpose - ALTER TABLE appends, so a database built from this baseline keeps the same column ordinals as one migrated by the increment
     reasoning_tokens         bigint,                             -- TD-047 (incr/01): completion tokens spent on a reasoning chain. Subset of output_tokens and billed at the output rate, kept apart because it is the one output cost an operator can switch off (config.wire.extraBody). NULL means unreported, never zero - a fabricated 0 makes an unmeasured call look free
     attempt_index            smallint,                           -- TD-037 (incr/03): zero-based position of this attempt within one logical request; rows of one chain share request_id. Matches fallbackAttempt in the routing loop. NULL = written before the column existed, i.e. a single-row logical request under the old chat grain. Declared AFTER the incr/01 columns for the same reason they were - ALTER TABLE appends, so a baseline-built database keeps the same ordinals as a migrated one
+    upstream_request_id      varchar(200),                       -- incr/04 (ADR-010, usage checklist A3): the vendor's own id for the call; the only join to a vendor bill
+    upstream_model           varchar(200),                       -- incr/04 (C4): the model name the vendor says answered; vendors alias and roll versions, and price follows what served
+    cache_write_input_tokens bigint,                             -- incr/04 (E3): input tokens written to the upstream prompt cache, priced above plain input. Subset of input_tokens, like cached_input_tokens: input_tokens counts every input token, cached or not
+    cache_write_1h_input_tokens bigint,                          -- incr/04 (E4): the 1-hour-TTL part of cache_write_input_tokens. NULL = not split by the upstream, not zero
+    usage_source             varchar(16),                        -- incr/04 (G1): reported | absent | partial. A NULL count on an 'absent' row is unknown, never free
+    upstream_usage           jsonb,                              -- incr/04 (G2): the upstream usage object verbatim; every normalized token column is derived from it and can be re-derived
+    finish_reason            varchar(16),                        -- incr/04 (H3): stop | length | tool_calls | content_filter | other
+    native_finish_reason     varchar(64),                        -- incr/04 (H3): the vendor's own word, unmapped
+    started_at               timestamptz,                        -- incr/05 (A4): attempt start; off-peak pricing keys on this. Completion = started_at + latency_ms
+    first_token_at           timestamptz,                        -- incr/05 (A5): first streamed event; TTFT = first_token_at - started_at
+    selector_kind            varchar(16),                        -- incr/05 (C1): model | endpoint | task_profile - what the caller named
+    selector_value           varchar(128),                       -- incr/05 (C1): its value; model_code is what actually served
+    provider_key_alias       varchar(128),                       -- incr/05 (C5): vault key alias; with provider_code it names the vendor account
+    thinking_mode            varchar(8),                         -- incr/05 (D1): off | on as requested (= effective, ADR-009); NULL = upstream default
+    max_tokens               int,                                -- incr/05 (D3): the caller's output budget
+    streamed                 boolean,                            -- incr/05 (D4)
+    cancelled_by             varchar(16),                        -- incr/05 (H4): client | deadline
+    upstream_cost            numeric(18,8),                      -- incr/05 (J1): vendor charge by the rule in force at started_at. NULL = unpriced, never free
+    cost_currency            varchar(16),                        -- incr/05 (J1): the rule's currency
+    price_rule_id            uuid,                               -- incr/05 (J2): which rule priced it (same-db logical ref, no FK: rules are superseded, rows are not)
+    pricing_window           varchar(8),                         -- incr/05 (J2): peak | off_peak
+    token_jti                varchar(128),                       -- incr/06 (B8): the S2S token's jti - which exchanged credential made the call
+    deploy_stage             varchar(16),                        -- incr/06 (B10): the stage that wrote the row, as /healthz reports it
+    model_behavior_version   varchar(64),                        -- incr/06 (C9): model behaviour fingerprint at call time
+    tool_count               smallint,                           -- incr/06 (D5): tool definitions sent (they cost input tokens)
+    tool_calls_made          smallint,                           -- incr/06 (D5): tool calls the model made in its answer
+    message_count            smallint,                           -- incr/06 (D6): messages in the request
+    vector_count             int,                                -- incr/06 (F1): embed - vectors returned
+    vector_dimension         int,                                -- incr/06 (F1): embed - their dimension
+    upstream_host            varchar(255),                       -- incr/07 (C6): upstream endpoint host that served the call
+    service_tier             varchar(32),                        -- incr/07 (C7): the vendor's service tier, when it states one
+    is_batch                 boolean,                            -- incr/07 (C8): batch vs realtime
+    reasoning_budget_tokens  int,                                -- incr/07 (D2): reasoning budget
+    input_image_count        int,                                -- incr/07 (D7): images in the input
+    input_audio_seconds      numeric(10,3),                      -- incr/07 (D7): audio seconds in the input
+    input_file_count         int,                                -- incr/07 (D7): files in the input
+    input_image_tokens       bigint,                             -- incr/07 (E7): input tokens by modality
+    input_audio_tokens       bigint,                             -- incr/07 (E7)
+    output_audio_tokens      bigint,                             -- incr/07 (E8): output tokens by modality
+    output_image_tokens      bigint,                             -- incr/07 (E8)
+    tool_use_prompt_tokens   bigint,                             -- incr/07 (E9): tool-use prompt tokens
+    web_search_requests      int,                                -- incr/07 (F4): vendor-side tool calls billed per call
+    generated_image_count    int,                                -- incr/07 (F5): generated media
+    generated_media_seconds  numeric(10,3),                      -- incr/07 (F5)
+    content_filtered         boolean,                            -- incr/07 (H5): the answer was cut by content filtering
+    queue_wait_ms            int,                                -- incr/07 (I4): time queued before the upstream call
+    dimension_status         jsonb,                              -- incr/07: for every NULL usage dimension, why (8-word closed vocabulary, see the function below)
     PRIMARY KEY (id, created_at),                                -- partition key must be in the PK
     CONSTRAINT chk_request_records_usage_type CHECK (usage_type IS NULL OR usage_type IN ('normal','retry','test')),
     CONSTRAINT chk_request_records_status     CHECK (status IS NULL OR status IN ('success','error','timeout')),
-    CONSTRAINT chk_request_records_cost_unit  CHECK (cost_unit IS NULL OR cost_unit IN ('token','candidate','page'))
+    CONSTRAINT chk_request_records_cost_unit  CHECK (cost_unit IS NULL OR cost_unit IN ('token','candidate','page')),
+    CONSTRAINT chk_request_records_usage_source  CHECK (usage_source IS NULL OR usage_source IN ('reported','absent','partial')),
+    CONSTRAINT chk_request_records_finish_reason CHECK (finish_reason IS NULL OR finish_reason IN ('stop','length','tool_calls','content_filter','other')),
+    CONSTRAINT chk_request_records_selector_kind  CHECK (selector_kind IS NULL OR selector_kind IN ('model','endpoint','task_profile')),
+    CONSTRAINT chk_request_records_thinking_mode  CHECK (thinking_mode IS NULL OR thinking_mode IN ('off','on')),
+    CONSTRAINT chk_request_records_cancelled_by   CHECK (cancelled_by IS NULL OR cancelled_by IN ('client','deadline')),
+    CONSTRAINT chk_request_records_pricing_window CHECK (pricing_window IS NULL OR pricing_window IN ('peak','off_peak')),
+    CONSTRAINT chk_request_records_dimension_status CHECK (reqlog.dimension_status_valid(dimension_status))
 ) PARTITION BY RANGE (created_at);
 CREATE INDEX IF NOT EXISTS idx_request_records_request_id     ON reqlog.request_records (request_id);
 CREATE INDEX IF NOT EXISTS idx_request_records_usage_event_id ON reqlog.request_records (usage_event_id);
@@ -369,7 +439,9 @@ CREATE TABLE IF NOT EXISTS model.model_price_rules (
     updated_at         timestamptz   NOT NULL DEFAULT now(),
     CONSTRAINT chk_model_price_rules_billing_mode CHECK (billing_mode IN ('token','request')),
     deleted_at       timestamptz,                             -- soft delete (incr/10); history lives in audit.change_records, not in an unremovable row
-    cached_input_unit_price numeric(18,8)                     -- TD-047 (incr/02): price for input tokens the upstream served from its prompt cache. NULLABLE on purpose - a 0 would claim cached input is free, which is false for every provider and would be applied silently to every existing row. NULL = not declared, so a cost calculation falls back to input_unit_price and can only overstate. Declared last to match where ALTER TABLE puts it
+    cached_input_unit_price numeric(18,8),                    -- TD-047 (incr/02): price for input tokens the upstream served from its prompt cache. NULLABLE on purpose - a 0 would claim cached input is free, which is false for every provider and would be applied silently to every existing row. NULL = not declared, so a cost calculation falls back to input_unit_price and can only overstate. Declared last to match where ALTER TABLE puts it
+    cache_write_unit_price  numeric(18,8),                    -- TD-057 (incr/06): 5-minute-TTL cache-write price per unit_tokens. NULL = not declared: costed at input_unit_price
+    cache_write_1h_unit_price numeric(18,8)                   -- TD-057 (incr/06): 1-hour-TTL cache-write price. NULL = falls back to cache_write_unit_price, then input_unit_price
 );
 CREATE INDEX IF NOT EXISTS idx_model_price_rules_model     ON model.model_price_rules (model_id);
 CREATE INDEX IF NOT EXISTS idx_model_price_rules_effective ON model.model_price_rules (effective_at);

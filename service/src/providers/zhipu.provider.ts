@@ -1,4 +1,5 @@
 import { Injectable } from "@nestjs/common";
+import { upstreamField } from "./upstream-record";
 
 import { joinEndpoint, resolveUpstreamModel } from "./base.provider";
 import { OpenAiCompatibleProvider } from "./openai-compatible.provider";
@@ -84,6 +85,10 @@ export class ZhipuProvider extends OpenAiCompatibleProvider {
       dimension: vectors[0]?.length ?? 0,
       vectors,
       ...(usage ? { usage } : {}),
+      // Zhipu's embedding response carries a model but no id or service tier.
+      ...upstreamField(undefined, response.model, undefined, response.usage, {
+        notSupported: ["upstreamRequestId", "serviceTier"],
+      }),
     };
   }
 
@@ -112,6 +117,10 @@ export class ZhipuProvider extends OpenAiCompatibleProvider {
         score: result.relevance_score,
       })),
       ...(usage ? { usage } : {}),
+      // Zhipu's rerank response carries an id but no model or service tier.
+      ...upstreamField(response.id, undefined, undefined, response.usage, {
+        notSupported: ["upstreamModel", "serviceTier"],
+      }),
     };
   }
 }

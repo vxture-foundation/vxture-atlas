@@ -35,6 +35,7 @@ import type {
 } from "../types/runtime.types";
 import { ModelRuntimeException, isModelRuntimeErrorCode } from "./runtime.errors";
 import type { ModelRuntimeErrorCode } from "./runtime.errors";
+import { resolveMaxRequestBodyBytes } from "./request-body";
 import { modelBehaviorVersion } from "../model-behavior-version";
 
 interface ModelSummary {
@@ -182,7 +183,7 @@ export class ModelRuntimeController {
     @Query() all: Record<string, string>,
     @Query("applicationId") applicationId?: string,
     @Query("applicationType") applicationType?: ApplicationType,
-  ): Promise<{ endpoints: GrantedEndpoint[] }> {
+  ): Promise<{ endpoints: GrantedEndpoint[]; maxRequestBytes: number }> {
     rejectUnknownV1Filters(all, V1_ENDPOINT_FILTERS);
     const productCode = req.s2sAuth?.callerProductCode;
     if (!productCode) {
@@ -206,6 +207,10 @@ export class ModelRuntimeController {
         applicationId: scope.applicationId,
         applicationType: scope.applicationType,
       }),
+      // One number for every route - the body is refused before routing, so
+      // it cannot vary per route. Read through the same resolver the parser
+      // was built from, so the published ceiling is the enforced one.
+      maxRequestBytes: resolveMaxRequestBodyBytes(),
     };
   }
 

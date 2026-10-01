@@ -51,6 +51,12 @@ deliberately does not learn them - it sees a `metric_key` and an amount.
 
 ## 3. Atlas side
 
+> **Superseded in part by ADR-010 (2026-09-30).** The metric table below is
+> the wire Atlas still sends (`product: "atlas"`, `atlas.*` metrics), and the
+> platform refuses all of it since atlas left the product catalog (TD-056).
+> ADR-010 replaces it with raw tokens in four dimensions under the caller's
+> product; this section is rewritten when that payload lands.
+
 `reqlog.request_records` (monthly `PARTITION BY RANGE (created_at)`) is the
 detailed history layer:
 
@@ -60,8 +66,46 @@ detailed history layer:
 - Atlas domain facts: `model_code`, `provider_code`, `input_tokens`,
   `output_tokens`, `total_tokens`, `latency_ms`, `usage_type`
   (normal/retry/test), `status` (success/error/timeout)
+- Token splits (subsets, NULL = not reported, never 0): `cached_input_tokens`,
+  `cache_write_input_tokens`, `cache_write_1h_input_tokens` (of `input_tokens`);
+  `reasoning_tokens` (of `output_tokens`)
+- What the vendor said (`incr/04`, ADR-010 usage-record batch 1):
+  `upstream_request_id`, `upstream_model`, `upstream_usage` (the vendor's usage
+  object verbatim), `finish_reason` (stop/length/tool_calls/content_filter/
+  other) with `native_finish_reason`, and `usage_source` (reported/absent/
+  partial - NULL on a row that never reached an upstream)
+- What Atlas knew at the call (`incr/05`, batch 2): `started_at` (completion =
+  `started_at + latency_ms`), `first_token_at` (streams), `selector_kind` /
+  `selector_value` (what the caller named), `provider_key_alias`,
+  `thinking_mode`, `max_tokens`, `streamed`, `cancelled_by` (client/deadline)
+- The row's own price (`incr/05`): `upstream_cost`, `cost_currency`,
+  `price_rule_id`, `pricing_window` - by the rule in force at `started_at`,
+  with the same formula as the cost rollup; NULL = unpriced, never free.
+  Cache writes are priced at the rule's cache-write rates (`incr/06`); an
+  undeclared rate falls back to the input rate
+- The last dimensions (`incr/07`, batch 4): `upstream_host`, `service_tier`,
+  `is_batch`, `reasoning_budget_tokens`, `input_image_count` /
+  `input_audio_seconds` / `input_file_count`, `input_image_tokens` /
+  `input_audio_tokens`, `output_audio_tokens` / `output_image_tokens`,
+  `tool_use_prompt_tokens`, `web_search_requests`, `generated_image_count` /
+  `generated_media_seconds`, `content_filtered`, `queue_wait_ms`
+- **Why an empty dimension is empty** (`incr/07`, ADR-011): `dimension_status`
+  maps every NULL usage column of the row to one of `not_integrated`,
+  `not_supported`, `not_reported`, `not_configured`, `capture_failed`,
+  `not_specified`, `not_applicable`, `not_reached`. The registry is
+  `service/src/reqlog/dimension-status.ts`
+- Analysis facts (`incr/06`, batch 3): `token_jti`, `deploy_stage` (as
+  `/healthz` reports it), `model_behavior_version`, `tool_count` /
+  `tool_calls_made`, `message_count`, `vector_count` / `vector_dimension`
 - Billing correlation: `billed_metric_key`, `billed_amount`, `cost_unit`,
   `usage_event_id`
+
+**Token convention.** `input_tokens` counts every input token on every
+adapter - uncached, cache read and cache write - so the uncached part is
+`input_tokens - cached_input_tokens - cache_write_input_tokens`. OpenAI-
+compatible upstreams report `prompt_tokens` this way already; Anthropic reports
+`input_tokens` excluding both cache kinds, and the Claude adapter adds them
+back. Rows written before `incr/04` stored Anthropic's figure as-is.
 
 `cost_unit` says what `billed_amount` counts, and it exists because one column
 carries three units:

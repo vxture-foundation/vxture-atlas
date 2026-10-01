@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
 
-import { ModelRegistryService } from "./model-registry.service";
+import { ModelRegistryService, routeThinkingModes } from "./model-registry.service";
 import { ModelRuntimeException } from "../runtime/runtime.errors";
 import type { AiModelRecord } from "../types/runtime.types";
 
@@ -197,10 +197,12 @@ describe("ModelRegistryService.listGrantedEndpoints", () => {
   function makeService(
     grants: Array<{ endpointCode: string }>,
     endpoints: Array<Record<string, unknown>>,
+    usableModels: Array<Record<string, unknown>> = [],
   ) {
     const repository = {
       listProductEndpointGrants: vi.fn().mockResolvedValue(grants),
       findEndpointsByCodes: vi.fn().mockResolvedValue(endpoints),
+      findActiveModelsByCodes: vi.fn().mockResolvedValue(usableModels),
     };
     return { service: new ModelRegistryService(repository as never), repository };
   }
@@ -236,7 +238,7 @@ describe("ModelRegistryService.listGrantedEndpoints", () => {
     );
 
     expect(await service.listGrantedEndpoints(SCOPE)).toEqual([
-      { endpointCode: "chat/default", category: "chat", state: "active" },
+      { endpointCode: "chat/default", category: "chat", state: "active", contextWindow: null, maxOutputTokens: null, thinkingModes: [] },
     ]);
   });
 
@@ -255,7 +257,7 @@ describe("ModelRegistryService.listGrantedEndpoints", () => {
       );
 
       expect(await service.listGrantedEndpoints(SCOPE)).toEqual([
-        { endpointCode: "chat/default", category: "chat", state: "inactive" },
+        { endpointCode: "chat/default", category: "chat", state: "inactive", contextWindow: null, maxOutputTokens: null, thinkingModes: [] },
       ]);
     },
   );
@@ -266,7 +268,7 @@ describe("ModelRegistryService.listGrantedEndpoints", () => {
     const { service } = makeService([{ endpointCode: "chat/typoo" }], []);
 
     expect(await service.listGrantedEndpoints(SCOPE)).toEqual([
-      { endpointCode: "chat/typoo", category: null, state: "missing" },
+      { endpointCode: "chat/typoo", category: null, state: "missing", contextWindow: null, maxOutputTokens: null, thinkingModes: [] },
     ]);
   });
 
@@ -294,5 +296,96 @@ describe("ModelRegistryService.listGrantedEndpoints", () => {
     // No grants means no codes to look up - and never a fallback to "show
     // everything", which is how /v1/models' unfiltered mode misleads.
     expect(repository.findEndpointsByCodes).toHaveBeenCalledWith([]);
+  });
+
+  // tenderforge letter 40 item 4: a caller budgets its input from these, so
+  // the one thing they must never do is overstate.
+  describe("route capacity", () => {
+    const model = (modelCode: string, contextWindow: number | null, maxOutputTokens: number | null) => ({
+      modelCode,
+      contextWindow,
+      maxOutputTokens,
+    });
+    const capacityOf = async (
+      endpoint: Record<string, unknown>,
+      usable: Array<Record<string, unknown>>,
+    ) => {
+      const { service } = makeService([{ endpointCode: "chat/default" }], [endpointRow(endpoint)], usable);
+      const [row] = await service.listGrantedEndpoints(SCOPE);
+      return { contextWindow: row?.contextWindow, maxOutputTokens: row?.maxOutputTokens };
+    };
+
+    it("is the primary's own capacity when there is no fallback", async () => {
+      expect(await capacityOf({ primaryModelCode: "p" }, [model("p", 262144, 32768)])).toEqual({
+        contextWindow: 262144,
+        maxOutputTokens: 32768,
+      });
+    });
+
+    it("is the SMALLEST across primary and fallback - a call may land on either", async () => {
+      expect(
+        await capacityOf({ primaryModelCode: "p", fallbackModelCode: "f" }, [
+          model("p", 262144, 32768),
+          model("f", 131072, 16384),
+        ]),
+      ).toEqual({ contextWindow: 131072, maxOutputTokens: 16384 });
+    });
+
+    it("is unknown when a model in the chain has no value - never the minimum of the known ones", async () => {
+      expect(
+        await capacityOf({ primaryModelCode: "p", fallbackModelCode: "f" }, [
+          model("p", 262144, 32768),
+          model("f", null, 16384),
+        ]),
+      ).toEqual({ contextWindow: null, maxOutputTokens: 16384 });
+    });
+
+    it("ignores an unusable fallback, as the call path skips it", async () => {
+      expect(
+        await capacityOf({ primaryModelCode: "p", fallbackModelCode: "gone" }, [model("p", 262144, 32768)]),
+      ).toEqual({ contextWindow: 262144, maxOutputTokens: 32768 });
+    });
+
+    it("is unknown when the primary is unusable, even if the fallback has values - that route serves nothing", async () => {
+      expect(
+        await capacityOf({ primaryModelCode: "gone", fallbackModelCode: "f" }, [model("f", 131072, 16384)]),
+      ).toEqual({ contextWindow: null, maxOutputTokens: null });
+    });
+
+    it("looks every chain member up in one query, through the call path's usability rule", async () => {
+      const { service, repository } = makeService(
+        [{ endpointCode: "chat/a" }, { endpointCode: "chat/b" }],
+        [
+          endpointRow({ code: "chat/a", primaryModelCode: "p", fallbackModelCode: "f" }),
+          endpointRow({ id: "ep-2", code: "chat/b", primaryModelCode: "p" }),
+        ],
+      );
+
+      await service.listGrantedEndpoints(SCOPE);
+
+      expect(repository.findActiveModelsByCodes).toHaveBeenCalledTimes(1);
+      expect(repository.findActiveModelsByCodes).toHaveBeenCalledWith(["p", "f"]);
+    });
+  });
+});
+
+describe("routeThinkingModes (ADR-009)", () => {
+  const model = (thinking?: Record<string, unknown>) =>
+    ({
+      protocol: "openai",
+      providerConfig: null,
+      config: thinking ? { wire: { thinking } } : null,
+    }) as unknown as AiModelRecord;
+
+  it("is the primary's supported modes", () => {
+    expect(routeThinkingModes(model({ off: { thinking: { type: "disabled" } }, on: {} }))).toEqual(["off", "on"]);
+  });
+
+  it("is empty when the model has no mapping yet - asking then is refused, not ignored", () => {
+    expect(routeThinkingModes(model())).toEqual([]);
+  });
+
+  it("is empty when there is no usable primary", () => {
+    expect(routeThinkingModes(undefined)).toEqual([]);
   });
 });

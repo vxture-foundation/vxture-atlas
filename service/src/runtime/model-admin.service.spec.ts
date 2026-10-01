@@ -2443,6 +2443,8 @@ describe("normalizeUpdatePriceRule - append-versioned, not editable", () => {
     "outputUnitPrice",
     "requestUnitPrice",
     "cachedInputUnitPrice",
+    "cacheWriteUnitPrice",
+    "cacheWrite1hUnitPrice",
     "effectiveAt",
   ])("refuses %s instead of failing at the database", (field) => {
     expect(() => update({ [field]: "1" })).toThrow(ModelAdminException);
@@ -2541,6 +2543,27 @@ describe("normalizeCreatePriceRule - cached input price (TD-047)", () => {
   const create = async (body: CreateModelPriceRuleBody) =>
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     (makeSvc() as any).normalizeCreatePriceRule(body);
+
+  // TD-057. Cache-write rates follow the cached rate's rule exactly: declared
+  // is kept, undeclared stays ABSENT (never 0), blank is undeclared.
+  it("accepts declared cache-write rates and leaves undeclared ones absent", async () => {
+    const declared = await create({
+      modelId: "00000000-0000-4000-a000-000000000100",
+      inputUnitPrice: "3.0",
+      cacheWriteUnitPrice: "3.75",
+      cacheWrite1hUnitPrice: "6",
+    });
+    expect(declared.cacheWriteUnitPrice).toBe("3.75");
+    expect(declared.cacheWrite1hUnitPrice).toBe("6");
+
+    const undeclared = await create({
+      modelId: "00000000-0000-4000-a000-000000000100",
+      inputUnitPrice: "3.0",
+      cacheWriteUnitPrice: "",
+    });
+    expect(undeclared.cacheWriteUnitPrice).toBeNull();
+    expect("cacheWrite1hUnitPrice" in undeclared).toBe(false);
+  });
 
   it("accepts a declared cached rate", async () => {
     const result = await create({

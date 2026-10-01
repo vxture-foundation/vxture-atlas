@@ -1,8 +1,10 @@
 # `incr/` - numbered increments against a database that must survive
 
-Empty as of 2026-08-17. ADR-006 folded `incr/01`..`incr/15` into
+ADR-006 (2026-08-17) folded the pre-rebaseline `incr/01`..`incr/15` into
 `00_baseline.sql`, `97_service_role.sql` and `98_column_locks.sql`, and every
-environment was rebuilt from the consolidated baseline.
+environment was rebuilt from the consolidated baseline. Numbering then restarted
+at `01`; the files here are post-rebaseline increments (TD-048 covers the
+ambiguity this creates for older references).
 
 That was a one-time act with the data loss accepted in front of the owner. It
 is **not** the standing rule, and this file exists so the next person does not

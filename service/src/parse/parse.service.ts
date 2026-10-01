@@ -100,6 +100,8 @@ export class ParseService {
         meter({
           amount: request.pages.length,
           ...(usage ? { usage } : {}),
+          // Usage-record batch 4 (D7): the input is page images, one per page.
+          facts: { inputImageCount: request.pages.length },
         });
         return { ...(result as ProviderParseResponse), modelCode: gated.model.modelCode };
           },

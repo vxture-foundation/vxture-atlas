@@ -54,6 +54,9 @@ export interface CostGroupRow {
   requestUnitPrice: string | null;
   /** `null` means "no cached rate declared", never "cached input is free". */
   cachedInputUnitPrice: string | null;
+  /** TD-057. `null`/absent = not declared: cache writes cost the input rate. */
+  cacheWriteUnitPrice?: string | null;
+  cacheWrite1hUnitPrice?: string | null;
   /** ISO weekday of the bucket in UTC, 1 = Monday .. 7 = Sunday. */
   isoDow: number | null;
   /** Hour of the bucket in UTC, 0-23. */
@@ -65,6 +68,9 @@ export interface CostGroupRow {
   requestsMissingOutput: bigint;
   inputTokens: bigint;
   cachedInputTokens: bigint;
+  /** TD-057. Subsets of inputTokens; absent on rows written before incr/04. */
+  cacheWriteInputTokens?: bigint;
+  cacheWrite1hInputTokens?: bigint;
   outputTokens: bigint;
   reasoningTokens: bigint;
 }
@@ -204,6 +210,163 @@ function readPolicy(
   }
 }
 
+/** The price columns of one rule, as strings straight off `numeric(18,8)`. */
+export interface PriceRuleRates {
+  unitTokens: number;
+  inputUnitPrice: string;
+  outputUnitPrice: string;
+  requestUnitPrice: string;
+  /** `null` = no cached rate declared: charged as uncached, never as free. */
+  cachedInputUnitPrice: string | null;
+  /**
+   * TD-057. Cache-write rates. Absent/`null` = not declared: a 5-minute write
+   * costs the input rate (the pre-TD-057 behaviour), a 1-hour write costs the
+   * 5-minute rate, then the input rate.
+   */
+  cacheWriteUnitPrice?: string | null;
+  cacheWrite1hUnitPrice?: string | null;
+}
+
+/**
+ * THE cost formula, in scaled integers - shared by the rollup and by the
+ * per-row cost written at request time (usage-record batch 2), so the two can
+ * only disagree by truncation (per group vs per row), never by rule.
+ *
+ * `offPeakPolicy` is the policy to apply when the call ran OFF-peak, and null
+ * when it ran at peak or the provider has none: the caller decides the window.
+ */
+export function priceUsage(
+  usage: {
+    requests: bigint;
+    uncached: bigint;
+    cached: bigint;
+    output: bigint;
+    /** TD-057. 5-minute-TTL cache writes (NOT inside `uncached`). */
+    cacheWrite?: bigint;
+    /** TD-057. 1-hour-TTL cache writes (NOT inside `uncached` or `cacheWrite`). */
+    cacheWrite1h?: bigint;
+  },
+  rates: PriceRuleRates,
+  offPeakPolicy: OffPeakPolicy | null,
+): bigint {
+  const discount = offPeakPolicy !== null ? toScaled(offPeakPolicy.multiplier) : null;
+  const rate = (component: PriceComponent, price: string): bigint => {
+    const scaled = toScaled(price);
+    return discount !== null &&
+      offPeakPolicy !== null &&
+      offPeakPolicy.appliesTo.includes(component)
+      ? discounted(scaled, discount)
+      : scaled;
+  };
+
+  const unitTokens = BigInt(rates.unitTokens);
+  const inputPrice = rate("input", rates.inputUnitPrice);
+  // The fallback happens BEFORE the discount: an undeclared cached rate means
+  // "charge it as uncached", and an uncached rate is discounted off-peak like
+  // any other. Discounting a fallback is not double-counting - it is the same
+  // rate the provider would have charged.
+  const cachedPrice =
+    rates.cachedInputUnitPrice === null
+      ? inputPrice
+      : rate("cachedInput", rates.cachedInputUnitPrice);
+
+  // TD-057. A write is input the upstream also stored; the off-peak discount
+  // treats it as input. Undeclared rates fall back one step at a time.
+  const writePrice =
+    rates.cacheWriteUnitPrice === undefined || rates.cacheWriteUnitPrice === null
+      ? inputPrice
+      : rate("input", rates.cacheWriteUnitPrice);
+  const write1hPrice =
+    rates.cacheWrite1hUnitPrice === undefined || rates.cacheWrite1hUnitPrice === null
+      ? writePrice
+      : rate("input", rates.cacheWrite1hUnitPrice);
+
+  return (
+    usage.requests * rate("request", rates.requestUnitPrice) +
+    priceTokens(usage.uncached, inputPrice, unitTokens) +
+    priceTokens(usage.cached, cachedPrice, unitTokens) +
+    priceTokens(usage.cacheWrite ?? 0n, writePrice, unitTokens) +
+    priceTokens(usage.cacheWrite1h ?? 0n, write1hPrice, unitTokens) +
+    // `output` already includes reasoning tokens, which are billed at this same
+    // rate. Adding a reasoning term here would charge them twice.
+    priceTokens(usage.output, rate("output", rates.outputUnitPrice), unitTokens)
+  );
+}
+
+/**
+ * The cost of ONE call, for the reqlog row (usage-record batch 2, J1/J2).
+ *
+ * Same rules as the rollup: uncached = input - cached (clamped), reasoning is
+ * inside output, an undeclared cached rate falls back to the input rate, the
+ * off-peak discount applies by the policy's `appliesTo`. Cache WRITES are
+ * inside input and priced at the input rate, because a price rule has no
+ * cache-write rate yet (TD-057) - an understatement the row cannot flag.
+ *
+ * Returns null - "unpriced", never "free" - when the policy is unreadable:
+ * the rollup refuses a malformed policy with a 4xx naming the provider, and a
+ * write path must not throw, so it declines instead of guessing a window.
+ */
+export function priceOneCall(
+  tokens: {
+    input: number;
+    cached: number | undefined;
+    output: number;
+    cacheWrite?: number | undefined;
+    cacheWrite1h?: number | undefined;
+  },
+  rates: PriceRuleRates,
+  providerPricing: unknown,
+  at: Date,
+): { cost: string; window: "peak" | "off_peak" } | null {
+  let policy: OffPeakPolicy | null;
+  try {
+    policy = parseOffPeakPolicy(providerPricing);
+  } catch {
+    return null;
+  }
+  const isoDow = at.getUTCDay() === 0 ? 7 : at.getUTCDay();
+  const peak = policy === null ? true : isPeak(policy, isoDow, at.getUTCHours());
+
+  const big = (n: number | undefined): bigint => BigInt(Math.max(0, Math.trunc(n ?? 0)));
+  const split = splitInput(
+    big(tokens.input),
+    big(tokens.cached),
+    big(tokens.cacheWrite),
+    big(tokens.cacheWrite1h),
+  );
+  const cost = priceUsage(
+    { requests: 1n, ...split, output: big(tokens.output) },
+    rates,
+    !peak ? policy : null,
+  );
+  return { cost: render(cost), window: peak ? "peak" : "off_peak" };
+}
+
+/**
+ * Input tokens into disjoint parts: cached read, 1-hour write, 5-minute write,
+ * and the uncached rest. All three kinds are subsets of `input` (incr/04); a
+ * part larger than what is left is clamped, because an upstream reporting more
+ * cache than input is reporting nonsense and a negative remainder would
+ * quietly credit the pool.
+ */
+export function splitInput(
+  input: bigint,
+  cachedRaw: bigint,
+  writeRaw: bigint,
+  write1hRaw: bigint,
+): { uncached: bigint; cached: bigint; cacheWrite: bigint; cacheWrite1h: bigint } {
+  const min = (a: bigint, b: bigint) => (a < b ? a : b);
+  const cached = min(cachedRaw, input);
+  const write = min(writeRaw, input - cached);
+  const cacheWrite1h = min(write1hRaw, write);
+  return {
+    cached,
+    cacheWrite1h,
+    cacheWrite: write - cacheWrite1h,
+    uncached: input - cached - write,
+  };
+}
+
 export function computeCostRollup(rows: readonly CostGroupRow[]): CostRollupResult {
   const byCurrency = new Map<string, bigint>();
   const items = new Map<string, CostRollupItem>();
@@ -226,9 +389,12 @@ export function computeCostRollup(rows: readonly CostGroupRow[]): CostRollupResu
     // An upstream that reports more cached tokens than input tokens is
     // reporting nonsense; clamping keeps the uncached half from going negative
     // and quietly crediting the pool.
-    const cached =
-      row.cachedInputTokens > row.inputTokens ? row.inputTokens : row.cachedInputTokens;
-    const uncached = row.inputTokens - cached;
+    const { cached, uncached, cacheWrite, cacheWrite1h } = splitInput(
+      row.inputTokens,
+      row.cachedInputTokens,
+      row.cacheWriteInputTokens ?? 0n,
+      row.cacheWrite1hInputTokens ?? 0n,
+    );
 
     const key = JSON.stringify([
       row.modelCode,
@@ -305,31 +471,26 @@ export function computeCostRollup(rows: readonly CostGroupRow[]): CostRollupResu
       continue;
     }
 
-    const discount = !peak && policy !== null ? toScaled(policy.multiplier) : null;
-    const rate = (component: PriceComponent, price: string): bigint => {
-      const scaled = toScaled(price);
-      return discount !== null && policy !== null && policy.appliesTo.includes(component)
-        ? discounted(scaled, discount)
-        : scaled;
-    };
-
-    const unitTokens = BigInt(row.unitTokens);
-    const inputPrice = rate("input", row.inputUnitPrice);
-    // The fallback happens BEFORE the discount: an undeclared cached rate means
-    // "charge it as uncached", and an uncached rate is discounted off-peak like
-    // any other. Discounting a fallback is not double-counting - it is the same
-    // rate the provider would have charged.
-    const cachedPrice = cachedPriceFellBack
-      ? inputPrice
-      : rate("cachedInput", row.cachedInputUnitPrice as string);
-
-    const cost =
-      row.requests * rate("request", row.requestUnitPrice) +
-      priceTokens(uncached, inputPrice, unitTokens) +
-      priceTokens(cached, cachedPrice, unitTokens) +
-      // `outputTokens` already includes `reasoningTokens`, which are billed at
-      // this same rate. Adding the reasoning term here would charge them twice.
-      priceTokens(row.outputTokens, rate("output", row.outputUnitPrice), unitTokens);
+    const cost = priceUsage(
+      {
+        requests: row.requests,
+        uncached,
+        cached,
+        cacheWrite,
+        cacheWrite1h,
+        output: row.outputTokens,
+      },
+      {
+        unitTokens: row.unitTokens,
+        inputUnitPrice: row.inputUnitPrice,
+        outputUnitPrice: row.outputUnitPrice,
+        requestUnitPrice: row.requestUnitPrice,
+        cachedInputUnitPrice: row.cachedInputUnitPrice,
+        cacheWriteUnitPrice: row.cacheWriteUnitPrice ?? null,
+        cacheWrite1hUnitPrice: row.cacheWrite1hUnitPrice ?? null,
+      },
+      !peak ? policy : null,
+    );
 
     byCurrency.set(row.currency, (byCurrency.get(row.currency) ?? 0n) + cost);
     costs.set(key, (costs.get(key) ?? 0n) + cost);

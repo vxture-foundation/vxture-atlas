@@ -69,6 +69,64 @@ operator switched off, and a grant naming a code no endpoint has, are both
 reported rather than omitted: at call time both are the same `404`, but only one
 of them is the caller's to fix, and an omission reads as "never granted".
 
+Capacity, for a caller that budgets its input before sending (tenderforge
+letter 40 item 4). The response is `{ endpoints: [...], maxRequestBytes }`:
+
+- `contextWindow` / `maxOutputTokens` on each route: the **smallest** value
+  across the models a call on that route can land on - the primary and the
+  route's fallback, following the call path exactly (an unusable primary fails
+  the request, an unusable fallback is skipped). Per route, not per model: a
+  caller knows only `endpointCode`, and an operator repointing the route
+  changes these numbers with no caller release.
+- `null` means **unknown**: no usable primary, or a model in the chain with no
+  value recorded. It is never the minimum of only the known values - that can
+  overstate, and a budget that overstates is worse than none. Treat `null` as
+  "do not rely on a number", not as "unlimited".
+- `maxRequestBytes` (top level): the body ceiling (`MAX_REQUEST_BODY_BYTES`,
+  design doc 200 section 1.4). One number for every route, because the body
+  is refused before routing; read from the same resolver the parser uses.
+- Source is the model's `context_window` / `max_output_tokens` - what the
+  model can take - not `model_policies.max_context_tokens`, which no code
+  enforces (TD-054).
+- `thinkingModes` on each route: the `thinking` values a call on it may ask
+  for (the primary's; a fallback that cannot run a mode is skipped for that
+  call, so it never narrows this). Empty means asking is refused.
+
+### Thinking is a per-call field (ADR-009)
+
+`POST /v1/chat` accepts `thinking: "off" | "on"`, and the response - the JSON
+body, and the stream's `done` frame - carries `thinking`: the mode applied, or
+`null` when none was asked and the upstream's own default ran.
+
+- **Omitted** = the upstream model's default, exactly as before this field
+  existed. Several upstreams default to ON (DeepSeek V4, Doubao Seed - the
+  latter observed on a real request), so a caller that wants no reasoning must
+  say `off`.
+- **Translated per model** through `config.wire.thinking`
+  (`docs/30-design/100-model-onboarding-and-protocol-adapters.md`). A caller
+  never spells a vendor's field.
+- **Refused, never dropped.** A value outside `off`/`on` is
+  `400 CHAT_THINKING_INVALID`. A mode the routed primary cannot run is
+  `422 THINKING_MODE_UNSUPPORTED` (`retryable: false`) before any upstream
+  call; a fallback that cannot run it is skipped for that call. Check
+  `thinkingModes` on `/v1/model-routes` first.
+
+### A total deadline per call (B6)
+
+`POST /v1/chat` accepts `timeoutMs` (whole milliseconds, 1000-600000): the
+budget from the moment Atlas accepts the call to its last byte, shared by every
+candidate in the chain.
+
+- When it runs out, the upstream call is **cancelled** - no more tokens are
+  generated or billed - and the caller gets `504 DEADLINE_EXCEEDED`
+  (`retryable: false`: the identical request gets the identical budget; raise
+  it or shrink the input). On a stream it arrives as the error frame, after any
+  output already sent.
+- It is the caller's budget, not a provider fault: it does not count toward the
+  circuit breaker, and no further fallback is tried once it has run out.
+- Omitted = no total deadline, only the time-to-first-byte guard - as before.
+  A value outside the range is `400 CHAT_TIMEOUT_INVALID`.
+
 `GET /v1/models?tenantId=` accepts the tenant id as a caller-supplied filter by
 design: `/v1` is a first-party product plane, and tenant privacy is not a
 boundary between sibling vxture products. `/tenancy/*` supersedes it for
@@ -898,19 +956,25 @@ Three rules that are easy to get wrong:
 
 ### Price-rule unit semantics
 
+**A price rule is the vendor's price to Atlas** - what the upstream charges,
+transcribed from its published price table (ADR-012). It is not a sales price:
+what a tenant pays, and the token-to-`ai.credit` conversion, belong to the
+platform. Rules are written from the admin console's model platform page
+(through admin-bff); Atlas has no form of its own.
+
 A price is three fields that only mean something together, and two of them have
 defaults that read as assertions but are not. Anyone authoring a rule - through
-the operator UI or the API - needs this before typing a number.
+the admin console or the API - needs this before typing a number.
 
 | Field | Meaning |
 |---|---|
 | `unit_tokens` | the **basis** the price is quoted per, not a cap or a quota. Default `1000000`, i.e. `input_unit_price` is a price *per million tokens* |
-| `currency` | **USD by convention.** The column's `CNY` default is a Postgres column default, not a statement about the row. A rule that omits it is stored as CNY and will be wrong |
+| `currency` | **The currency the vendor quotes in, set explicitly.** The column's `CNY` default is a Postgres column default, not a statement about the row |
 | `input_unit_price` / `output_unit_price` / `request_unit_price` | `numeric(18,8)`, price per `unit_tokens`. `billing_mode` selects which apply: `token` uses input/output, `request` uses request |
 
-Vendor price tables are near-universally quoted in USD per single token. Converting
-one into a rule is therefore `price x 1e6`, rounded to 8 decimal places, with
-`currency` set explicitly to `USD`.
+A vendor quoting per million tokens converts one to one. A vendor quoting per
+single token converts as `price x 1e6`, rounded to 8 decimal places. Either way
+`currency` is set explicitly.
 
 `cached_input_unit_price` (TD-047, `incr/02`) prices the input tokens an upstream
 served from its prompt cache - `reqlog.request_records.cached_input_tokens`
@@ -920,13 +984,22 @@ means no cached rate was declared, and a cost calculation falls back to
 cache-read discount into `input_unit_price` itself - that silently mis-prices
 every uncached call.
 
+`cache_write_unit_price` / `cache_write_1h_unit_price` (TD-057, `incr/06`) price
+the input tokens written to the upstream's prompt cache, 5-minute and 1-hour TTL
+(`reqlog.request_records.cache_write_input_tokens` /
+`cache_write_1h_input_tokens`). Same null rule: undeclared 1-hour falls back to
+the 5-minute rate, undeclared 5-minute to `input_unit_price`.
+
 **No column exists** for per-model input caps or per-model output caps. Vendor
 tables carry these; Atlas cannot express them.
 
 Atlas **meters, it does not bill** (`docs/30-design/100-model-onboarding-and-protocol-adapters.md`
-§1): nothing on the request path multiplies tokens by these numbers. They exist
-so a downstream biller has an authoritative per-model rate, which is why a wrong
-one is invisible here and visible on an invoice.
+§1). It does multiply: each reqlog row is priced at write time
+(`upstream_cost`, by the rule in force at the call's `started_at`) and
+`/capability/logs/cost` sums the same formula. The result is what the call cost
+the platform - never what anyone is charged. A rule entered as a sales price
+would make every such cost wrong with nothing raising an error, which is why
+ADR-012 fixes the meaning.
 
 ## Tenant self-service plane
 

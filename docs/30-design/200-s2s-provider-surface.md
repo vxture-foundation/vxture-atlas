@@ -1,9 +1,11 @@
 # 200 - S2S provider surface (embedding / parse / rerank)
 
 The endpoints Atlas exposes as a **supplier**: karda / arda / varda obtain a
-credential by token exchange and call these. A4 (generation) is contracted in
-the platform repo (`docs/30-design/platform/40-model-platform.md` §7,
-`ChatRequest`) and is not restated here.
+credential by token exchange and call these. A4 (generation, `ChatRequest`)
+is contracted in this repo's `docs/20-specs/10-http-surface.md` and is not
+restated here. (This line used to point at a section 7 of the platform's
+`40-model-platform.md`; that document is retired and itself names this repo as
+the authority for Atlas's HTTP contract. Corrected 2026-09-30.)
 
 All three are implemented: zhipu serves A1 and A3 in production; A2 is
 implemented behind a vision gate (section 3). Design input was karda's
@@ -85,7 +87,16 @@ Applies to every `/v1` surface, generation included.
   every route and model. Over it: `413`, `{ "code": "PAYLOAD_TOO_LARGE",
   "retryable": false }`, the message naming the received size and the limit.
   An unparseable body: `400 REQUEST_BODY_MALFORMED`. Neither reaches routing,
-  so neither has a `requestId` or a reqlog row.
+  so neither has a `requestId` or a reqlog row; both are counted in
+  `model_request_rejections_total{code, product="unknown"}` (the product is
+  unknown because the token has not been read yet).
+- **The body is read before S2S auth.** Parsing is HTTP middleware, the token
+  check is a route guard, so a caller with no token can still make the
+  process buffer and parse up to the ceiling. A body declared larger than the
+  ceiling (`Content-Length`) is refused before it is read. Accepted because
+  Atlas is reachable only inside the tailnet, so every caller that can reach
+  it is already a known host; if Atlas ever gets a public host
+  (`atlas.vxture.com` is reserved, not bound), this has to be revisited.
 - **What a model can read is its context window**, a per-model registry fact.
   Atlas does not estimate tokens and never truncates input.
 - **The upstream refused the content** (it answered `400`/`413`/`422` - over
@@ -95,7 +106,16 @@ Applies to every `/v1` surface, generation included.
   still tried, since a fallback may have a larger window. It does **not** count
   toward the circuit breaker: it describes the request, not the model's health,
   and counting it would let one caller's retries take the model offline for
-  every product. Upstream `401`/`403`/`404` (Atlas's own key or model mapping)
+  every product. When the refusal is recognisably a context-window overflow
+  (per-vendor signatures, ADR-008), the code is the narrower
+  `CONTEXT_LENGTH_EXCEEDED` - same status, same handling - and the caller
+  should split its input.
+- **The upstream stopped for length before any answer** (`finish_reason=length`
+  / `stop_reason=max_tokens` with nothing produced - on a thinking model,
+  usually the whole `maxTokens` spent on reasoning) -> `422
+  OUTPUT_BUDGET_EXHAUSTED`, `retryable: false`, same breaker exemption. Raise
+  `maxTokens`, or send `thinking: "off"`.
+- Upstream `401`/`403`/`404` (Atlas's own key or model mapping)
   and `408`/`429`/`5xx` stay `PROVIDER_UNAVAILABLE` and do count.
 
 ## 2. A1 - Embedding
