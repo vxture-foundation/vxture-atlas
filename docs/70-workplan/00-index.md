@@ -299,7 +299,8 @@ E - usage reaches the platform (ADR-010, owner 2026-09-30):
       says in its error text that it is a vendor-account problem. Found on
       production 2026-10-01: DeepSeek had answered **402** sixteen times since
       09-30 (account balance), every one filed as `PROVIDER_UNAVAILABLE` and
-      absorbed by failover to Doubao, so nothing named it
+      absorbed by failover to Doubao, so nothing named it. Released as
+      v0.7.19 (2026-10-01). Topping up the DeepSeek account is the owner's
 - [ ] E7. Operators enter vendor prices (production has none, 2026-10-01).
       Then: confirm new rows are priced, and decide whether to price the
       earlier rows with the same formula
