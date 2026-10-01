@@ -956,19 +956,25 @@ Three rules that are easy to get wrong:
 
 ### Price-rule unit semantics
 
+**A price rule is the vendor's price to Atlas** - what the upstream charges,
+transcribed from its published price table (ADR-012). It is not a sales price:
+what a tenant pays, and the token-to-`ai.credit` conversion, belong to the
+platform. Rules are written from the admin console's model platform page
+(through admin-bff); Atlas has no form of its own.
+
 A price is three fields that only mean something together, and two of them have
 defaults that read as assertions but are not. Anyone authoring a rule - through
-the operator UI or the API - needs this before typing a number.
+the admin console or the API - needs this before typing a number.
 
 | Field | Meaning |
 |---|---|
 | `unit_tokens` | the **basis** the price is quoted per, not a cap or a quota. Default `1000000`, i.e. `input_unit_price` is a price *per million tokens* |
-| `currency` | **USD by convention.** The column's `CNY` default is a Postgres column default, not a statement about the row. A rule that omits it is stored as CNY and will be wrong |
+| `currency` | **The currency the vendor quotes in, set explicitly.** The column's `CNY` default is a Postgres column default, not a statement about the row |
 | `input_unit_price` / `output_unit_price` / `request_unit_price` | `numeric(18,8)`, price per `unit_tokens`. `billing_mode` selects which apply: `token` uses input/output, `request` uses request |
 
-Vendor price tables are near-universally quoted in USD per single token. Converting
-one into a rule is therefore `price x 1e6`, rounded to 8 decimal places, with
-`currency` set explicitly to `USD`.
+A vendor quoting per million tokens converts one to one. A vendor quoting per
+single token converts as `price x 1e6`, rounded to 8 decimal places. Either way
+`currency` is set explicitly.
 
 `cached_input_unit_price` (TD-047, `incr/02`) prices the input tokens an upstream
 served from its prompt cache - `reqlog.request_records.cached_input_tokens`
@@ -978,13 +984,22 @@ means no cached rate was declared, and a cost calculation falls back to
 cache-read discount into `input_unit_price` itself - that silently mis-prices
 every uncached call.
 
+`cache_write_unit_price` / `cache_write_1h_unit_price` (TD-057, `incr/06`) price
+the input tokens written to the upstream's prompt cache, 5-minute and 1-hour TTL
+(`reqlog.request_records.cache_write_input_tokens` /
+`cache_write_1h_input_tokens`). Same null rule: undeclared 1-hour falls back to
+the 5-minute rate, undeclared 5-minute to `input_unit_price`.
+
 **No column exists** for per-model input caps or per-model output caps. Vendor
 tables carry these; Atlas cannot express them.
 
 Atlas **meters, it does not bill** (`docs/30-design/100-model-onboarding-and-protocol-adapters.md`
-§1): nothing on the request path multiplies tokens by these numbers. They exist
-so a downstream biller has an authoritative per-model rate, which is why a wrong
-one is invisible here and visible on an invoice.
+§1). It does multiply: each reqlog row is priced at write time
+(`upstream_cost`, by the rule in force at the call's `started_at`) and
+`/capability/logs/cost` sums the same formula. The result is what the call cost
+the platform - never what anyone is charged. A rule entered as a sales price
+would make every such cost wrong with nothing raising an error, which is why
+ADR-012 fixes the meaning.
 
 ## Tenant self-service plane
 

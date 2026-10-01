@@ -280,6 +280,15 @@ E - usage reaches the platform (ADR-010, owner 2026-09-30):
       settles on
 - [ ] E5. Backfill from `reqlog` the calls that were served and never billed,
       if the platform wants them
+- [x] E6. Price rules mean the vendor's price, written from the admin console
+      (ADR-012); the platform's "sales price" wording and the admin form's
+      missing cache-write fields raised as vxture-platform#554
+- [ ] E7. Operators enter vendor prices (production has none, 2026-10-01).
+      Then: confirm new rows are priced, and decide whether to price the
+      earlier rows with the same formula
+- [x] Decided 2026-10-01: rows written before a dimension existed are not
+      backfilled with derived values. reqlog is append-only, and what was never
+      captured cannot be derived
 
 Platform-side, not this repo's write-scope:
 
