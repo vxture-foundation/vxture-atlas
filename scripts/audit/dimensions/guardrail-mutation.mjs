@@ -177,10 +177,11 @@ const MUTATIONS = [
     why: "凭证路径上的第三方 action 从 SHA 退回可变 tag",
     edit: {
       file: ".github/workflows/sonar.yml",
-      find:
-        "uses: SonarSource/sonarqube-scan-action@" +
-        "22918119ff8e1ca75a623e15c8296b6ea4fbe28f",
-      replace: "uses: SonarSource/sonarqube-scan-action@v8",
+      // Anchored before the SHA, not on it: dependabot moves the SHA on every
+      // bump, and a needle on the old one matched nothing (2026-10-01, #59).
+      // The replacement turns `@<sha> # vX` into `@v8 #<sha> # vX` - a tag ref.
+      find: "uses: SonarSource/sonarqube-scan-action@",
+      replace: "uses: SonarSource/sonarqube-scan-action@v8 #",
     },
   },
 ];
