@@ -686,3 +686,46 @@ describe("RequestLogService.record - dimension_status", () => {
     expect(status["tenant_id"]).toBe("capture_failed");
   });
 });
+
+// A vendor that starts reporting a figure Atlas does not map must surface,
+// not just land in upstream_usage while the column keeps saying not_supported.
+describe("RequestLogService.record - unmapped vendor usage", () => {
+  beforeEach(() => {
+    vi.spyOn(prisma.requestRecord, "create").mockResolvedValue({} as never);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("counts every unmapped field and warns once per provider and field", async () => {
+    const warn = vi.spyOn(Logger.prototype, "warn").mockImplementation(() => undefined);
+    const service = new RequestLogService();
+    const entry = {
+      requestId: "req-unmapped",
+      status: "success" as const,
+      providerCode: "doubao",
+      upstreamUsage: { prompt_tokens: 1, prompt_tokens_details: { image_tokens: 7 } },
+    };
+
+    await service.record(entry);
+    await service.record({ ...entry, requestId: "req-unmapped-2" });
+
+    expect(await metricsRegistry.scrape()).toContain(
+      'upstream_usage_unmapped_keys_total{provider="doubao",key="prompt_tokens_details.image_tokens"} 2',
+    );
+    const lines = warn.mock.calls.filter(([m]) => String(m).includes("image_tokens"));
+    expect(lines).toHaveLength(1);
+  });
+
+  it("is silent for a usage object Atlas fully maps", async () => {
+    const warn = vi.spyOn(Logger.prototype, "warn").mockImplementation(() => undefined);
+    await new RequestLogService().record({
+      requestId: "req-mapped",
+      status: "success",
+      providerCode: "deepseek",
+      upstreamUsage: { prompt_tokens: 3, completion_tokens: 1, total_tokens: 4 },
+    });
+    expect(warn.mock.calls.filter(([m]) => String(m).includes("does not map"))).toEqual([]);
+  });
+});

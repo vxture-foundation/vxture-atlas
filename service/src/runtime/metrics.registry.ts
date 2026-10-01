@@ -24,7 +24,8 @@ type MetricName =
   | "capability_legacy_path_requests_total"
   | "data_plane_legacy_path_requests_total"
   | "platform_consume_outcomes_total"
-  | "reqlog_write_failures_total";
+  | "reqlog_write_failures_total"
+  | "upstream_usage_unmapped_keys_total";
 
 type MetricDefinition = {
   type: "counter" | "gauge" | "histogram";
@@ -122,6 +123,18 @@ const METRIC_DEFINITIONS: Record<MetricName, MetricDefinition> = {
     type: "counter",
     help: "reqlog_write_failures_total 请求记录写入失败数（table=request_records|error_records；reason 为归类后的原因）",
     labelNames: ["table", "reason"],
+  },
+  /**
+   * Usage-record follow-up to ADR-011. An adapter's `notSupported` list says a
+   * vendor has no such field; nothing checked that it stays true. A vendor that
+   * starts reporting a new figure lands it in `upstream_usage` while the column
+   * stays NULL and still reads `not_supported`. Non-zero = a vendor field
+   * nobody has read yet. `key` is a dotted path from a fixed-depth walk.
+   */
+  upstream_usage_unmapped_keys_total: {
+    type: "counter",
+    help: "upstream_usage_unmapped_keys_total 厂商 usage 中 Atlas 未映射的字段（provider；key 为点分路径）",
+    labelNames: ["provider", "key"],
   },
   platform_consume_outcomes_total: {
     type: "counter",
