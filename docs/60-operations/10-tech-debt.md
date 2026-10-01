@@ -321,8 +321,9 @@ object literals are invisible to the check - only named `Update*Input` types
 are covered. The admin surface is done; the rest of the write surface is not.
 Also note the scope asymmetry it surfaced - TD-043.
 
-**Related**: TD-013's note that `PrismaArgs` erases field names is the same
-root cause seen from the rename side rather than the permission side.
+**Related**: none recorded. This line used to credit TD-013 with a note that
+`PrismaArgs` erases field names; TD-013 never said that (found by the
+2026-08-18 audit, corrected 2026-10-01).
 
 ## TD-040
 
