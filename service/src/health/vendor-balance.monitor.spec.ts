@@ -67,6 +67,17 @@ describe("VendorBalanceMonitor.tick", () => {
     expect(events).not.toHaveBeenCalled();
   });
 
+  it("reads through a model that has a key, not merely the first model of the vendor", async () => {
+    const { monitor, fetchImpl } = build();
+    const keyless = { ...DEEPSEEK, modelCode: "deepseek-a-keyless", config: null } as unknown as AiModelRecord;
+    (monitor as unknown as { registry: { listActiveModels: () => Promise<AiModelRecord[]> } }).registry = {
+      listActiveModels: async () => [keyless, DEEPSEEK],
+    };
+    fetchImpl.mockResolvedValue(balanceResponse("500.00"));
+    await monitor.tick(NOW);
+    expect((await monitor.view()).find((v) => v.providerCode === "deepseek")).toMatchObject({ state: "ok" });
+  });
+
   it("states that Volcengine cannot be read, with the reason - not_supported, no event", async () => {
     const { monitor, fetchImpl, events } = build();
     fetchImpl.mockResolvedValue(balanceResponse("500.00"));

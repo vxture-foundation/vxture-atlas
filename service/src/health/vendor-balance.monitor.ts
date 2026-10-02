@@ -174,13 +174,23 @@ export class VendorBalanceMonitor implements OnModuleInit, OnModuleDestroy {
     }
   }
 
-  /** One active model per active vendor - its endpoint and key are what the balance read uses. */
+  /**
+   * One active model per active vendor - its endpoint and key are what the
+   * balance read uses. A model that names a vault key is preferred: the first
+   * model by code may have none (found by the container gate, where it made
+   * every DeepSeek read fail on "no provider key").
+   */
   private async vendorsToWatch(): Promise<Map<string, AiModelRecord>> {
     const models = await this.registry.listActiveModels();
+    const hasKey = (m: AiModelRecord): boolean => {
+      const alias = (m.config as Record<string, unknown> | null)?.["managedKeyAlias"];
+      return typeof alias === "string" && alias.trim() !== "";
+    };
     const out = new Map<string, AiModelRecord>();
     for (const m of [...models].sort((a, b) => a.modelCode.localeCompare(b.modelCode))) {
-      if (!m.providerActive || out.has(m.provider)) continue;
-      out.set(m.provider, m);
+      if (!m.providerActive) continue;
+      const chosen = out.get(m.provider);
+      if (!chosen || (!hasKey(chosen) && hasKey(m))) out.set(m.provider, m);
     }
     return out;
   }
