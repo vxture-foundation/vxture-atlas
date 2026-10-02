@@ -519,3 +519,54 @@ describe("ModelProbeService", () => {
     });
   });
 });
+
+// ADR-013: the scheduled health probe - the smallest call that proves the model answers.
+describe("ModelProbeService.probeForHealth", () => {
+  const thinkingWire = {
+    wire: { schemaVersion: 3, thinking: { off: { thinking: { type: "disabled" } }, on: { thinking: { type: "enabled" } } } },
+  };
+
+  it("asks a chat model that can turn reasoning off for 16 tokens, with thinking off", async () => {
+    const ctx = build({ model: makeModel({ config: thinkingWire as never }) });
+    const result = await ctx.service.probeForHealth(makeModel({ config: thinkingWire as never }));
+
+    expect(result).toEqual({ ok: true });
+    expect(ctx.provider.chat).toHaveBeenCalledWith(expect.objectContaining({ thinking: "off", maxTokens: 16 }));
+    expect(ctx.provider.chatStream).not.toHaveBeenCalled();
+  });
+
+  it("keeps the larger budget for a model that cannot turn reasoning off - a chain must not fake a failure", async () => {
+    const ctx = build();
+    await ctx.service.probeForHealth(makeModel());
+
+    const request = (ctx.provider.chat.mock.calls[0] as [{ maxTokens: number; thinking?: string }])[0];
+    expect(request.thinking).toBeUndefined();
+    expect(request.maxTokens).toBeGreaterThan(16);
+  });
+
+  it("probes an embedding model with one text and a rerank model with one candidate", async () => {
+    const ctx = build();
+    const embed = vi.fn().mockResolvedValue({ vectors: [[0.1]], usage: { totalTokens: 1 } });
+    const rerank = vi.fn().mockResolvedValue({ results: [], usage: { totalTokens: 2 } });
+    Object.assign(ctx.provider, { embed, rerank });
+
+    await ctx.service.probeForHealth(makeModel({ modelType: "embedding", modelCode: "embedding-3" }));
+    await ctx.service.probeForHealth(makeModel({ modelType: "rerank", modelCode: "rerank" }));
+
+    expect(embed).toHaveBeenCalledWith(expect.objectContaining({ texts: ["ping"] }));
+    expect(rerank).toHaveBeenCalledWith(expect.objectContaining({ query: "ping", candidates: [{ id: "0", text: "ping" }] }));
+    expect(ctx.provider.chat).not.toHaveBeenCalled();
+  });
+
+  it("returns the ORIGINAL error, and records the probe as a test call no tenant pays for", async () => {
+    const refusal = Object.assign(new Error("402"), { status: 402 });
+    const ctx = build({ chat: vi.fn().mockRejectedValue(refusal) });
+
+    const result = await ctx.service.probeForHealth(makeModel());
+
+    expect(result).toEqual({ ok: false, error: refusal });
+    expect(ctx.requestLog.record).toHaveBeenCalledWith(
+      expect.objectContaining({ status: "error", usageType: "test", tenantId: COMMERCE_SENTINEL_UUID }),
+    );
+  });
+});

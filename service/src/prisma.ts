@@ -194,6 +194,16 @@ export interface HealthEventRow {
   affectedRoutes: string[];
 }
 
+/** health.probe_settings - active-probe overrides per model / vendor (incr/09). */
+export interface HealthProbeSettingRow {
+  subjectKind: string;
+  subjectKey: string;
+  probeIntervalMinutes: number | null;
+  probeEnabled: boolean | null;
+  updatedBy: string | null;
+  updatedAt: Date;
+}
+
 interface PrismaMutationResult {
   count: number;
 }
@@ -248,6 +258,7 @@ export interface AtlasPrismaClient {
   changeRecord: PrismaDelegate<ChangeRecordRow>;
   healthSubjectState: PrismaDelegate<HealthSubjectStateRow>;
   healthEvent: PrismaDelegate<HealthEventRow>;
+  healthProbeSetting: PrismaDelegate<HealthProbeSettingRow>;
   $connect(): Promise<void>;
   $disconnect(): Promise<void>;
   /**

@@ -1,3 +1,5 @@
+import { HealthProbeScheduler } from "./health/health-probe.scheduler";
+import { HealthSettingsService } from "./health/health-settings.service";
 import { HealthStoreBootstrap } from "./health/health.store";
 import { ServiceHealthController } from "./health/service-health.controller";
 import { ServiceHealthService } from "./health/service-health.service";
@@ -108,6 +110,8 @@ import { AuditMiddleware } from "./audit/audit.middleware";
     AuditMiddleware,
     ServiceHealthService,
     HealthStoreBootstrap,
+    HealthProbeScheduler,
+    HealthSettingsService,
   ],
   exports: [
     ModelRuntimeService,

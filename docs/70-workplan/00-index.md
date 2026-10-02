@@ -338,9 +338,12 @@ F - service health monitoring (ADR-013, design 120; owner 2026-10-02):
       column-lock check fixed to derive the schemas from the baseline, #101).
       Production had no call in the first minutes after deploy, so the tables
       were still empty - the idle blind spot F1b closes
-- [ ] F1b (P0). Active probes every 10 minutes for idle models, with the
-      probe settings and defaults (design 120 section 4.5); `unknown` after two
-      silent intervals
+- [x] F1b (P0). Active probes for idle probe targets (route-named models
+      plus models seen), the smallest call per model type, every 10 minutes by
+      default; `health.probe_settings` (`incr/09`) with model -> vendor ->
+      `.env` -> built-in resolution, `GET`/`PATCH /capability/health-settings`
+      reporting each value's source; `unknown` after two silent intervals
+      (quietly, `ok` models only)
 - [ ] F2 (P1). Balance polling with the two thresholds (DeepSeek first; verify
       which other vendors expose a balance to the key Atlas holds);
       `model_missing` and `unreachable` split out of `unavailable`

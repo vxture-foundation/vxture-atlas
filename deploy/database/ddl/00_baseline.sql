@@ -640,6 +640,21 @@ CREATE TABLE IF NOT EXISTS health.events (
 
 CREATE INDEX IF NOT EXISTS idx_health_events_cursor
   ON health.events (created_at, id);
+
+-- probe_settings (incr/09): per-model / per-vendor overrides of the active-probe
+-- settings; NULL = inherit (model -> vendor -> .env -> built-in).
+CREATE TABLE IF NOT EXISTS health.probe_settings (
+    subject_kind            varchar(8)    NOT NULL,
+    subject_key             varchar(128)  NOT NULL,
+    probe_interval_minutes  smallint,
+    probe_enabled           boolean,
+    updated_by              varchar(128),
+    updated_at              timestamptz   NOT NULL DEFAULT now(),
+    CONSTRAINT pk_health_probe_settings PRIMARY KEY (subject_kind, subject_key),
+    CONSTRAINT chk_health_probe_settings_kind CHECK (subject_kind IN ('model','provider')),
+    CONSTRAINT chk_health_probe_settings_interval
+      CHECK (probe_interval_minutes IS NULL OR probe_interval_minutes BETWEEN 5 AND 60)
+);
 -- "what has this operator been doing" - the other direction, for review.
 CREATE INDEX IF NOT EXISTS idx_change_records_operator
   ON audit.change_records (operator_sub, occurred_at DESC);

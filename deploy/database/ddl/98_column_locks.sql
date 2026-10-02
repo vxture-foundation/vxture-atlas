@@ -45,6 +45,10 @@ GRANT UPDATE (provider_code, state, since, upstream_status, detail, updated_at)
   ON health.subject_states TO atlas_svc;
 -- events: append-only.
 REVOKE UPDATE ON health.events FROM atlas_svc;
+-- probe_settings (incr/09): the subject is never written; the values are.
+REVOKE UPDATE ON health.probe_settings FROM atlas_svc;
+GRANT UPDATE (probe_interval_minutes, probe_enabled, updated_by, updated_at)
+  ON health.probe_settings TO atlas_svc;
 
 -- --- model (authority = docs/design/data_model_200_schema.md section 1, platform repo) ---
 -- provider_code / model_code are the visible-code identity - never writable;
