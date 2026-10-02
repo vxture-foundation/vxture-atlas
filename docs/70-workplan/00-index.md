@@ -313,9 +313,11 @@ E - usage reaches the platform (ADR-010, owner 2026-09-30):
       check on 2026-10-02 hit a real Doubao 429 and it was not throttling: it
       was `SetLimitExceeded`, a usage cap on the account that paused
       `doubao-seed-2-0-lite` ("Safe Experience Mode"). So on `chat/fast` both
-      the primary and the fallback were accounts the owner has to fix. The S2S path now normalises each attempt, so the
-      status metric counts every attempt, not only the last. **Contract
-      fingerprint moves** (53 codes)
+      the primary and the fallback were accounts the owner has to fix. The
+      S2S path now normalises each attempt, so the status metric counts every
+      attempt, not only the last. **Contract fingerprint moves** (53 codes).
+      Released as v0.7.20 (2026-10-02); consumers told: tenderforge#69,
+      yucer#525, karda#206, vxtpl#98
 - [ ] E7. Operators enter vendor prices (production has none, 2026-10-01).
       Then: confirm new rows are priced, and decide whether to price the
       earlier rows with the same formula
