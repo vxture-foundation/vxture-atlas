@@ -21,3 +21,4 @@ restating its reasoning.
 | ADR-010 | [Usage is reported to the platform as raw tokens, under the caller's product](ADR-010-usage-reported-as-raw-tokens-per-caller.md) | Accepted | 2026-09-30 |
 | ADR-011 | [Every empty usage dimension says why it is empty](ADR-011-every-empty-usage-dimension-says-why.md) | Accepted | 2026-09-30 |
 | ADR-012 | [A price rule is the vendor's price, set in the admin console](ADR-012-price-rules-are-vendor-prices.md) | Accepted | 2026-10-01 |
+| ADR-013 | [Service health is durable Atlas state, pulled by the platform](ADR-013-service-health-is-atlas-state-pulled-by-the-platform.md) | Accepted | 2026-10-02 |

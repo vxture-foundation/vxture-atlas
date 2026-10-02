@@ -325,6 +325,24 @@ E - usage reaches the platform (ADR-010, owner 2026-09-30):
       backfilled with derived values. reqlog is append-only, and what was never
       captured cannot be derived
 
+F - service health monitoring (ADR-013, design 120; owner 2026-10-02):
+
+- [x] F0. Design and ADR. Owner decisions: probe every 10 minutes with the
+      smallest call; balance warning on a minimum amount OR a minimum number of
+      projected days, whichever first; notices to admin only for now
+- [ ] F1 (P0). Durable state per vendor model and per route, route severity,
+      transition events, `GET /capability/health[/events]`, `/readyz`
+      attention list; active probes every 10 minutes for idle models
+- [ ] F2 (P1). Balance polling with the two thresholds (DeepSeek first; verify
+      which other vendors expose a balance to the key Atlas holds);
+      `model_missing` and `unreachable` split out of `unavailable`
+- [ ] F3 (P2). Configuration checks (fallback able to serve the capability -
+      four routes fail this today), degradation, Atlas's own items as
+      components
+- [ ] F4 (platform). Server-side watcher, events into admin notices, admin
+      state view, opera request log showing error code and message - raised
+      on the platform repo
+
 Platform-side, not this repo's write-scope:
 
 - [ ] Remaining S2S callers - admin-bff, varda (TD-004)
