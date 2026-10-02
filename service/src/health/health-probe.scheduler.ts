@@ -36,6 +36,8 @@ export class HealthProbeScheduler implements OnModuleInit, OnModuleDestroy {
   private running = false;
   private global!: GlobalProbeSettings;
   private readonly store = new PrismaHealthStore();
+  /** Models whose last probe was skipped (no usable key), and when. Not a health signal. */
+  private readonly skipped = new Map<string, { at: number; reason: "no_key"; detail?: string }>();
 
   constructor(
     @Inject(ModelRegistryService) private readonly registry: ModelRegistryService,
@@ -77,12 +79,14 @@ export class HealthProbeScheduler implements OnModuleInit, OnModuleDestroy {
         // Two silent intervals: an `ok` model nobody has heard from is unknown.
         upstreamHealth.markUnknownIfSilent(model.modelCode, 2 * intervalMs);
         if (!settings.enabled) continue;
-        const last = upstreamHealth.lastResultAt(model.modelCode);
+        const result = upstreamHealth.lastResultAt(model.modelCode);
+        const skip = this.skipped.get(model.modelCode)?.at;
+        const last = result === undefined ? skip : skip === undefined ? result : Math.max(result, skip);
         if (last === undefined || now - last >= intervalMs) due.push(model);
       }
 
       for (let i = 0; i < due.length; i += CONCURRENCY) {
-        await Promise.all(due.slice(i, i + CONCURRENCY).map((m) => this.probeOne(m)));
+        await Promise.all(due.slice(i, i + CONCURRENCY).map((m) => this.probeOne(m, now)));
       }
       return { probed: due.map((m) => m.modelCode) };
     } catch (error) {
@@ -109,9 +113,24 @@ export class HealthProbeScheduler implements OnModuleInit, OnModuleDestroy {
     return active.filter((m) => wanted.has(m.modelCode));
   }
 
-  private async probeOne(model: AiModelRecord): Promise<void> {
+  /** Why the model's last probe did not run, if it did not. */
+  skipReason(modelCode: string): { reason: "no_key"; detail?: string } | undefined {
+    const s = this.skipped.get(modelCode);
+    return s ? { reason: s.reason, ...(s.detail !== undefined ? { detail: s.detail } : {}) } : undefined;
+  }
+
+  private async probeOne(model: AiModelRecord, now: number): Promise<void> {
     try {
       const result = await this.prober.probeForHealth(model);
+      if (result.skipped) {
+        this.skipped.set(model.modelCode, {
+          at: now,
+          reason: result.skipped,
+          ...(result.detail !== undefined ? { detail: result.detail } : {}),
+        });
+        return;
+      }
+      this.skipped.delete(model.modelCode);
       if (result.ok) upstreamHealth.recordSuccess(model.modelCode, model.provider);
       else upstreamHealth.recordFailure(model.modelCode, model.provider, result.error);
     } catch (error) {

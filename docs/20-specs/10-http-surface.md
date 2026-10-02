@@ -496,7 +496,8 @@ the caller needs**, and tenant identity does not carry that intent. So
 
 On endpoint routing the endpoint's `fallbackModelCode` is the only chain (the
 model's own `config.fallbackModelCodes` does not stack); an endpoint may point
-at any model regardless of `category`; naming one never widens access, since
+at any model regardless of `category` (reported, not refused - see
+`routes[].configIssues` under Service health); naming one never widens access, since
 entitlement is checked against the resolved model. Reasoning:
 [`20-product-definition.md`](./20-product-definition.md).
 
@@ -1098,6 +1099,7 @@ No query parameters (any is `400 HEALTH_UNKNOWN_FILTER`).
 | `routes[]` | **every active route as configured now**, evaluated at read time |
 | `routes[].state` | `ok` (primary not failing) / `degraded` (primary failing, fallback serving) / `down` (nothing serving) |
 | `routes[].severity` | `null` / `warning` / `critical` |
+| `routes[].configIssues` | `[{ role, modelCode, code, detail }]`: a named model that cannot serve the route. `code`: `wrong_type` (a `chat` / `embedding` / `rerank` route naming a model of another type), `model_missing`, `model_inactive` (model or vendor), `no_key` (no active vault key; every call refused before it leaves Atlas). **Such a model counts as not serving the route**: a failing primary with a `wrong_type` fallback is `down`, not `degraded`; a route whose primary has an issue is at best `degraded`. Other categories are not judged by type - `chat/vision` needs an image-capable model, and no model declares that |
 | `vendors[]` | every active vendor (one with an active model), once its first pass has run - within a minute of start |
 | `vendors[].state` | `ok` / `balance_low` / `not_supported` (Atlas cannot read it; `detail` says why) / `unknown` (not read yet, or reads failing for two poll intervals) |
 | `vendors[].currency`, `balance`, `daysLeft` | the last reading; `daysLeft` absent until there are 6 hours of history with some spend |
@@ -1189,8 +1191,9 @@ No query parameters (any is `400 HEALTH_UNKNOWN_FILTER`).
    cannot report its own death - this is the only place it is seen.
 5. `GET /capability/health` is for a status view (admin), or to rebuild state
    after the watcher has lost its cursor; it is not needed for notifications.
-6. `/readyz` `checks.routeHealth` (`warn`, `routesDown: [...]`) repeats route
-   `down` for anything that already polls `/readyz`; it is not a second
+6. `/readyz` `checks.routeHealth` (`warn`, `routesDown: [...]`,
+   `routesMisconfigured: [...]`) repeats route `down` and the routes with
+   `configIssues` for anything that already polls `/readyz`; it is not a second
    notification source.
 
 ### Probe settings - `GET` / `PATCH /capability/health-settings`
@@ -1214,7 +1217,8 @@ minutes); there is no model level.
   "targets": [
     { "modelCode": "deepseek-v4-pro", "providerCode": "deepseek", "state": "ok",
       "lastResultAt": "2026-10-02T10:05:00.000Z",
-      "intervalMinutes": 30, "intervalSource": "model", "enabled": true, "enabledSource": "default" }
+      "intervalMinutes": 30, "intervalSource": "model", "enabled": true, "enabledSource": "default",
+      "probeSkipped": null }
   ],
   "balanceGlobal": {
     "minAmount": { "CNY": { "value": 100, "source": "default" }, "USD": { "value": 15, "source": "default" } },
@@ -1239,7 +1243,10 @@ cannot take a balance threshold; the form should show `reason` instead of the
 fields.
 
 `targets` are the models probed: the active models a route names, plus any
-model already seen. Each value carries the level it came from (`model` /
+model already seen. `probeSkipped` is `{ "reason": "no_key", "detail" }` when
+the model has no usable key: nothing is sent (an empty key would come back as
+a vendor `401` and read as the vendor refusing Atlas), the model's state is not
+touched, and the probe is tried again after one interval. Each value carries the level it came from (`model` /
 `provider` / `global` / `default`).
 
 `PATCH /capability/health-settings/:subject`, `:subject` = `model:<model_code>`

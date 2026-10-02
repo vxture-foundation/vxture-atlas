@@ -3,11 +3,49 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ProviderHttpError } from "../providers/base.provider";
 import { prisma } from "../prisma";
 import { decodeCursor, encodeCursor, ServiceHealthService } from "./service-health.service";
+import { mockRouteModelFacts } from "./route-facts.fixtures";
 import { upstreamHealth } from "./upstream-health";
+
+describe("ServiceHealthService.current - a route naming a model that cannot serve the route, design 120 section 4.4", () => {
+  beforeEach(() => {
+    upstreamHealth.resetForTests();
+    vi.spyOn(prisma.modelEndpoint, "findMany").mockResolvedValue([
+      { code: "rerank/default", category: "rerank", primaryModelCode: "rerank", fallbackModelCode: "glm-5.2" },
+      { code: "rerank/quality", category: "rerank", primaryModelCode: "glm-5.2", fallbackModelCode: "rerank" },
+    ] as never);
+    mockRouteModelFacts({ rerank: { modelType: "rerank" } });
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+    upstreamHealth.resetForTests();
+  });
+
+  it("does not count a chat model as a rerank fallback: primary down means the route is down", async () => {
+    upstreamHealth.recordFailure("rerank", "zhipu", new ProviderHttpError("x", 402, "p", ""));
+    upstreamHealth.recordSuccess("glm-5.2", "zhipu");
+
+    const view = await new ServiceHealthService({ view: async () => [] } as never).current();
+    const route = view.routes.find((r) => r.code === "rerank/default");
+
+    expect(route).toMatchObject({ state: "down", severity: "critical" });
+    expect(route?.configIssues).toEqual([
+      expect.objectContaining({ role: "fallback", modelCode: "glm-5.2", code: "wrong_type" }),
+    ]);
+  });
+
+  it("a chat model as the PRIMARY leaves the route served only by its fallback: degraded, whatever the chat model's health", async () => {
+    upstreamHealth.recordSuccess("glm-5.2", "zhipu");
+    upstreamHealth.recordSuccess("rerank", "zhipu");
+
+    const view = await new ServiceHealthService({ view: async () => [] } as never).current();
+    expect(view.routes.find((r) => r.code === "rerank/quality")).toMatchObject({ state: "degraded", severity: "warning" });
+  });
+});
 
 describe("ServiceHealthService.current - what the platform's watcher reads", () => {
   beforeEach(() => {
     upstreamHealth.resetForTests();
+    mockRouteModelFacts();
     vi.spyOn(prisma.modelEndpoint, "findMany").mockResolvedValue([
       { code: "chat/default", primaryModelCode: "deepseek-flash", fallbackModelCode: "doubao-turbo" },
       { code: "chat/fast", primaryModelCode: "doubao-lite", fallbackModelCode: "deepseek-flash" },

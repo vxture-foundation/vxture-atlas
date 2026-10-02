@@ -4,7 +4,7 @@ import { ModelRuntimeException } from "./runtime.errors";
 import type { AiModelRecord } from "../types/runtime.types";
 
 /** Providers whose api key is optional (endpoint-local auth, e.g. bearer baked into config). */
-const API_KEY_OPTIONAL_PROVIDERS = new Set(["private", "custom", "self-hosted"]);
+export const API_KEY_OPTIONAL_PROVIDERS: ReadonlySet<string> = new Set(["private", "custom", "self-hosted"]);
 
 export interface ResolveApiKeyDeps {
   /** Looks up a provider-key-vault secret. */

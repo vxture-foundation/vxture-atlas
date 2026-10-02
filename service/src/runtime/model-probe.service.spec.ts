@@ -523,8 +523,19 @@ describe("ModelProbeService", () => {
 // ADR-013: the scheduled health probe - the smallest call that proves the model answers.
 describe("ModelProbeService.probeForHealth", () => {
   const thinkingWire = {
+    managedKeyAlias: "primary",
     wire: { schemaVersion: 3, thinking: { off: { thinking: { type: "disabled" } }, on: { thinking: { type: "enabled" } } } },
   };
+  const keyed = { managedKeyAlias: "primary" } as never;
+
+  it("does not call a model with no usable key - an empty key would come back as a vendor 401", async () => {
+    const ctx = build();
+    const result = await ctx.service.probeForHealth(makeModel());
+
+    expect(result).toMatchObject({ ok: false, skipped: "no_key" });
+    expect(ctx.provider.chat).not.toHaveBeenCalled();
+    expect(ctx.requestLog.record).not.toHaveBeenCalled();
+  });
 
   it("asks a chat model that can turn reasoning off for 16 tokens, with thinking off", async () => {
     const ctx = build({ model: makeModel({ config: thinkingWire as never }) });
@@ -537,7 +548,7 @@ describe("ModelProbeService.probeForHealth", () => {
 
   it("keeps the larger budget for a model that cannot turn reasoning off - a chain must not fake a failure", async () => {
     const ctx = build();
-    await ctx.service.probeForHealth(makeModel());
+    await ctx.service.probeForHealth(makeModel({ config: keyed }));
 
     const request = (ctx.provider.chat.mock.calls[0] as [{ maxTokens: number; thinking?: string }])[0];
     expect(request.thinking).toBeUndefined();
@@ -550,8 +561,8 @@ describe("ModelProbeService.probeForHealth", () => {
     const rerank = vi.fn().mockResolvedValue({ results: [], usage: { totalTokens: 2 } });
     Object.assign(ctx.provider, { embed, rerank });
 
-    await ctx.service.probeForHealth(makeModel({ modelType: "embedding", modelCode: "embedding-3" }));
-    await ctx.service.probeForHealth(makeModel({ modelType: "rerank", modelCode: "rerank" }));
+    await ctx.service.probeForHealth(makeModel({ modelType: "embedding", modelCode: "embedding-3", config: keyed }));
+    await ctx.service.probeForHealth(makeModel({ modelType: "rerank", modelCode: "rerank", config: keyed }));
 
     expect(embed).toHaveBeenCalledWith(expect.objectContaining({ texts: ["ping"] }));
     expect(rerank).toHaveBeenCalledWith(expect.objectContaining({ query: "ping", candidates: [{ id: "0", text: "ping" }] }));
@@ -562,7 +573,7 @@ describe("ModelProbeService.probeForHealth", () => {
     const refusal = Object.assign(new Error("402"), { status: 402 });
     const ctx = build({ chat: vi.fn().mockRejectedValue(refusal) });
 
-    const result = await ctx.service.probeForHealth(makeModel());
+    const result = await ctx.service.probeForHealth(makeModel({ config: keyed }));
 
     expect(result).toEqual({ ok: false, error: refusal });
     expect(ctx.requestLog.record).toHaveBeenCalledWith(

@@ -254,10 +254,27 @@ export class ModelProbeService {
    * platform sentinel, never reported to platform metering - no tenant pays.
    * No cooldown: the scheduler is the only caller and paces itself.
    */
-  async probeForHealth(model: AiModelRecord): Promise<{ ok: boolean; error?: unknown }> {
+  async probeForHealth(
+    model: AiModelRecord,
+  ): Promise<{ ok: boolean; error?: unknown; skipped?: "no_key"; detail?: string }> {
     const requestId = `health-probe-${randomUUID()}`;
+    // No usable key: say so and do not call. Sent with an empty key, the
+    // vendor answers 401 and the model is filed as account_refused - a vendor
+    // refusing Atlas, when the truth is that Atlas has nothing to send.
+    let apiKey: string;
+    try {
+      apiKey = await resolveApiKey(
+        {
+          resolveManagedKey: (providerCode, keyAlias) =>
+            this.providerKeys.resolveKey(providerCode, keyAlias),
+        },
+        model,
+        requestId,
+      );
+    } catch (error) {
+      return { ok: false, skipped: "no_key", detail: errorMessage(error) };
+    }
     const provider = this.router.resolve(model);
-    const apiKey = await this.resolveKeyQuietly(model, requestId);
     const startedAt = Date.now();
     let outcome: { ok: boolean; error?: unknown; totalTokens: number };
 

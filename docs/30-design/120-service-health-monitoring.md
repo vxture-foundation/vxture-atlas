@@ -138,11 +138,34 @@ those codes are `account`; its throttling codes (`1302`, `1305`, `1313`) stay
 
 ### 4.4 Configuration checks
 
-When a route is written, and by a periodic sweep: the fallback must be able to
-serve the route's capability (an embedding route whose fallback is a chat
-model cannot fail over), and every model a route names must exist and be
-active. Today `embedding/fast`, `rerank/default`, `rerank/fast` and
-`chat/vision` all have a fallback that cannot serve them.
+Every model a route names must be able to serve it: exist, be active under an
+active vendor, have a usable key, and - for a `chat` / `embedding` / `rerank`
+route - be of that type. The embed and rerank paths call the vendor's
+embedding / rerank API, so a chat model named there fails on every call.
+
+Production, 2026-10-02: seven of twelve routes named a model of the wrong type.
+`embedding/default` / `fast` / `quality` and `rerank/default` / `fast` have a
+chat model as fallback; `rerank/quality` has one as its **primary**.
+
+- **Reported, on every read**: `/capability/health` `routes[].configIssues`,
+  and `/readyz` `routeHealth.routesMisconfigured`. Computed from the routes as
+  configured, so a fix shows at the next read.
+- **Counted in the route's state**: a model that cannot serve the route counts
+  as not serving it. Before this, `rerank/default` with its primary down and a
+  healthy chat fallback read `degraded` ("callers are still served") while
+  every caller failed; it now reads `down`. `rerank/quality` reads `degraded`
+  for as long as its primary is a chat model.
+- **Not refused at write time.** The product definition records the opposite
+  as a contract ("an endpoint may point at any model", `20-specs/20`).
+  Refusing such a write would reverse it; that is an open owner decision, not
+  part of this check.
+- **Not judged**: a capability no model declares. `chat/vision` needs an
+  image-capable model and no model declares `vision`, so it is not judged by
+  its name.
+- **Probes skip a model with no usable key** and say so
+  (`health-settings` `targets[].probeSkipped`), instead of sending an empty key
+  that the vendor answers with `401` - which read as the vendor refusing
+  Atlas.
 
 ### 4.5 Settings and defaults
 

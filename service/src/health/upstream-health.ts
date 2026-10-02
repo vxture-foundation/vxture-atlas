@@ -6,12 +6,12 @@ import { UpstreamTimeoutError } from "../providers/upstream-timeout";
 import { metricsRegistry } from "../runtime/metrics.registry";
 import { ModelRuntimeException } from "../runtime/runtime.errors";
 import { upstreamFailureClass } from "../runtime/upstream-status";
+import { evaluateRoute, type RouteConfigIssue } from "./route-config";
 import {
   initialRecord,
   modelSeverity,
   nextRecord,
   routeSeverity,
-  routeState,
   type HealthSeverity,
   type HealthSignal,
   type ModelHealthRecord,
@@ -36,6 +36,9 @@ export interface RouteDef {
   code: string;
   primary: string;
   fallback: string | null;
+  category?: string;
+  /** Why a named model cannot serve this route (design 120 section 4.4); absent = not checked. */
+  configIssues?: RouteConfigIssue[];
 }
 
 export interface Transition {
@@ -330,11 +333,7 @@ export class UpstreamHealth {
   private reevaluateRoutes(at: number): Transition[] {
     const transitions: Transition[] = [];
     for (const route of this.routeDefs) {
-      const to = routeState(
-        this.modelState(route.primary),
-        route.fallback ? this.modelState(route.fallback) : undefined,
-        route.fallback !== null,
-      );
+      const to = evaluateRoute(route, (code) => this.modelState(code));
       const from = this.routes.get(route.code) ?? "ok";
       this.routes.set(route.code, to);
       if (from === to) continue;
