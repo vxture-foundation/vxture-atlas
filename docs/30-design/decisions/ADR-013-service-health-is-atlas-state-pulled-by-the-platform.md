@@ -27,7 +27,12 @@ no notion of a route being down. Design: `../120-service-health-monitoring.md`.
 4. **The platform pulls** current state and events from the operator plane and
    watches Atlas's liveness itself, because Atlas cannot report its own death.
    Notices go to **admin** first; other channels are not connected yet.
-5. Atlas defines the interface; the platform decides how it consumes it.
+5. **Every setting has a default** (owner, 2026-10-02): probe interval and
+   on/off, balance thresholds and poll interval resolve model -> vendor ->
+   server `.env` -> built-in, are edited from **opera**, and are reported with
+   the value in effect and where it came from. Notification channels are the
+   platform's, edited in admin.
+6. Atlas defines the interface; the platform decides how it consumes it.
 
 ## Consequences
 
