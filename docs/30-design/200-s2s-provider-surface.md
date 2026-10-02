@@ -115,8 +115,31 @@ Applies to every `/v1` surface, generation included.
   usually the whole `maxTokens` spent on reasoning) -> `422
   OUTPUT_BUDGET_EXHAUSTED`, `retryable: false`, same breaker exemption. Raise
   `maxTokens`, or send `thinking: "off"`.
-- Upstream `401`/`403`/`404` (Atlas's own key or model mapping)
-  and `408`/`429`/`5xx` stay `PROVIDER_UNAVAILABLE` and do count.
+- **The upstream is throttling Atlas** (it answered `429`) -> `429
+  RATE_LIMITED`, `retryable: true`, with the vendor's own `Retry-After` as
+  `retryAfterMs` when it sent one. The fallback chain is still tried. It does
+  **not** count toward the circuit breaker: a busy model is not a broken one,
+  and counting it took Doubao out for 30 s under one caller's burst on
+  2026-10-01, sending every request to a fallback that could not serve.
+- **The upstream refused Atlas's own account** (`401` key refused, `402`
+  payment required - an exhausted balance, `403` forbidden, and a `429` whose
+  body names an account limit) -> `503 UPSTREAM_ACCOUNT_REFUSED`,
+  `retryable: false`, with the vendor's own words in `message`: nothing changes
+  until the owner tops up, rotates the key or lifts the limit. Vendors reuse
+  `429` for both: on 2026-10-02 Doubao's 429 turned out to be `SetLimitExceeded`
+  - a usage cap set on the account had paused the model ("Safe Experience
+  Mode"). The account-limit codes are a list of observed vendor codes
+  (`ACCOUNT_LIMIT_SIGNATURES` in `runtime/upstream-status.ts`), extended only
+  from observation. The fallback chain is still tried, and the
+  breaker does count it - skipping a dead account saves a round trip.
+- Upstream `404` (model mapping), `408` and `5xx` stay `PROVIDER_UNAVAILABLE`
+  and do count.
+- **When every candidate failed**, the caller gets the last failure - unless an
+  earlier candidate failed in a way waiting fixes and the last did not. A
+  throttled primary plus a dead-account fallback is reported as the retryable
+  `RATE_LIMITED`: a retry succeeds once the primary has room, where the 402
+  would have said give up. Every failed upstream call is also counted by vendor
+  and status (`upstream_http_errors_total`).
 
 ## 2. A1 - Embedding
 

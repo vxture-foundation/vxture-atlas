@@ -1154,7 +1154,8 @@ describe("ModelRuntimeService runtime flow", () => {
       expect(message.length).toBeLessThan(400);
     });
 
-    it.each([401, 403, 404, 429, 500, 503])(
+    // 429 left this list on 2026-10-01 (owner): see the RATE_LIMITED tests below.
+    it.each([401, 402, 403, 404, 500, 503])(
       "still counts an upstream %i against the breaker - a platform or capacity fault every caller shares",
       async (status) => {
         const { service, provider, circuitBreaker } = makeRuntime();
@@ -1171,6 +1172,60 @@ describe("ModelRuntimeService runtime flow", () => {
         expect(circuitBreaker.isTripped("primary-model")).toBe(true);
       },
     );
+
+    // Production, 2026-10-01 evening: Doubao answered 429 under one caller's
+    // burst, the breaker took it out for 30 s, every request fell through to a
+    // DeepSeek account answering 402, and 180 of 188 calls failed - each one
+    // marked retryable, so the caller retried into the same wall.
+    it("answers an upstream 429 as RATE_LIMITED with the vendor's wait, and does not trip the breaker", async () => {
+      const { service, provider, fallbackProvider, circuitBreaker } = makeRuntime();
+      provider.chat.mockRejectedValue(
+        new ProviderHttpError("busy", 429, "primary", "", 7_000),
+      );
+      fallbackProvider.chat.mockRejectedValue(
+        new ProviderHttpError("busy", 429, "fallback", "", 7_000),
+      );
+
+      let last: ModelRuntimeException | undefined;
+      for (let i = 0; i < 6; i += 1) {
+        last = (await service
+          .chat(makeRequest({ modelCode: "primary-model", requestId: `rl-${i}` }))
+          .catch((e: unknown) => e)) as ModelRuntimeException;
+      }
+
+      expect(last?.code).toBe("RATE_LIMITED");
+      expect(last?.getResponse()).toMatchObject({ retryable: true, retryAfterMs: 7_000 });
+      expect(circuitBreaker.isTripped("primary-model")).toBe(false);
+    });
+
+    it("answers an upstream 402 as UPSTREAM_ACCOUNT_REFUSED - not retryable, the owner has to act", async () => {
+      const { service, provider, fallbackProvider } = makeRuntime();
+      provider.chat.mockRejectedValue(new ProviderHttpError("pay", 402, "primary", ""));
+      fallbackProvider.chat.mockRejectedValue(new ProviderHttpError("pay", 402, "fallback", ""));
+
+      const error = (await service
+        .chat(makeRequest({ modelCode: "primary-model", requestId: "acct" }))
+        .catch((e: unknown) => e)) as ModelRuntimeException;
+
+      expect(error.code).toBe("UPSTREAM_ACCOUNT_REFUSED");
+      expect(error.getResponse()).toMatchObject({ retryable: false });
+      expect((error.getResponse() as { message: string }).message).toContain("payment required");
+    });
+
+    it("reports the retryable failure when the chain mixes a throttled primary and a dead-account fallback", async () => {
+      const { service, provider, fallbackProvider } = makeRuntime();
+      provider.chat.mockRejectedValue(new ProviderHttpError("busy", 429, "primary", "", 2_000));
+      fallbackProvider.chat.mockRejectedValue(new ProviderHttpError("pay", 402, "fallback", ""));
+
+      const error = (await service
+        .chat(makeRequest({ modelCode: "primary-model", requestId: "mixed" }))
+        .catch((e: unknown) => e)) as ModelRuntimeException;
+
+      // A retry succeeds once the primary has room; the 402 would say give up.
+      expect(error.code).toBe("RATE_LIMITED");
+      expect(error.getResponse()).toMatchObject({ retryable: true });
+      expect(fallbackProvider.chat).toHaveBeenCalled();
+    });
 
     it("applies the same rule on the streaming path", async () => {
       const { service, provider, fallbackProvider, circuitBreaker } =

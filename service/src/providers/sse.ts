@@ -1,7 +1,7 @@
 import { EventSourceParserStream } from "eventsource-parser/stream";
 import type { EventSourceMessage } from "eventsource-parser/stream";
 
-import { ProviderHttpError } from "./base.provider";
+import { parseRetryAfterMs, ProviderHttpError } from "./base.provider";
 import { describeAbort, guardTimeToFirstByte } from "./upstream-timeout";
 
 /**
@@ -80,6 +80,7 @@ export async function openSseRequest(options: {
       response.status,
       options.providerName,
       await safeReadText(response),
+      parseRetryAfterMs(response.headers.get("retry-after")),
     );
   }
 

@@ -1,5 +1,5 @@
 {
-  "fingerprint": "c1-5f484ea774f6",
+  "fingerprint": "c1-3d7157ece0a6",
   "errorCodes": [
     {
       "code": "APPLICATION_ID_REQUIRED",
@@ -191,6 +191,10 @@
     },
     {
       "code": "UNKNOWN_FILTER",
+      "retryable": false
+    },
+    {
+      "code": "UPSTREAM_ACCOUNT_REFUSED",
       "retryable": false
     },
     {

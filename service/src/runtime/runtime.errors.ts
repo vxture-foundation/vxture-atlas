@@ -98,6 +98,16 @@ export type ModelRuntimeErrorCode =
    * budget, not the model's health - no breaker count.
    */
   | "OUTPUT_BUDGET_EXHAUSTED"
+  /**
+   * The upstream refused ATLAS's own account - 401 (key refused), 402
+   * (payment required: an exhausted balance), 403 (forbidden for this key).
+   * Found on production 2026-10-01: DeepSeek answered 402 for two days, filed
+   * as PROVIDER_UNAVAILABLE (retryable), so callers retried a request that
+   * could only fail again. Not retryable: nothing changes until the owner
+   * tops up or rotates the key. The chain still tries the next candidate, and
+   * the breaker still counts it - skipping a dead account saves a round trip.
+   */
+  | "UPSTREAM_ACCOUNT_REFUSED"
   // --- request body ---
   // Raised by the JSON parser, before routing, auth, or any /v1 surface code
   // runs - so no requestId exists yet and no reqlog row is written.
@@ -193,6 +203,8 @@ const RETRYABLE: Record<ModelRuntimeErrorCode, boolean> = {
   // The identical request is refused identically; the caller has to shrink or
   // split it. The same reasoning covers both body codes below.
   UPSTREAM_REJECTED_REQUEST: false,
+  // Waiting does not top up an account or rotate a key; the owner does.
+  UPSTREAM_ACCOUNT_REFUSED: false,
   CONTEXT_LENGTH_EXCEEDED: false,
   // Waiting does not change what the routed model can do; an operator or a
   // different route does.

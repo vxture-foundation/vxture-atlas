@@ -39,7 +39,12 @@ import { resolveApiKey, managedKeyAliasOf } from "./resolve-api-key";
 import { modelBehaviorVersion } from "../model-behavior-version";
 import { batch4Columns, billingReasons, hostOf } from "../reqlog/record-facts";
 import { ModelRuntimeException } from "./runtime.errors";
-import { recordUpstreamHttpStatus, upstreamStatusHint } from "./upstream-status";
+import {
+  classifyUpstreamStatus,
+  preferReported,
+  recordUpstreamHttpStatus,
+  upstreamStatusHint,
+} from "./upstream-status";
 import { RequestLogService } from "../reqlog/request-log.service";
 import {
   PlatformEntitlementClient,
@@ -373,8 +378,7 @@ export async function runWithS2sFailover<T>(
     (code, i, all) => all.indexOf(code) === i,
   );
 
-  let lastError: unknown;
-  let lastGated: GatedModel | undefined;
+  let reported: ModelRuntimeException | undefined;
 
   for (const [index, modelCode] of candidates.entries()) {
     let gated: GatedModel;
@@ -401,11 +405,13 @@ export async function runWithS2sFailover<T>(
       // the chat path.
       continue;
     }
-    lastGated = gated;
     try {
       return await attempt(gated);
     } catch (error) {
-      lastError = error;
+      reported = preferReported(
+        reported,
+        toS2sProviderError(error, gated.model, gated.requestId),
+      );
       if (index === candidates.length - 1) break;
     } finally {
       // The gate acquired a concurrency slot when a max_concurrent policy
@@ -416,7 +422,7 @@ export async function runWithS2sFailover<T>(
     }
   }
 
-  throw toS2sProviderError(lastError, lastGated!.model, lastGated!.requestId);
+  throw reported!;
 }
 
 /**
@@ -585,6 +591,13 @@ export function toS2sProviderError(
   if (error instanceof ModelRuntimeException) {
     return error;
   }
+
+  const classified = classifyUpstreamStatus(error, {
+    requestId,
+    modelCode: model.modelCode,
+    provider: model.provider,
+  });
+  if (classified !== undefined) return classified;
 
   if (error instanceof ProviderCapabilityNotImplementedError) {
     return new ModelRuntimeException(

@@ -301,6 +301,21 @@ E - usage reaches the platform (ADR-010, owner 2026-09-30):
       09-30 (account balance), every one filed as `PROVIDER_UNAVAILABLE` and
       absorbed by failover to Doubao, so nothing named it. Released as
       v0.7.19 (2026-10-01). Topping up the DeepSeek account is the owner's
+- [x] E9. Upstream 429 and account failures answer the caller correctly
+      (owner, 2026-10-02, after the evening of 10-01: on `chat/fast` Doubao
+      answered 429 under tenderforge's burst, the breaker took it out for
+      30 s, every request fell through to a DeepSeek account answering 402,
+      and 180 of 188 calls failed - all marked retryable, so they were retried
+      into the same wall). Upstream 429 -> `RATE_LIMITED` with the vendor's
+      Retry-After, outside the breaker; 401/402/403, **and a 429 whose body
+      names an account limit** -> `UPSTREAM_ACCOUNT_REFUSED` (new, not
+      retryable); a mixed chain reports the retryable failure. The container
+      check on 2026-10-02 hit a real Doubao 429 and it was not throttling: it
+      was `SetLimitExceeded`, a usage cap on the account that paused
+      `doubao-seed-2-0-lite` ("Safe Experience Mode"). So on `chat/fast` both
+      the primary and the fallback were accounts the owner has to fix. The S2S path now normalises each attempt, so the
+      status metric counts every attempt, not only the last. **Contract
+      fingerprint moves** (53 codes)
 - [ ] E7. Operators enter vendor prices (production has none, 2026-10-01).
       Then: confirm new rows are priced, and decide whether to price the
       earlier rows with the same formula
