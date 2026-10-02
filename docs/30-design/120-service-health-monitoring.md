@@ -71,9 +71,13 @@ fixes only Atlas's side of the interface.
 
 ### 4.1 Passive
 
-Every real call is classified as in §2 (v0.7.20 already does `account` and
-`rate_limited`; `model_missing` and `unreachable` are split out of today's
-`unavailable`). No extra upstream traffic.
+Every real call is classified as in §2. No extra upstream traffic.
+
+The `account` / `rate_limited` split for a `429` reads the vendor's own code.
+Zhipu answers arrears and package exhaustion with `429` plus a business code
+(`1113` arrears; `1308`-`1321` package, quota and account conditions), so
+those codes are `account`; its throttling codes (`1302`, `1305`, `1313`) stay
+`rate_limited`.
 
 ### 4.2 Active probes
 
@@ -98,20 +102,39 @@ Every real call is classified as in §2 (v0.7.20 already does `account` and
 
 ### 4.3 Balance warnings
 
-- For vendors with a balance API, Atlas polls the balance hourly. DeepSeek
-  documents one (`GET /user/balance`). Whether Volcengine Ark and Zhipu can be
-  queried with the same credential Atlas holds is **to be verified** before
-  implementation; a vendor without one stays failure-only, and the health view
-  says so (ADR-011's vocabulary: `not_supported`).
+- Atlas reads the balance of every active vendor it can, every 60 minutes by
+  default, with the same key its calls use. Which vendor can be read is decided
+  by the **host** its models call, not the provider code:
+
+  | Vendor | Host | Balance |
+  |---|---|---|
+  | DeepSeek | `api.deepseek.com` | `GET /user/balance` (Bearer key): currency, total, `is_available` |
+  | Volcengine Ark | `*.volces.com` | `not_supported`: only the billing API (`QueryBalanceAcct`) reports it, and that needs an account AK/SK; Atlas holds an Ark API key |
+  | Zhipu | `open.bigmodel.cn` | `not_supported`: no balance API; arrears show on calls as `1113` (§4.1) |
+  | any other | - | `not_supported`, naming the host |
+
+  A vendor that cannot be read stays failure-only for balance, and says why
+  (ADR-011's vocabulary: `not_supported`).
 - Two thresholds per vendor, **either one triggers** (owner, 2026-10-02):
   - `minBalance`: an amount in the vendor's currency;
   - `minDays`: projected days left = balance / average daily spend, the spend
     taken from the balance's own decline over the trailing 7 days (top-ups
-    excluded). Atlas's own price rules are not used: production has none, and
-    the vendor's balance is the authority on what was spent.
-- Thresholds live on the provider row and are set from admin. A configured
-  threshold must take effect (no configurable-but-inert): if the vendor has no
-  balance API, admin is told the field cannot apply.
+    excluded: spend is the sum of the decreases between readings). Needs 6
+    hours of history and some spend; until then days left is unknown and only
+    the amount can warn. Atlas's own price rules are not used: the vendor's
+    balance is the authority on what was spent, including spend that did not
+    go through Atlas.
+- Every reading is kept in `health.balance_samples` (append-only).
+- Severity: `warning` when a threshold is crossed; `critical` when the vendor
+  says the key can no longer spend (`is_available: false`) or nothing is left.
+- The state is re-judged every minute from the last reading, so a threshold
+  edited in opera takes effect within a minute without another read.
+- A read that keeps failing for two poll intervals moves the vendor to
+  `unknown` with the error (`warning`): a stale `ok` is not one Atlas can vouch
+  for.
+- Thresholds are set from opera (§4.5). A configured threshold must take effect
+  (no configurable-but-inert): on a `not_supported` vendor a threshold is
+  refused with the reason, and the settings view marks it not applicable.
 
 ### 4.4 Configuration checks
 
@@ -159,8 +182,16 @@ No configurable-but-inert: every value is reported with its source; an
 unreadable `.env` value refuses start-up; a setting on a model or vendor that
 does not exist is refused (`404 HEALTH_SETTING_UNKNOWN_SUBJECT`). A
 vendor without a balance API reports its thresholds as not applicable, rather
-than accepting a number that can never fire. A value outside its range is
+than accepting a number that can never fire. A balance threshold on a model is
+refused (a balance belongs to the account). A value outside its range is
 refused on write with a 400 that says why.
+
+The global level's `.env` names: `HEALTH_PROBE_INTERVAL_MINUTES`,
+`HEALTH_PROBES_ENABLED`, `HEALTH_BALANCE_MIN_AMOUNT_CNY`,
+`HEALTH_BALANCE_MIN_AMOUNT_USD`, `HEALTH_BALANCE_MIN_DAYS`,
+`HEALTH_BALANCE_POLL_MINUTES`. A vendor whose currency has no global amount
+has no amount threshold until one is set on the vendor; the view reports it as
+`null`, not a guess.
 
 ## 5. State (Atlas)
 
@@ -171,11 +202,22 @@ refused on write with a 400 that says why.
 | `ok` | a call or probe succeeds | any failure state below |
 | `rate_limited` | throttling `429`s for 5 minutes | a success |
 | `account_refused` | **one** `account` failure - it does not fix itself | a success (real or probe) |
-| `unavailable` | the circuit breaker trips, or every call / probe in 10 minutes failed `unavailable` / `unreachable` | a success |
+| `unavailable` | the circuit breaker trips, or every call / probe in 10 minutes failed `unavailable` / `unreachable`, and the latest failure was an answer (5xx, timeout) | a success |
+| `unreachable` | the same, but the latest failure never reached the vendor (DNS / TLS / connect). Split out because a different person fixes it: the network path from Atlas, not the vendor | a success |
 | `model_missing` | `404` from the vendor | a success, or the model is re-pointed |
 | `unknown` | never seen yet; or an `ok` model with no result for 2 intervals (quietly - idleness is not news). A failing model is never moved here: with no successful call there is no reason to think it recovered | any result |
 
-Plus, per vendor: `balance_low` (from §4.3), independent of the model state.
+### 5.1a Per vendor - balance
+
+| State | Entered when | Left when |
+|---|---|---|
+| `ok` | the last reading is above both thresholds | a threshold crossed |
+| `balance_low` | the last reading crossed a threshold (§4.3) | a reading above both |
+| `not_supported` | Atlas cannot read this vendor's balance; `detail` says why (stored quietly - a fact, not news) | the vendor's models move to a readable host |
+| `unknown` | not read yet; or reads failing for two poll intervals | a reading |
+
+Independent of the model state: a vendor can be `balance_low` while its models
+serve, which is the point - the warning comes before the `402`.
 
 ### 5.2 Per route - this is the severity
 

@@ -1,4 +1,4 @@
-import { HttpStatus, Inject, Injectable, NotFoundException } from "@nestjs/common";
+import { BadRequestException, HttpStatus, Inject, Injectable, NotFoundException } from "@nestjs/common";
 
 import { prisma } from "../prisma";
 import type { UpdateProbeSettingInput } from "../types/runtime.types";
@@ -12,18 +12,30 @@ import {
   type ProbeSettingRow,
 } from "./probe-settings";
 import { upstreamHealth } from "./upstream-health";
+import {
+  effectiveBalanceSettings,
+  type BalanceSettingRow,
+  type EffectiveBalanceSettings,
+  type GlobalBalanceSettings,
+} from "./vendor-balance";
+import { VendorBalanceMonitor } from "./vendor-balance.monitor";
 
 export interface ProbeSettingOverride {
   subjectKind: string;
   subjectKey: string;
   probeIntervalMinutes: number | null;
   probeEnabled: boolean | null;
+  balanceMinAmount: number | null;
+  balanceMinDays: number | null;
+  balancePollMinutes: number | null;
   updatedBy: string | null;
   updatedAt: string;
 }
 
 export interface HealthSettingsView {
   global: GlobalProbeSettings;
+  /** The `.env` / built-in level of the balance thresholds (P1). */
+  balanceGlobal: GlobalBalanceSettings;
   overrides: ProbeSettingOverride[];
   /** Every probe target, with the settings in effect and the level each came from. */
   targets: ({
@@ -32,6 +44,15 @@ export interface HealthSettingsView {
     state: string;
     lastResultAt: string | null;
   } & EffectiveProbeSettings)[];
+  /** Every watched vendor, with the balance thresholds in effect and the level each came from. */
+  vendors: ({
+    providerCode: string;
+    state: string;
+    currency: string | null;
+    /** False for a vendor whose balance Atlas cannot read; `reason` says why, and no threshold is accepted. */
+    applicable: boolean;
+    reason?: string;
+  } & EffectiveBalanceSettings)[];
 }
 
 function toOverride(r: {
@@ -39,10 +60,23 @@ function toOverride(r: {
   subjectKey: string;
   probeIntervalMinutes: number | null;
   probeEnabled: boolean | null;
+  balanceMinAmount?: { toString(): string } | number | null;
+  balanceMinDays?: number | null;
+  balancePollMinutes?: number | null;
   updatedBy: string | null;
   updatedAt: Date;
 }): ProbeSettingOverride {
-  return { ...r, updatedAt: r.updatedAt.toISOString() };
+  return {
+    subjectKind: r.subjectKind,
+    subjectKey: r.subjectKey,
+    probeIntervalMinutes: r.probeIntervalMinutes,
+    probeEnabled: r.probeEnabled,
+    balanceMinAmount: r.balanceMinAmount != null ? Number(r.balanceMinAmount.toString()) : null,
+    balanceMinDays: r.balanceMinDays ?? null,
+    balancePollMinutes: r.balancePollMinutes ?? null,
+    updatedBy: r.updatedBy,
+    updatedAt: r.updatedAt.toISOString(),
+  };
 }
 
 /**
@@ -51,16 +85,21 @@ function toOverride(r: {
  */
 @Injectable()
 export class HealthSettingsService {
-  constructor(@Inject(HealthProbeScheduler) private readonly scheduler: HealthProbeScheduler) {}
+  constructor(
+    @Inject(HealthProbeScheduler) private readonly scheduler: HealthProbeScheduler,
+    @Inject(VendorBalanceMonitor) private readonly balances: VendorBalanceMonitor,
+  ) {}
 
   async view(): Promise<HealthSettingsView> {
-    const [rows, targets] = await Promise.all([
+    const [rows, targets, vendors] = await Promise.all([
       prisma.healthProbeSetting.findMany(),
       this.scheduler.targets(),
+      this.balances.view(),
     ]);
     const global = this.scheduler.globalSettings();
     return {
       global,
+      balanceGlobal: this.balances.globalSettings(),
       overrides: rows.map(toOverride),
       targets: targets
         .map((m) => {
@@ -78,6 +117,14 @@ export class HealthSettingsService {
           };
         })
         .sort((a, b) => a.modelCode.localeCompare(b.modelCode)),
+      vendors: vendors.map((v) => ({
+        providerCode: v.providerCode,
+        state: v.state,
+        currency: v.currency ?? null,
+        applicable: v.state !== "not_supported",
+        ...(v.state === "not_supported" && v.detail !== undefined ? { reason: v.detail } : {}),
+        ...v.settings,
+      })),
     };
   }
 
@@ -85,9 +132,24 @@ export class HealthSettingsService {
     subjectRaw: string,
     body: unknown,
     operatorId: string | undefined,
-  ): Promise<{ override: ProbeSettingOverride; effective: EffectiveProbeSettings }> {
+  ): Promise<{
+    override: ProbeSettingOverride;
+    effective: EffectiveProbeSettings;
+    balance?: EffectiveBalanceSettings;
+  }> {
     const subject = parseSubject(subjectRaw);
     const input: UpdateProbeSettingInput = parseProbeSettingBody(body);
+    const balanceFields = (["balanceMinAmount", "balanceMinDays", "balancePollMinutes"] as const).filter(
+      (k) => k in input,
+    );
+    if (subject.kind === "model" && balanceFields.length > 0) {
+      // A balance belongs to the vendor's account; a model-level value would be inert.
+      throw new BadRequestException({
+        code: "HEALTH_SETTING_INVALID",
+        message: `${balanceFields.join(", ")} can be set on a vendor (provider:<code>) only, not on a model`,
+        retryable: false,
+      });
+    }
 
     // The subject must exist: a setting on a code nothing has is inert.
     // For a model, its vendor too: the effective settings fall back to it.
@@ -111,6 +173,18 @@ export class HealthSettingsService {
       });
     }
 
+    // A threshold on a vendor whose balance Atlas cannot read could never
+    // fire. Clearing one (null) is always allowed.
+    const vendor = (await this.balances.view()).find((v) => v.providerCode === subject.key);
+    const settingBalance = balanceFields.some((k) => input[k] !== null);
+    if (subject.kind === "provider" && settingBalance && vendor?.state === "not_supported") {
+      throw new BadRequestException({
+        code: "HEALTH_SETTING_INVALID",
+        message: `balance thresholds cannot apply to "${subject.key}": ${vendor.detail ?? "no balance reader"}`,
+        retryable: false,
+      });
+    }
+
     const data: UpdateProbeSettingInput = {
       ...input,
       updatedBy: operatorId ?? null,
@@ -123,6 +197,9 @@ export class HealthSettingsService {
         subjectKey: subject.key,
         probeIntervalMinutes: input.probeIntervalMinutes ?? null,
         probeEnabled: input.probeEnabled ?? null,
+        balanceMinAmount: input.balanceMinAmount ?? null,
+        balanceMinDays: input.balanceMinDays ?? null,
+        balancePollMinutes: input.balancePollMinutes ?? null,
         updatedBy: data.updatedBy,
         updatedAt: data.updatedAt,
       },
@@ -133,9 +210,20 @@ export class HealthSettingsService {
     // A vendor's own effective view: no model override can apply to it.
     const providerCode = subject.kind === "model" ? (model?.providerRef?.providerCode ?? "") : subject.key;
     const modelCode = subject.kind === "model" ? subject.key : "";
+    const currency = vendor?.currency;
     return {
       override: toOverride(row),
       effective: effectiveProbeSettings({ modelCode, providerCode }, rows, this.scheduler.globalSettings()),
+      ...(subject.kind === "provider"
+        ? {
+            balance: effectiveBalanceSettings(
+              providerCode,
+              currency,
+              rows as unknown as BalanceSettingRow[],
+              this.balances.globalSettings(),
+            ),
+          }
+        : {}),
     };
   }
 }

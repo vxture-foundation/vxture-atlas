@@ -1,6 +1,7 @@
 import { BadRequestException } from "@nestjs/common";
 
 import type { UpdateProbeSettingInput } from "../types/runtime.types";
+import { parseBalanceFields } from "./vendor-balance";
 
 /**
  * probe-settings.ts - which probe settings apply to a model, and where each
@@ -119,10 +120,16 @@ export function parseProbeSettingBody(body: unknown): UpdateProbeSettingInput {
   if (typeof body !== "object" || body === null || Array.isArray(body)) {
     throw refuse("body must be an object");
   }
-  const allowed = new Set(["probeIntervalMinutes", "probeEnabled"]);
-  const unknown = Object.keys(body).filter((k) => !allowed.has(k));
+  const allowed = [
+    "probeIntervalMinutes",
+    "probeEnabled",
+    "balanceMinAmount",
+    "balanceMinDays",
+    "balancePollMinutes",
+  ];
+  const unknown = Object.keys(body).filter((k) => !allowed.includes(k));
   if (unknown.length > 0) {
-    throw refuse(`unknown field(s): ${unknown.join(", ")}; allowed: probeIntervalMinutes, probeEnabled`);
+    throw refuse(`unknown field(s): ${unknown.join(", ")}; allowed: ${allowed.join(", ")}`);
   }
   const input = body as Record<string, unknown>;
   const out: UpdateProbeSettingInput = {};
@@ -143,8 +150,9 @@ export function parseProbeSettingBody(body: unknown): UpdateProbeSettingInput {
     }
     out.probeEnabled = v as boolean | null;
   }
+  Object.assign(out, parseBalanceFields(input, refuse));
   if (Object.keys(out).length === 0) {
-    throw refuse("nothing to change: send probeIntervalMinutes and/or probeEnabled");
+    throw refuse(`nothing to change: send one or more of ${allowed.join(", ")}`);
   }
   return out;
 }

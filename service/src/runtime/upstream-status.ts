@@ -67,6 +67,29 @@ export const ACCOUNT_LIMIT_SIGNATURES: readonly { match: string; source: string 
     match: "insufficient_quota",
     source: "OpenAI error codes documentation",
   },
+  // Zhipu (bigmodel) sends nearly every account condition as HTTP 429 with a
+  // business code; read from its error-code documentation on 2026-10-02
+  // (docs.bigmodel.cn/cn/api/api-code). Without these, an account in arrears
+  // would be treated as throttling: retryable, outside the breaker, no event.
+  // 1302 / 1305 / 1313 (rate, overload, fair-use throttling) stay throttling.
+  ...[
+    ["1113", "account in arrears"],
+    ["1308", "usage limit reached"],
+    ["1309", "plan expired"],
+    ["1310", "weekly / monthly usage limit"],
+    ["1311", "subscription lacks the model"],
+    ["1314", "enterprise plan expired"],
+    ["1315", "key restricted to another scenario"],
+    ["1316", "usage window limit"],
+    ["1317", "usage window limit"],
+    ["1318", "usage window limit"],
+    ["1319", "usage window limit"],
+    ["1320", "spending cap"],
+    ["1321", "spending cap"],
+  ].map(([code, what]) => ({
+    match: `"code":"${code}"`,
+    source: `Zhipu error-code documentation: ${code} ${what} (HTTP 429)`,
+  })),
 ];
 
 function isAccountLimit(body: string | undefined): boolean {

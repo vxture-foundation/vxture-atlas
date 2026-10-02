@@ -9,6 +9,7 @@ export const MODEL_HEALTH_STATES = [
   "rate_limited",
   "account_refused",
   "unavailable",
+  "unreachable",
   "model_missing",
   "unknown",
 ] as const;
@@ -54,6 +55,7 @@ const FAILING: ReadonlySet<ModelHealthState> = new Set([
   "rate_limited",
   "account_refused",
   "unavailable",
+  "unreachable",
   "model_missing",
 ]);
 
@@ -69,7 +71,11 @@ export function isFailing(state: ModelHealthState | undefined): boolean {
  * - account / model_missing: entered on the FIRST occurrence. They do not fix
  *   themselves; waiting for a threshold only delays the notice.
  * - unavailable / unreachable: after UNAVAILABLE_AFTER_FAILURES in a row, or
- *   when every call has failed for UNAVAILABLE_AFTER_MS.
+ *   when every call has failed for UNAVAILABLE_AFTER_MS. Which of the two is
+ *   decided by the LATEST failure: `unreachable` (DNS / TLS / connect - the
+ *   path from Atlas, someone on Atlas's side acts) versus `unavailable` (the
+ *   vendor answered badly or not in time - the vendor acts). Kept apart
+ *   because different people fix them (P1, owner 2026-10-02).
  * - rate_limited: when throttling has lasted RATE_LIMITED_AFTER_MS.
  *
  * Once a model is account_refused or model_missing, an outage or throttling
@@ -113,7 +119,7 @@ export function nextRecord(
     consecutiveFailures >= UNAVAILABLE_AFTER_FAILURES ||
     at - firstFailureAt >= UNAVAILABLE_AFTER_MS
   ) {
-    return { ...enter("unavailable"), consecutiveFailures, firstFailureAt };
+    return { ...enter(signal === "unreachable" ? "unreachable" : "unavailable"), consecutiveFailures, firstFailureAt };
   }
   return next;
 }

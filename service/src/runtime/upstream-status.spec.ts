@@ -120,3 +120,21 @@ describe("a 429 that is an account limit", () => {
     ).toBe("rate_limit");
   });
 });
+
+// Zhipu answers arrears with HTTP 429 and a business code in the body; only
+// the code tells an empty account from a busy one.
+describe("Zhipu's 429 business codes", () => {
+  const zhipu = (code: string) =>
+    new ProviderHttpError("x", 429, "zhipu", `{"error":{"code":"${code}","message":"m"}}`);
+
+  it.each(["1113", "1308", "1309", "1310", "1311", "1314", "1315", "1316", "1321"])(
+    "%s is the account, not throttling",
+    (code) => {
+      expect(upstreamFailureClass(zhipu(code))).toBe("account");
+    },
+  );
+
+  it.each(["1302", "1305", "1313"])("%s stays throttling", (code) => {
+    expect(upstreamFailureClass(zhipu(code))).toBe("rate_limit");
+  });
+});
