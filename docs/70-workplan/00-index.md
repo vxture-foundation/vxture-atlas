@@ -333,7 +333,11 @@ F - service health monitoring (ADR-013, design 120; owner 2026-10-02):
 - [x] F1a (P0). Durable state per vendor model and per route (`health`
       schema, `incr/08`), route severity decided at the moment a model changes,
       transition events, `GET /capability/health[/events]`, `/readyz`
-      `routeHealth`; fed by every real call on the chat and S2S paths
+      `routeHealth`; fed by every real call on the chat and S2S paths.
+      Released as v0.7.21 (2026-10-02; db-init `incr/08` first, its
+      column-lock check fixed to derive the schemas from the baseline, #101).
+      Production had no call in the first minutes after deploy, so the tables
+      were still empty - the idle blind spot F1b closes
 - [ ] F1b (P0). Active probes every 10 minutes for idle models, with the
       probe settings and defaults (design 120 section 4.5); `unknown` after two
       silent intervals
