@@ -180,7 +180,19 @@ jobs:
             case "$creds" in *:*) svc_pw="${creds#*:}" ;; esac
           fi
 
-          SCHEMAS="'model','key','reqlog','routing','provisioning'"
+          # Every schema the pinned baseline creates - derived, not listed by
+          # hand. The hand list read 'model','key','reqlog','routing',
+          # 'provisioning': 'routing' no longer existed, 'audit' was never in
+          # it, and when incr/08 added 'health' (2026-10-02) its six column
+          # grants went uncounted, so this check failed a correct apply with
+          # "declares 95, database has 89". A list nobody updates is a claim
+          # nothing binds; the baseline is the thing that is updated.
+          SCHEMAS="$(grep -oE 'CREATE SCHEMA IF NOT EXISTS [a-z_]+' database/ddl/00_baseline.sql             | awk '{print $NF}' | sort -u | sed "s/.*/'&'/" | paste -sd, -)"
+          if [ -z "$SCHEMAS" ]; then
+            echo "[db-init] ERROR: found no CREATE SCHEMA in database/ddl/00_baseline.sql" >&2
+            exit 1
+          fi
+          echo "[db-init] schemas under check: $SCHEMAS"
 
           # Column-level UPDATE whitelist, as the pinned DDL declares it.
           # Flattens the SQL (the GRANT column lists wrap over several lines),
