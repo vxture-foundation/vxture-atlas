@@ -1015,7 +1015,7 @@ ADR-012 fixes the meaning.
 ## Service health (operator plane) - the platform watcher's contract
 
 ADR-013, design `docs/30-design/120-service-health-monitoring.md`. Live from
-v0.7.21 (F1a). This section is the contract the platform's server-side watcher
+v0.7.21 (F1a); vendor balances and `unreachable` from F2. This section is the contract the platform's server-side watcher
 (vxture-platform#562) implements against; the design explains why.
 
 ### Auth
@@ -1064,18 +1064,45 @@ No query parameters (any is `400 HEALTH_UNKNOWN_FILTER`).
       "primary": { "modelCode": "rerank", "state": "unknown" },
       "fallback": null
     }
+  ],
+  "vendors": [
+    {
+      "providerCode": "deepseek",
+      "state": "balance_low",
+      "since": "2026-10-02T12:00:00.000Z",
+      "detail": "CNY 80.00, about 6.4 days left: below CNY 100.00",
+      "currency": "CNY",
+      "balance": 80,
+      "daysLeft": 6.4,
+      "lastReadAt": "2026-10-02T12:00:00.000Z",
+      "settings": { "minAmount": 100, "minAmountSource": "default", "minDays": 3,
+                    "minDaysSource": "default", "pollMinutes": 60, "pollMinutesSource": "default" }
+    },
+    {
+      "providerCode": "doubao",
+      "state": "not_supported",
+      "since": "2026-10-02T12:00:00.000Z",
+      "detail": "Volcengine reports balance only through its billing API (QueryBalanceAcct), which needs an account AK/SK; Atlas holds an Ark API key, which cannot read it",
+      "settings": { "minAmount": null, "minAmountSource": "default", "minDays": 3,
+                    "minDaysSource": "default", "pollMinutes": 60, "pollMinutesSource": "default" }
+    }
   ]
 }
 ```
 
 | Field | Meaning |
 |---|---|
-| `models[].state` | `ok` / `rate_limited` / `account_refused` / `unavailable` / `model_missing` / `unknown` |
+| `models[].state` | `ok` / `rate_limited` / `account_refused` / `unavailable` (the vendor answered badly or late) / `unreachable` (the call never reached the vendor: DNS / TLS / connect) / `model_missing` / `unknown` |
 | `models[]` | **only models with a recorded result** (a real call, or a probe from F1b on) since the state was first kept. It is not the model catalogue; a model absent here is `unknown` |
 | `models[].upstreamStatus`, `detail` | present while the model is failing: the vendor's HTTP status and its own words (up to 300 characters). `detail` often says what to do ("adjust or close the Safe Experience Mode") |
 | `routes[]` | **every active route as configured now**, evaluated at read time |
 | `routes[].state` | `ok` (primary not failing) / `degraded` (primary failing, fallback serving) / `down` (nothing serving) |
 | `routes[].severity` | `null` / `warning` / `critical` |
+| `vendors[]` | every active vendor (one with an active model), once its first pass has run - within a minute of start |
+| `vendors[].state` | `ok` / `balance_low` / `not_supported` (Atlas cannot read it; `detail` says why) / `unknown` (not read yet, or reads failing for two poll intervals) |
+| `vendors[].currency`, `balance`, `daysLeft` | the last reading; `daysLeft` absent until there are 6 hours of history with some spend |
+| `vendors[].lastReadError` | present while reads fail: the vendor's status and words |
+| `vendors[].settings` | the thresholds in effect and the level each came from (`provider` / `global` / `default`); `minAmount` is in the vendor's currency, `null` when no level names one for it |
 | times | ISO 8601, UTC |
 
 `unknown` is not failing: a route whose primary has never been seen is `ok`.
@@ -1131,6 +1158,12 @@ No query parameters (any is `400 HEALTH_UNKNOWN_FILTER`).
   a route. A route that improves without recovering (`down -> degraded`)
   carries the severity of where it landed (`warning`).
 - A model's first sighting as healthy is stored without an event.
+- `subjectKind` is `model`, `route` or `vendor`. A vendor event is a balance
+  transition: `to: "balance_low"` (`warning`; `critical` when the vendor says
+  the key can no longer spend or nothing is left), `to: "unknown"` (`warning`,
+  reads failing), `to: "ok"` (`info`, recovered). Its `detail` carries the
+  balance, days left and the threshold crossed. `not_supported` and a vendor's
+  first healthy reading are stored without an event.
 - Errors: `400 HEALTH_INVALID_CURSOR` (not a cursor this endpoint issued),
   `400 HEALTH_INVALID_LIMIT`, `400 HEALTH_UNKNOWN_FILTER`; envelope
   `{ "code", "message", "retryable": false }`.
@@ -1164,7 +1197,10 @@ No query parameters (any is `400 HEALTH_UNKNOWN_FILTER`).
 
 Edited from opera (owner, 2026-10-02). Resolution: model -> vendor -> the
 server's `.env` (`HEALTH_PROBE_INTERVAL_MINUTES`, `HEALTH_PROBES_ENABLED`) ->
-built-in (60 minutes, on).
+built-in (60 minutes, on). Balance thresholds resolve vendor -> `.env`
+(`HEALTH_BALANCE_MIN_AMOUNT_CNY` / `_USD`, `HEALTH_BALANCE_MIN_DAYS`,
+`HEALTH_BALANCE_POLL_MINUTES`) -> built-in (CNY 100 / USD 15, 3 days, 60
+minutes); there is no model level.
 
 `GET /capability/health-settings` (no query parameters):
 
@@ -1179,9 +1215,28 @@ built-in (60 minutes, on).
     { "modelCode": "deepseek-v4-pro", "providerCode": "deepseek", "state": "ok",
       "lastResultAt": "2026-10-02T10:05:00.000Z",
       "intervalMinutes": 30, "intervalSource": "model", "enabled": true, "enabledSource": "default" }
+  ],
+  "balanceGlobal": {
+    "minAmount": { "CNY": { "value": 100, "source": "default" }, "USD": { "value": 15, "source": "default" } },
+    "minDays": { "value": 3, "source": "default" },
+    "pollMinutes": { "value": 60, "source": "default" }
+  },
+  "vendors": [
+    { "providerCode": "deepseek", "state": "ok", "currency": "CNY", "applicable": true,
+      "minAmount": 100, "minAmountSource": "default", "minDays": 3, "minDaysSource": "default",
+      "pollMinutes": 60, "pollMinutesSource": "default" },
+    { "providerCode": "doubao", "state": "not_supported", "currency": null, "applicable": false,
+      "reason": "Volcengine reports balance only through its billing API ...",
+      "minAmount": null, "minAmountSource": "default", "minDays": 3, "minDaysSource": "default",
+      "pollMinutes": 60, "pollMinutesSource": "default" }
   ]
 }
 ```
+
+`overrides[]` rows also carry `balanceMinAmount`, `balanceMinDays`,
+`balancePollMinutes` (`null` = inherit). A vendor with `applicable: false`
+cannot take a balance threshold; the form should show `reason` instead of the
+fields.
 
 `targets` are the models probed: the active models a route names, plus any
 model already seen. Each value carries the level it came from (`model` /
@@ -1194,13 +1249,24 @@ or `provider:<provider_code>`:
 { "probeIntervalMinutes": 30, "probeEnabled": false }
 ```
 
-- Either field, or both. `probeIntervalMinutes` 5-60; `null` clears the
-  override so the level above applies.
+```json
+{ "balanceMinAmount": 200, "balanceMinDays": 5, "balancePollMinutes": 30 }
+```
+
+- Any subset of the fields. `probeIntervalMinutes` 5-60. Balance fields, on a
+  vendor (`provider:<code>`) only: `balanceMinAmount` >= 0 in the vendor's
+  currency, two decimals (0 = no amount warning); `balanceMinDays` 0-30 (0 = no
+  days warning); `balancePollMinutes` 15-1440. `null` clears the override so
+  the level above applies.
 - Answers `{ "override": {...}, "effective": {...} }` - what is now stored, and
   what is now in effect for that model (or, for a vendor, for its models with
-  no override of their own).
+  no override of their own); a vendor write also answers `"balance": {...}`,
+  the thresholds now in effect. A new threshold is judged at the next minute's
+  pass, without another read.
 - `400 HEALTH_SETTING_INVALID` (range, type, unknown field, empty body, bad
-  subject); `404 HEALTH_SETTING_UNKNOWN_SUBJECT` (no such model or vendor).
+  subject, a balance field on a model, a balance threshold on a
+  `not_supported` vendor - clearing one with `null` is always allowed);
+  `404 HEALTH_SETTING_UNKNOWN_SUBJECT` (no such model or vendor).
 - The writer is taken from the verified operator token, never the body; the
   change is in `audit.change_records` as resource `health-settings`.
 

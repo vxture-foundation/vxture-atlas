@@ -49,6 +49,10 @@ REVOKE UPDATE ON health.events FROM atlas_svc;
 REVOKE UPDATE ON health.probe_settings FROM atlas_svc;
 GRANT UPDATE (probe_interval_minutes, probe_enabled, updated_by, updated_at)
   ON health.probe_settings TO atlas_svc;
+-- balance_min_amount / balance_min_days / balance_poll_minutes: granted in
+-- incr/10, which adds them (98 runs before incr/).
+-- balance_samples (incr/10): append-only.
+REVOKE UPDATE ON health.balance_samples FROM atlas_svc;
 
 -- --- model (authority = docs/design/data_model_200_schema.md section 1, platform repo) ---
 -- provider_code / model_code are the visible-code identity - never writable;

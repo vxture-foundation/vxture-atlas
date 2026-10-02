@@ -23,7 +23,8 @@ no notion of a route being down. Design: `../120-service-health-monitoring.md`.
 2. **Severity is decided per route**: a failing model behind a working fallback
    is a warning; a route with no working candidate is critical.
 3. **Balance warnings use two thresholds, either one triggers**: a minimum amount
-   and a minimum number of projected days left, set per vendor from admin.
+   and a minimum number of projected days left, set per vendor (from opera,
+   point 5).
 4. **The platform pulls** current state and events from the operator plane and
    watches Atlas's liveness itself, because Atlas cannot report its own death.
    Notices go to **admin** first; other channels are not connected yet.
@@ -38,14 +39,15 @@ no notion of a route being down. Design: `../120-service-health-monitoring.md`.
 
 - Probes cost one minimal call per idle model per interval.
 
+- A new `health` schema arrives through db-init.
+- Until the platform's watcher exists, the state is readable but nobody is
+  notified - the same gap as today, now with a place to close it.
+- A vendor without a balance API stays failure-only for balance; the health
+  view says so rather than showing a threshold that cannot fire.
+
 ## Amendment (owner, 2026-10-02)
 
 The default probe interval is **60 minutes**, not 10: probes spend tokens, and
 10 minutes for every idle model was too much. About 24 calls a day per idle
 model instead of 144. A tighter cadence is a per-model or per-vendor override.
 The allowed range stays 5-60 minutes (the database CHECK enforces it).
-- A new `health` schema arrives through db-init.
-- Until the platform's watcher exists, the state is readable but nobody is
-  notified - the same gap as today, now with a place to close it.
-- A vendor without a balance API stays failure-only for balance; the health
-  view says so rather than showing a threshold that cannot fire.

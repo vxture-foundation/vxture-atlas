@@ -617,9 +617,10 @@ CREATE TABLE IF NOT EXISTS health.subject_states (
     detail           varchar(500),
     updated_at       timestamptz   NOT NULL DEFAULT now(),
     CONSTRAINT pk_health_subject_states PRIMARY KEY (subject_kind, subject_key),
-    CONSTRAINT chk_health_subject_states_kind CHECK (subject_kind IN ('model','route')),
+    CONSTRAINT chk_health_subject_states_kind CHECK (subject_kind IN ('model','route','vendor')),
     CONSTRAINT chk_health_subject_states_state CHECK (state IN
-      ('ok','rate_limited','account_refused','unavailable','model_missing','unknown','degraded','down'))
+      ('ok','rate_limited','account_refused','unavailable','unreachable','model_missing','unknown',
+       'degraded','down','balance_low','not_supported'))
 );
 
 CREATE TABLE IF NOT EXISTS health.events (
@@ -634,7 +635,7 @@ CREATE TABLE IF NOT EXISTS health.events (
     upstream_status  smallint,
     detail           varchar(500),
     affected_routes  text[],
-    CONSTRAINT chk_health_events_kind CHECK (subject_kind IN ('model','route')),
+    CONSTRAINT chk_health_events_kind CHECK (subject_kind IN ('model','route','vendor')),
     CONSTRAINT chk_health_events_severity CHECK (severity IN ('info','warning','critical'))
 );
 
@@ -650,11 +651,34 @@ CREATE TABLE IF NOT EXISTS health.probe_settings (
     probe_enabled           boolean,
     updated_by              varchar(128),
     updated_at              timestamptz   NOT NULL DEFAULT now(),
+    -- incr/10: balance thresholds (vendor rows only); NULL = inherit
+    balance_min_amount      numeric(14,2),
+    balance_min_days        smallint,
+    balance_poll_minutes    smallint,
     CONSTRAINT pk_health_probe_settings PRIMARY KEY (subject_kind, subject_key),
     CONSTRAINT chk_health_probe_settings_kind CHECK (subject_kind IN ('model','provider')),
     CONSTRAINT chk_health_probe_settings_interval
-      CHECK (probe_interval_minutes IS NULL OR probe_interval_minutes BETWEEN 5 AND 60)
+      CHECK (probe_interval_minutes IS NULL OR probe_interval_minutes BETWEEN 5 AND 60),
+    CONSTRAINT chk_health_probe_settings_balance CHECK (
+      (balance_min_amount IS NULL OR balance_min_amount >= 0)
+      AND (balance_min_days IS NULL OR balance_min_days BETWEEN 0 AND 30)
+      AND (balance_poll_minutes IS NULL OR balance_poll_minutes BETWEEN 15 AND 1440)
+      AND (subject_kind = 'provider'
+           OR (balance_min_amount IS NULL AND balance_min_days IS NULL AND balance_poll_minutes IS NULL)))
 );
+
+-- balance_samples (incr/10): one row per vendor balance read, append-only;
+-- projected days come from the trailing 7 days' decline, top-ups left out.
+CREATE TABLE IF NOT EXISTS health.balance_samples (
+    id             uuid          PRIMARY KEY DEFAULT gen_random_uuid(),
+    provider_code  varchar(64)   NOT NULL,
+    sampled_at     timestamptz   NOT NULL DEFAULT now(),
+    currency       varchar(8)    NOT NULL,
+    total_balance  numeric(18,4) NOT NULL,
+    is_available   boolean
+);
+CREATE INDEX IF NOT EXISTS idx_health_balance_samples_provider
+  ON health.balance_samples (provider_code, sampled_at);
 -- "what has this operator been doing" - the other direction, for review.
 CREATE INDEX IF NOT EXISTS idx_change_records_operator
   ON audit.change_records (operator_sub, occurred_at DESC);

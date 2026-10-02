@@ -202,6 +202,20 @@ export interface HealthProbeSettingRow {
   probeEnabled: boolean | null;
   updatedBy: string | null;
   updatedAt: Date;
+  /** Prisma Decimal; read with Number(). */
+  balanceMinAmount: { toString(): string } | null;
+  balanceMinDays: number | null;
+  balancePollMinutes: number | null;
+}
+
+/** health.balance_samples - one vendor balance read (incr/10). */
+export interface HealthBalanceSampleRow {
+  id: string;
+  providerCode: string;
+  sampledAt: Date;
+  currency: string;
+  totalBalance: { toString(): string };
+  isAvailable: boolean | null;
 }
 
 interface PrismaMutationResult {
@@ -259,6 +273,7 @@ export interface AtlasPrismaClient {
   healthSubjectState: PrismaDelegate<HealthSubjectStateRow>;
   healthEvent: PrismaDelegate<HealthEventRow>;
   healthProbeSetting: PrismaDelegate<HealthProbeSettingRow>;
+  healthBalanceSample: PrismaDelegate<HealthBalanceSampleRow>;
   $connect(): Promise<void>;
   $disconnect(): Promise<void>;
   /**

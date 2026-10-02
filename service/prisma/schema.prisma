@@ -589,8 +589,25 @@ model HealthProbeSetting {
   probeEnabled         Boolean? @map("probe_enabled")
   updatedBy            String?  @map("updated_by") @db.VarChar(128)
   updatedAt            DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+  balanceMinAmount     Decimal? @map("balance_min_amount") @db.Decimal(14, 2)
+  balanceMinDays       Int?     @map("balance_min_days") @db.SmallInt
+  balancePollMinutes   Int?     @map("balance_poll_minutes") @db.SmallInt
 
   @@id([subjectKind, subjectKey], map: "pk_health_probe_settings")
   @@map("probe_settings")
+  @@schema("health")
+}
+
+/// One vendor balance read (incr/10), append-only.
+model HealthBalanceSample {
+  id           String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  providerCode String   @map("provider_code") @db.VarChar(64)
+  sampledAt    DateTime @default(now()) @map("sampled_at") @db.Timestamptz(6)
+  currency     String   @db.VarChar(8)
+  totalBalance Decimal  @map("total_balance") @db.Decimal(18, 4)
+  isAvailable  Boolean? @map("is_available")
+
+  @@index([providerCode, sampledAt], map: "idx_health_balance_samples_provider")
+  @@map("balance_samples")
   @@schema("health")
 }

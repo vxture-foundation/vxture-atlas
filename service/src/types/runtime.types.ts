@@ -349,6 +349,10 @@ export interface UpstreamCallRecord {
 export interface UpdateProbeSettingInput {
   probeIntervalMinutes?: number | null;
   probeEnabled?: boolean | null;
+  /** Vendor rows only (incr/10). */
+  balanceMinAmount?: number | null;
+  balanceMinDays?: number | null;
+  balancePollMinutes?: number | null;
   updatedBy?: string | null;
   updatedAt?: Date;
 }

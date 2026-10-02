@@ -28,7 +28,8 @@ type MetricName =
   | "upstream_usage_unmapped_keys_total"
   | "upstream_http_errors_total"
   | "health_transitions_total"
-  | "health_write_failures_total";
+  | "health_write_failures_total"
+  | "health_balance_reads_total";
 
 type MetricDefinition = {
   type: "counter" | "gauge" | "histogram";
@@ -156,6 +157,12 @@ const METRIC_DEFINITIONS: Record<MetricName, MetricDefinition> = {
     type: "counter",
     help: "health_write_failures_total 健康状态写库失败数",
     labelNames: [],
+  },
+  /** ADR-013 P1: a vendor balance read (outcome=ok|failed). */
+  health_balance_reads_total: {
+    type: "counter",
+    help: "health_balance_reads_total 厂商余额读取（provider；outcome=ok|failed）",
+    labelNames: ["provider", "outcome"],
   },
   upstream_usage_unmapped_keys_total: {
     type: "counter",

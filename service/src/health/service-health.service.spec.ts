@@ -24,7 +24,7 @@ describe("ServiceHealthService.current - what the platform's watcher reads", () 
     upstreamHealth.recordFailure("doubao-lite", "doubao", new ProviderHttpError("x", 402, "p", ""));
     upstreamHealth.recordSuccess("doubao-turbo", "doubao");
 
-    const view = await new ServiceHealthService().current();
+    const view = await new ServiceHealthService({ view: async () => [] } as never).current();
 
     expect(view.routes.map((r) => [r.code, r.state, r.severity])).toEqual([
       ["chat/default", "degraded", "warning"],
@@ -61,7 +61,7 @@ describe("ServiceHealthService.events - transitions by cursor", () => {
     const findMany = vi.spyOn(prisma.healthEvent, "findMany").mockResolvedValue([row("e2", "2026-10-01T16:30:00Z")] as never);
     const after = encodeCursor(new Date("2026-10-01T16:00:00Z"), "e1");
 
-    const page = await new ServiceHealthService().events({ after, limit: "10" });
+    const page = await new ServiceHealthService({ view: async () => [] } as never).events({ after, limit: "10" });
 
     expect(page.items).toEqual([expect.objectContaining({ id: "e2", from: "ok", to: "account_refused", severity: "warning" })]);
     expect(decodeCursor(page.nextCursor!)).toEqual({ createdAt: new Date("2026-10-01T16:30:00Z"), id: "e2" });
@@ -71,17 +71,17 @@ describe("ServiceHealthService.events - transitions by cursor", () => {
   it("keeps the caller's cursor when nothing new has happened", async () => {
     vi.spyOn(prisma.healthEvent, "findMany").mockResolvedValue([] as never);
     const after = encodeCursor(new Date("2026-10-01T16:00:00Z"), "e1");
-    expect((await new ServiceHealthService().events({ after })).nextCursor).toBe(after);
+    expect((await new ServiceHealthService({ view: async () => [] } as never).events({ after })).nextCursor).toBe(after);
   });
 
   it("refuses a cursor it did not issue, and a limit out of range", async () => {
-    await expect(new ServiceHealthService().events({ after: "garbage" })).rejects.toMatchObject({
+    await expect(new ServiceHealthService({ view: async () => [] } as never).events({ after: "garbage" })).rejects.toMatchObject({
       response: { code: "HEALTH_INVALID_CURSOR" },
     });
-    await expect(new ServiceHealthService().events({ limit: "0" })).rejects.toMatchObject({
+    await expect(new ServiceHealthService({ view: async () => [] } as never).events({ limit: "0" })).rejects.toMatchObject({
       response: { code: "HEALTH_INVALID_LIMIT" },
     });
-    await expect(new ServiceHealthService().events({ limit: "201" })).rejects.toMatchObject({
+    await expect(new ServiceHealthService({ view: async () => [] } as never).events({ limit: "201" })).rejects.toMatchObject({
       response: { code: "HEALTH_INVALID_LIMIT" },
     });
   });

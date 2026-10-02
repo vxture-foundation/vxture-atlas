@@ -1,9 +1,10 @@
-import { BadRequestException, Injectable } from "@nestjs/common";
+import { BadRequestException, Inject, Injectable } from "@nestjs/common";
 
 import { prisma } from "../prisma";
 import { routeSeverity, routeState, type HealthSeverity } from "./health-state";
 import { PrismaHealthStore } from "./health.store";
 import { upstreamHealth } from "./upstream-health";
+import { VendorBalanceMonitor, type VendorBalanceView } from "./vendor-balance.monitor";
 
 const DEFAULT_EVENT_LIMIT = 50;
 const MAX_EVENT_LIMIT = 200;
@@ -25,6 +26,8 @@ export interface ServiceHealthView {
     primary: { modelCode: string; state: string };
     fallback: { modelCode: string; state: string } | null;
   }[];
+  /** Vendor balances (P1): ok / balance_low / not_supported / unknown, with the thresholds in effect. */
+  vendors: VendorBalanceView[];
 }
 
 export interface HealthEventView {
@@ -68,13 +71,15 @@ export function decodeCursor(cursor: string): { createdAt: Date; id: string } {
 export class ServiceHealthService {
   private readonly store = new PrismaHealthStore();
 
+  constructor(@Inject(VendorBalanceMonitor) private readonly balances: VendorBalanceMonitor) {}
+
   /**
    * Current state. Routes are evaluated now, from the routes as configured
    * this moment, so a route that has never changed state still appears.
    */
   async current(): Promise<ServiceHealthView> {
     const snapshot = upstreamHealth.snapshot();
-    const routes = await this.store.listRoutes();
+    const [routes, vendors] = await Promise.all([this.store.listRoutes(), this.balances.view()]);
     const stateOf = (code: string): string => upstreamHealth.modelState(code) ?? "unknown";
 
     return {
@@ -101,6 +106,7 @@ export class ServiceHealthService {
           fallback: r.fallback ? { modelCode: r.fallback, state: stateOf(r.fallback) } : null,
         };
       }),
+      vendors,
     };
   }
 

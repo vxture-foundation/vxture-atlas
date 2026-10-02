@@ -36,7 +36,22 @@ describe("nextRecord - a vendor model", () => {
       r = nextRecord(r, "unavailable", T0 + i);
       expect(r.state).toBe("ok");
     }
-    expect(nextRecord(r, "unreachable", T0 + 99).state).toBe("unavailable");
+    expect(nextRecord(r, "unavailable", T0 + 99).state).toBe("unavailable");
+  });
+
+  it("an outage whose latest failure could not reach the vendor is unreachable - a network problem, fixed by someone else", () => {
+    let r = ok;
+    for (let i = 1; i < UNAVAILABLE_AFTER_FAILURES; i += 1) r = nextRecord(r, "unavailable", T0 + i);
+    expect(nextRecord(r, "unreachable", T0 + 99).state).toBe("unreachable");
+  });
+
+  it("unreachable that starts answering badly becomes unavailable, and one success clears it", () => {
+    let r = ok;
+    for (let i = 1; i <= UNAVAILABLE_AFTER_FAILURES; i += 1) r = nextRecord(r, "unreachable", T0 + i);
+    expect(r.state).toBe("unreachable");
+    r = nextRecord(r, "unavailable", T0 + 100);
+    expect(r.state).toBe("unavailable");
+    expect(nextRecord(r, "success", T0 + 101).state).toBe("ok");
   });
 
   it("or every call failing for the whole window, however few", () => {
