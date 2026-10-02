@@ -20,7 +20,7 @@ const CONCURRENCY = 3;
  * health-probe.scheduler.ts - active probes (ADR-013, design 120 section 4.2).
  *
  * Every minute, each probe target whose last result is older than its interval
- * (10 minutes by default) gets one minimal call; a model with real traffic has
+ * (60 minutes by default) gets one minimal call; a model with real traffic has
  * a fresh result and is skipped - the traffic is the probe. A model in a
  * failing state is probed on the same cadence, so recovery is noticed without
  * waiting for a user.

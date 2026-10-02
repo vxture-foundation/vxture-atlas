@@ -339,8 +339,8 @@ F - service health monitoring (ADR-013, design 120; owner 2026-10-02):
       Production had no call in the first minutes after deploy, so the tables
       were still empty - the idle blind spot F1b closes
 - [x] F1b (P0). Active probes for idle probe targets (route-named models
-      plus models seen), the smallest call per model type, every 10 minutes by
-      default; `health.probe_settings` (`incr/09`) with model -> vendor ->
+      plus models seen), the smallest call per model type, every 60 minutes by
+      default (owner lowered it from 10 the same day: probes spend tokens); `health.probe_settings` (`incr/09`) with model -> vendor ->
       `.env` -> built-in resolution, `GET`/`PATCH /capability/health-settings`
       reporting each value's source; `unknown` after two silent intervals
       (quietly, `ok` models only)

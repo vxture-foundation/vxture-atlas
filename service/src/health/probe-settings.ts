@@ -8,11 +8,16 @@ import type { UpdateProbeSettingInput } from "../types/runtime.types";
  *
  * Most specific first: the model's own override, its vendor's, the server's
  * `.env`, then the built-in default. The level that supplied each value is
- * reported with it, so a form can say "using the default, 10 minutes" - a
+ * reported with it, so a form can say "using the default, 60 minutes" - a
  * setting whose effect cannot be seen is a setting nobody can trust.
  */
 
-export const BUILT_IN_INTERVAL_MINUTES = 10;
+/**
+ * 60 minutes (owner, 2026-10-02): probes spend tokens, and 10 minutes - the
+ * first default - was too often for every idle model. Tighter cadences are an
+ * override, set per model or vendor where it is worth the calls.
+ */
+export const BUILT_IN_INTERVAL_MINUTES = 60;
 export const BUILT_IN_ENABLED = true;
 export const MIN_INTERVAL_MINUTES = 5;
 export const MAX_INTERVAL_MINUTES = 60;

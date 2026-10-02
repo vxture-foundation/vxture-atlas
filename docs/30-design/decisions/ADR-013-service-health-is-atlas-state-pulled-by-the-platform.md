@@ -36,8 +36,14 @@ no notion of a route being down. Design: `../120-service-health-monitoring.md`.
 
 ## Consequences
 
-- Probes cost one minimal call per idle model every 10 minutes (about 144 a day
-  per model), accepted by the owner.
+- Probes cost one minimal call per idle model per interval.
+
+## Amendment (owner, 2026-10-02)
+
+The default probe interval is **60 minutes**, not 10: probes spend tokens, and
+10 minutes for every idle model was too much. About 24 calls a day per idle
+model instead of 144. A tighter cadence is a per-model or per-vendor override.
+The allowed range stays 5-60 minutes (the database CHECK enforces it).
 - A new `health` schema arrives through db-init.
 - Until the platform's watcher exists, the state is readable but nobody is
   notified - the same gap as today, now with a place to close it.

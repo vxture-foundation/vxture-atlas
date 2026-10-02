@@ -66,10 +66,12 @@ describe("HealthProbeScheduler.tick", () => {
       settings: [{ subjectKind: "model", subjectKey: "deepseek-flash", probeIntervalMinutes: 30, probeEnabled: null }],
     });
     await scheduler.tick(clock);
-    clock += 10 * MIN;
+    clock += 30 * MIN;
 
-    // doubao-lite is due at the default 10 minutes; deepseek-flash waits for its 30.
-    expect((await scheduler.tick(clock)).probed).toEqual(["doubao-lite"]);
+    // deepseek-flash is due at its own 30 minutes; doubao-lite waits for the default 60.
+    expect((await scheduler.tick(clock)).probed).toEqual(["deepseek-flash"]);
+    clock += 30 * MIN;
+    expect((await scheduler.tick(clock)).probed.sort()).toEqual(["deepseek-flash", "doubao-lite"]);
   });
 
   it("does not probe a model switched off, at any level", async () => {
