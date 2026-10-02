@@ -143,7 +143,7 @@ active vendor, have a usable key, and - for a `chat` / `embedding` / `rerank`
 route - be of that type. The embed and rerank paths call the vendor's
 embedding / rerank API, so a chat model named there fails on every call.
 
-Production, 2026-10-02: seven of twelve routes named a model of the wrong type.
+Production, 2026-10-02: six of twelve routes named a model of the wrong type.
 `embedding/default` / `fast` / `quality` and `rerank/default` / `fast` have a
 chat model as fallback; `rerank/quality` has one as its **primary**.
 
