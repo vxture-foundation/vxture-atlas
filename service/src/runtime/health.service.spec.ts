@@ -7,6 +7,8 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { mockRouteModelFacts } from "../health/route-facts.fixtures";
+import { prisma } from "../prisma";
 import { AtlasHealthService } from "./health.service";
 import type { ModelRegistryRepository } from "../registry/model-registry.repository";
 import type {
@@ -130,6 +132,27 @@ describe("registry drift check", () => {
       makeVault(),
     );
     expect((await svc.ready()).checks.registryDrift.status).toBe("pass");
+  });
+});
+
+describe("route health check", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it("names routes whose models cannot serve them, and still never drags readiness down", async () => {
+    vi.spyOn(prisma.modelEndpoint, "findMany").mockResolvedValue([
+      { code: "chat/default", category: "chat", primaryModelCode: "chat-a", fallbackModelCode: null },
+      { code: "rerank/default", category: "rerank", primaryModelCode: "rerank", fallbackModelCode: "chat-a" },
+    ] as never);
+    mockRouteModelFacts({ rerank: { modelType: "rerank" } });
+
+    const ready = await new AtlasHealthService(makeRepository(), makeVault()).ready();
+
+    expect(ready.checks.routeHealth).toMatchObject({
+      status: "warn",
+      routesDown: [],
+      routesMisconfigured: ["rerank/default"],
+    });
+    expect(ready.status).not.toBe("fail");
   });
 });
 

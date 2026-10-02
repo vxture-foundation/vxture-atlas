@@ -364,8 +364,15 @@ F - service health monitoring (ADR-013, design 120; owner 2026-10-02):
       DeepSeek CNY 47.55, below the CNY 100 default -> `balance_low`
       (warning); doubao, zhipu and openai (`sub-api.i-tudou.com`)
       `not_supported` with the reason
-- [ ] F3 (P2). Configuration checks (fallback able to serve the capability -
-      four routes fail this today), degradation, Atlas's own items as
+- [ ] F3 (P2). Configuration checks: routes naming a model that cannot
+      serve them (wrong type, missing, inactive, no key) reported in
+      `/capability/health` `routes[].configIssues` and `/readyz`, and counted
+      in the route's state; probes skip a keyless model instead of filing a
+      vendor 401. Production had seven wrong-type routes (one primary). Built;
+      release pending. **Owner decision open**: refuse such a route at write
+      time, which reverses the "an endpoint may point at any model" contract
+      (`20-specs/20`)
+- [ ] F3b (P2). Degradation (latency, empty answers), Atlas's own items as
       components
 - [ ] F4 (platform). Server-side watcher, events into admin notices, admin
       state view, opera request log showing error code and message - raised

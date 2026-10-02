@@ -5,7 +5,7 @@
  * @category service
  */
 
-import { routeState } from "../health/health-state";
+import { evaluateRoute } from "../health/route-config";
 import { PrismaHealthStore } from "../health/health.store";
 import { upstreamHealth } from "../health/upstream-health";
 import { Inject, Injectable } from "@nestjs/common";
@@ -221,22 +221,22 @@ export class AtlasHealthService {
     try {
       const routes = await new PrismaHealthStore().listRoutes();
       const down = routes
-        .filter(
-          (r) =>
-            routeState(
-              upstreamHealth.modelState(r.primary),
-              r.fallback ? upstreamHealth.modelState(r.fallback) : undefined,
-              r.fallback !== null,
-            ) === "down",
-        )
+        .filter((r) => evaluateRoute(r, (code) => upstreamHealth.modelState(code)) === "down")
         .map((r) => r.code);
+      // A route naming a model that cannot serve it (design 120 section 4.4).
+      const misconfigured = routes.filter((r) => (r.configIssues ?? []).length > 0).map((r) => r.code);
+      const messages = [
+        down.length > 0 ? `${down.length} route(s) have no working candidate: ${down.join(", ")}` : "",
+        misconfigured.length > 0
+          ? `${misconfigured.length} route(s) name a model that cannot serve them: ${misconfigured.join(", ")}`
+          : "",
+      ].filter(Boolean);
       return {
-        status: down.length > 0 ? "warn" : "pass",
+        status: down.length > 0 || misconfigured.length > 0 ? "warn" : "pass",
         latencyMs: Date.now() - startedAt,
         routesDown: down,
-        ...(down.length > 0
-          ? { message: `${down.length} route(s) have no working candidate: ${down.join(", ")}` }
-          : {}),
+        routesMisconfigured: misconfigured,
+        ...(messages.length > 0 ? { message: messages.join("; ") } : {}),
       };
     } catch (error) {
       return {

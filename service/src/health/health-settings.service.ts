@@ -43,6 +43,8 @@ export interface HealthSettingsView {
     providerCode: string;
     state: string;
     lastResultAt: string | null;
+    /** Set when the last probe did not run - `no_key`: no usable key, so nothing was sent. */
+    probeSkipped: { reason: "no_key"; detail?: string } | null;
   } & EffectiveProbeSettings)[];
   /** Every watched vendor, with the balance thresholds in effect and the level each came from. */
   vendors: ({
@@ -109,6 +111,7 @@ export class HealthSettingsService {
             providerCode: m.provider,
             state: upstreamHealth.modelState(m.modelCode) ?? "unknown",
             lastResultAt: last !== undefined ? new Date(last).toISOString() : null,
+            probeSkipped: this.scheduler.skipReason(m.modelCode) ?? null,
             ...effectiveProbeSettings(
               { modelCode: m.modelCode, providerCode: m.provider },
               rows as ProbeSettingRow[],

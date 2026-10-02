@@ -1,7 +1,8 @@
 import { BadRequestException, Inject, Injectable } from "@nestjs/common";
 
 import { prisma } from "../prisma";
-import { routeSeverity, routeState, type HealthSeverity } from "./health-state";
+import { routeSeverity, type HealthSeverity } from "./health-state";
+import { evaluateRoute, type RouteConfigIssue } from "./route-config";
 import { PrismaHealthStore } from "./health.store";
 import { upstreamHealth } from "./upstream-health";
 import { VendorBalanceMonitor, type VendorBalanceView } from "./vendor-balance.monitor";
@@ -25,6 +26,8 @@ export interface ServiceHealthView {
     severity: HealthSeverity | null;
     primary: { modelCode: string; state: string };
     fallback: { modelCode: string; state: string } | null;
+    /** A named model that cannot serve this route, and why (design 120 section 4.4). Empty = none found. */
+    configIssues: RouteConfigIssue[];
   }[];
   /** Vendor balances (P1): ok / balance_low / not_supported / unknown, with the thresholds in effect. */
   vendors: VendorBalanceView[];
@@ -93,17 +96,14 @@ export class ServiceHealthService {
         ...(m.detail !== undefined ? { detail: m.detail } : {}),
       })),
       routes: routes.map((r) => {
-        const state = routeState(
-          upstreamHealth.modelState(r.primary),
-          r.fallback ? upstreamHealth.modelState(r.fallback) : undefined,
-          r.fallback !== null,
-        );
+        const state = evaluateRoute(r, (code) => upstreamHealth.modelState(code));
         return {
           code: r.code,
           state,
           severity: state === "ok" ? null : routeSeverity(state),
           primary: { modelCode: r.primary, state: stateOf(r.primary) },
           fallback: r.fallback ? { modelCode: r.fallback, state: stateOf(r.fallback) } : null,
+          configIssues: r.configIssues ?? [],
         };
       }),
       vendors,

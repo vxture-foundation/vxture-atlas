@@ -1,7 +1,9 @@
 import { Injectable, Logger, type OnModuleInit } from "@nestjs/common";
 
 import { prisma } from "../prisma";
+import { API_KEY_OPTIONAL_PROVIDERS } from "../runtime/resolve-api-key";
 import { MODEL_HEALTH_STATES, type ModelHealthState, type RouteHealthState } from "./health-state";
+import { routeConfigIssues, type ModelFacts } from "./route-config";
 import { upstreamHealth, type HealthStore, type RouteDef, type Transition } from "./upstream-health";
 
 /**
@@ -38,17 +40,56 @@ export class PrismaHealthStore implements HealthStore {
     };
   }
 
+  /** Active routes, each with what makes a named model unable to serve it. */
   async listRoutes(): Promise<RouteDef[]> {
     const rows = await prisma.modelEndpoint.findMany({
       where: { isActive: true, deletedAt: null },
-      select: { code: true, primaryModelCode: true, fallbackModelCode: true },
+      select: { code: true, category: true, primaryModelCode: true, fallbackModelCode: true },
       orderBy: { code: "asc" },
     });
-    return rows.map((r) => ({
-      code: r.code,
-      primary: r.primaryModelCode,
-      fallback: r.fallbackModelCode,
-    }));
+    const facts = await this.modelFacts(
+      rows.flatMap((r) => (r.fallbackModelCode ? [r.primaryModelCode, r.fallbackModelCode] : [r.primaryModelCode])),
+    );
+    return rows.map((r) => {
+      const route = { category: r.category, primary: r.primaryModelCode, fallback: r.fallbackModelCode };
+      return { code: r.code, ...route, configIssues: routeConfigIssues(route, facts) };
+    });
+  }
+
+  private async modelFacts(codes: string[]): Promise<Map<string, ModelFacts>> {
+    const unique = [...new Set(codes)];
+    if (unique.length === 0) return new Map();
+    const [models, keys] = await Promise.all([
+      prisma.modelDefinition.findMany({
+        where: { modelCode: { in: unique }, deletedAt: null },
+        include: { providerRef: { select: { providerCode: true, isActive: true } } },
+      }),
+      prisma.providerApiKey.findMany({
+        where: { isActive: true, deletedAt: null },
+        select: { providerCode: true, keyAlias: true },
+      }),
+    ]);
+    const keyed = new Set(keys.map((k) => `${k.providerCode}\u0000${k.keyAlias}`));
+    const out = new Map<string, ModelFacts>();
+    for (const m of models as unknown as {
+      modelCode: string;
+      modelType: string;
+      isActive: boolean;
+      config: unknown;
+      providerRef: { providerCode: string; isActive: boolean } | null;
+    }[]) {
+      const providerCode = m.providerRef?.providerCode ?? "";
+      const raw = (m.config as Record<string, unknown> | null)?.["managedKeyAlias"];
+      const alias = typeof raw === "string" ? raw.trim() : "";
+      out.set(m.modelCode, {
+        modelType: m.modelType,
+        active: m.isActive && m.providerRef?.isActive !== false,
+        hasKey:
+          API_KEY_OPTIONAL_PROVIDERS.has(providerCode) ||
+          (alias !== "" && keyed.has(`${providerCode}\u0000${alias}`)),
+      });
+    }
+    return out;
   }
 
   async save(t: Transition): Promise<void> {

@@ -4,6 +4,7 @@ import { ProviderHttpError } from "../providers/base.provider";
 import { prisma } from "../prisma";
 import type { AiModelRecord } from "../types/runtime.types";
 import { HealthProbeScheduler } from "./health-probe.scheduler";
+import { mockRouteModelFacts } from "./route-facts.fixtures";
 import { upstreamHealth } from "./upstream-health";
 
 const MIN = 60_000;
@@ -20,6 +21,7 @@ function build(options: {
   probe?: (m: AiModelRecord) => Promise<{ ok: boolean; error?: unknown }>;
 }) {
   vi.spyOn(prisma.modelEndpoint, "findMany").mockResolvedValue(options.routes as never);
+  mockRouteModelFacts();
   vi.spyOn(prisma.healthProbeSetting, "findMany").mockResolvedValue((options.settings ?? []) as never);
   const registry = { listActiveModels: vi.fn().mockResolvedValue(options.active) };
   const prober = { probeForHealth: vi.fn(options.probe ?? (async () => ({ ok: true }))) };
@@ -96,6 +98,20 @@ describe("HealthProbeScheduler.tick", () => {
 
     expect(upstreamHealth.modelState("deepseek-flash")).toBe("account_refused");
     expect(upstreamHealth.modelState("doubao-lite")).toBe("ok");
+  });
+
+  it("a model with no usable key is skipped, not filed as a vendor refusal, and not retried every minute", async () => {
+    const { scheduler, prober } = build({
+      active: [model("keyless")],
+      routes: [{ code: "chat/default", primaryModelCode: "keyless", fallbackModelCode: null }],
+      probe: async () => ({ ok: false, skipped: "no_key", detail: "no provider key" }),
+    });
+
+    expect((await scheduler.tick(NOW)).probed).toEqual(["keyless"]);
+    expect(upstreamHealth.modelState("keyless")).toBeUndefined();
+    expect(scheduler.skipReason("keyless")).toEqual({ reason: "no_key", detail: "no provider key" });
+    expect((await scheduler.tick(NOW + MIN)).probed).toEqual([]);
+    expect(prober.probeForHealth).toHaveBeenCalledTimes(1);
   });
 
   it("does not start a pass while one is still running", async () => {

@@ -104,7 +104,14 @@ Two contracts, not implementation details:
   `config.fallbackModelCodes` does not stack on top. One route, one authority.
 - **An endpoint may point at any model.** The registry does not check its
   `category` against the target's `modelType`. Whether the upstream implements
-  the call is answered at call time by `501`, not guessed by the registry.
+  the call is answered at call time, not guessed by the registry: by `501` when
+  the adapter lacks the capability, and by the vendor's own refusal when it has
+  it (a Zhipu chat model named on a rerank route reaches Zhipu's rerank API and
+  is refused there). Not refused at write time, but **reported**: a route of a
+  typed category (`chat` / `embedding` / `rerank`) naming a model of another
+  type is listed in `/capability/health` `routes[].configIssues`, and that
+  model counts as not serving the route (design 120 section 4.4). Whether to
+  refuse such a write is an open owner decision.
 
 Naming an endpoint never widens authority: grants are still checked against
 the *resolved model*.

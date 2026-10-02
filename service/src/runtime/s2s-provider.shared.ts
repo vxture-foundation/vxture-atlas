@@ -72,8 +72,12 @@ export interface S2sProviderRequestBase extends QuotaCheckRequest {
    * An endpoint may point at any model regardless of the model's declared
    * type - pointing an embedding entry point at a chat model is allowed and
    * is not rejected at write time. Whether that upstream actually implements
-   * the capability is answered at call time by a 501, not by a registry
-   * constraint guessing intent.
+   * the capability is answered at call time, not by a registry constraint
+   * guessing intent - by a 501 when the adapter lacks the capability, and by
+   * the vendor's own refusal when the adapter has it (a Zhipu chat model on
+   * the rerank path reaches Zhipu's rerank API). Such a route is not refused,
+   * but it is REPORTED: `/capability/health` `routes[].configIssues`, and the
+   * route's state counts that model as not serving it (design 120 4.4).
    */
   endpointCode?: string;
   /** Task-profile routing (docs/70-workplan) - see `ChatRequest.taskProfile`. */
