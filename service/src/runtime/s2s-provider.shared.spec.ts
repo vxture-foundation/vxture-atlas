@@ -8,7 +8,8 @@ import {
   withWorkspaceFallback,
   type GatedModel,
 } from "./s2s-provider.shared";
-import { ProviderCapabilityNotImplementedError } from "../providers/base.provider";
+import { ProviderCapabilityNotImplementedError, ProviderHttpError } from "../providers/base.provider";
+import { upstreamHealth } from "../health/upstream-health";
 import { rateLimitKey } from "../quota/model-rate-limiter.service";
 import { ModelRuntimeException } from "./runtime.errors";
 import type { S2sAuthContext } from "./guards/s2s-auth.guard";
@@ -457,5 +458,23 @@ describe("toGateRequest", () => {
 
   it("rejects rather than guessing when neither source has a tenant", () => {
     expect(() => toGateRequest({ workspaceId: "ws-1" })).toThrow(ModelRuntimeException);
+  });
+});
+
+// ADR-013: the S2S loop feeds the vendor model's durable health too.
+describe("runWithS2sFailover - health", () => {
+  it("records a refused account on the candidate that failed and ok on the one that served", async () => {
+    upstreamHealth.resetForTests();
+    const deps = makeFailoverDeps({ fallbackModelCodes: ["m2"] });
+    const attempt = vi.fn().mockImplementation(async (gated: GatedModel) => {
+      if (gated.model.modelCode === "m1") throw new ProviderHttpError("pay", 402, "p", "Insufficient Balance");
+      return "served";
+    });
+
+    await runWithS2sFailover(deps as never, { endpointCode: "embedding/default", tenantId: "t" }, undefined, attempt);
+
+    expect(upstreamHealth.modelState("m1")).toBe("account_refused");
+    expect(upstreamHealth.modelState("m2")).toBe("ok");
+    upstreamHealth.resetForTests();
   });
 });

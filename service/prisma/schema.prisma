@@ -9,7 +9,7 @@ generator client {
 // only; there is no prisma.config.ts because Migrate is never used.
 datasource db {
   provider = "postgresql"
-  schemas  = ["key", "reqlog", "model", "provisioning", "audit"]
+  schemas  = ["key", "reqlog", "model", "provisioning", "audit", "health"]
 }
 
 // Atlas 独立物理库：与平台库零跨库 FK（边界#1）。计量表（metering.*）属于
@@ -541,4 +541,42 @@ model ProductEndpointGrant {
   @@index([deletedAt], map: "idx_product_endpoint_grants_deleted_at")
   @@map("product_endpoint_grants")
   @@schema("model")
+}
+
+// ── health schema (ADR-013, design 120; DDL authority 00_baseline.sql / incr/08) ──
+
+/// The CURRENT state of one vendor model or one route. Updated in place on a
+/// transition; durable so a restart does not forget a refused account.
+model HealthSubjectState {
+  subjectKind    String   @map("subject_kind") @db.VarChar(8)
+  subjectKey     String   @map("subject_key") @db.VarChar(128)
+  providerCode   String?  @map("provider_code") @db.VarChar(64)
+  state          String   @db.VarChar(24)
+  since          DateTime @db.Timestamptz(6)
+  upstreamStatus Int?     @map("upstream_status") @db.SmallInt
+  detail         String?  @db.VarChar(500)
+  updatedAt      DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  @@id([subjectKind, subjectKey], map: "pk_health_subject_states")
+  @@map("subject_states")
+  @@schema("health")
+}
+
+/// One state transition, append-only. Pulled by the platform by cursor.
+model HealthEvent {
+  id             String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  subjectKind    String   @map("subject_kind") @db.VarChar(8)
+  subjectKey     String   @map("subject_key") @db.VarChar(128)
+  providerCode   String?  @map("provider_code") @db.VarChar(64)
+  fromState      String   @map("from_state") @db.VarChar(24)
+  toState        String   @map("to_state") @db.VarChar(24)
+  severity       String   @db.VarChar(8)
+  upstreamStatus Int?     @map("upstream_status") @db.SmallInt
+  detail         String?  @db.VarChar(500)
+  affectedRoutes String[] @map("affected_routes")
+
+  @@index([createdAt, id], map: "idx_health_events_cursor")
+  @@map("events")
+  @@schema("health")
 }

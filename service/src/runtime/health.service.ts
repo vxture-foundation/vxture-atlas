@@ -5,6 +5,9 @@
  * @category service
  */
 
+import { routeState } from "../health/health-state";
+import { PrismaHealthStore } from "../health/health.store";
+import { upstreamHealth } from "../health/upstream-health";
 import { Inject, Injectable } from "@nestjs/common";
 import {
   buildHealthIdentity,
@@ -104,6 +107,7 @@ export interface AtlasReadyResponse extends ServiceIdentity {
     usageSummaryRead: HealthCheckResult;
     reqlogPartitions: HealthCheckResult;
     registryDrift: HealthCheckResult;
+    routeHealth: HealthCheckResult;
   };
 }
 
@@ -170,6 +174,9 @@ export class AtlasHealthService {
           this.checkRegistryDrift(includeDetail),
         ),
       ]);
+    const routeHealth = await withDeadline("routeHealth", () =>
+      this.checkRouteHealth(includeDetail),
+    );
     const providerKeys =
       modelRegistry.status === "fail"
         ? { status: "fail" as const, message: "model registry unavailable" }
@@ -189,6 +196,8 @@ export class AtlasHealthService {
         // drift, not liveness. Atlas is perfectly healthy while an operator
         // has a provider switched off and its models still serving - that is
         // something to see, not a reason to fall out of the load balancer.
+        // routeHealth is not in it either, for the same reason: a vendor
+        // account refusing Atlas is not Atlas failing to serve.
       ]),
       checks: {
         database,
@@ -197,8 +206,45 @@ export class AtlasHealthService {
         usageSummaryRead,
         reqlogPartitions,
         registryDrift,
+        routeHealth,
       },
     };
+  }
+
+  /**
+   * ADR-013: routes with no working candidate. Reported, never blocking -
+   * like registryDrift. Atlas is serving; the vendors behind a route are not.
+   * Opera's health page already polls /readyz, so a `down` route shows there.
+   */
+  private async checkRouteHealth(includeDetail: boolean): Promise<HealthCheckResult> {
+    const startedAt = Date.now();
+    try {
+      const routes = await new PrismaHealthStore().listRoutes();
+      const down = routes
+        .filter(
+          (r) =>
+            routeState(
+              upstreamHealth.modelState(r.primary),
+              r.fallback ? upstreamHealth.modelState(r.fallback) : undefined,
+              r.fallback !== null,
+            ) === "down",
+        )
+        .map((r) => r.code);
+      return {
+        status: down.length > 0 ? "warn" : "pass",
+        latencyMs: Date.now() - startedAt,
+        routesDown: down,
+        ...(down.length > 0
+          ? { message: `${down.length} route(s) have no working candidate: ${down.join(", ")}` }
+          : {}),
+      };
+    } catch (error) {
+      return {
+        status: "fail",
+        latencyMs: Date.now() - startedAt,
+        message: failureMessage(error, includeDetail),
+      };
+    }
   }
 
   private async checkDatabase(

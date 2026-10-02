@@ -1,3 +1,6 @@
+import { HealthStoreBootstrap } from "./health/health.store";
+import { ServiceHealthController } from "./health/service-health.controller";
+import { ServiceHealthService } from "./health/service-health.service";
 import { MiddlewareConsumer, Module, NestModule } from "@nestjs/common";
 import { APP_FILTER } from "@nestjs/core";
 
@@ -64,6 +67,7 @@ import { AuditMiddleware } from "./audit/audit.middleware";
     TenancyController,
     ObservabilityController,
     AuditController,
+    ServiceHealthController,
   ],
   providers: [
     // Adds the `Retry-After` header that 200-s2s-provider-surface.md has
@@ -102,6 +106,8 @@ import { AuditMiddleware } from "./audit/audit.middleware";
     ObservabilityService,
     AuditService,
     AuditMiddleware,
+    ServiceHealthService,
+    HealthStoreBootstrap,
   ],
   exports: [
     ModelRuntimeService,

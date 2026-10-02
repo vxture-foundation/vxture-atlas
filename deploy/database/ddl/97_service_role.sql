@@ -21,3 +21,8 @@ GRANT SELECT, INSERT, DELETE ON ALL TABLES IN SCHEMA key, reqlog, model, provisi
 -- the service can erase is not an audit trail, so the service can only append
 -- and read. Retention, if it ever comes, is an owner-run DDL operation.
 GRANT SELECT, INSERT ON ALL TABLES IN SCHEMA audit TO atlas_svc;
+
+-- health (ADR-013, incr/08): no DELETE either. subject_states is updated in
+-- place (column-locked in 98); events are append-only.
+GRANT USAGE ON SCHEMA health TO atlas_svc;
+GRANT SELECT, INSERT ON ALL TABLES IN SCHEMA health TO atlas_svc;

@@ -1,3 +1,4 @@
+import { upstreamHealth } from "../health/upstream-health";
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { HttpStatus, Logger } from "@nestjs/common";
 
@@ -1225,6 +1226,19 @@ describe("ModelRuntimeService runtime flow", () => {
       expect(error.code).toBe("RATE_LIMITED");
       expect(error.getResponse()).toMatchObject({ retryable: true });
       expect(fallbackProvider.chat).toHaveBeenCalled();
+    });
+
+    // ADR-013: real calls feed the vendor model's durable health.
+    it("records each vendor model's health from the calls it serves", async () => {
+      upstreamHealth.resetForTests();
+      const { service, provider } = makeRuntime();
+      provider.chat.mockRejectedValue(new ProviderHttpError("pay", 402, "primary", "Insufficient Balance"));
+
+      await service.chat(makeRequest({ modelCode: "primary-model", requestId: "health-1" }));
+
+      expect(upstreamHealth.modelState("primary-model")).toBe("account_refused");
+      expect(upstreamHealth.modelState("fallback-model")).toBe("ok");
+      upstreamHealth.resetForTests();
     });
 
     it("applies the same rule on the streaming path", async () => {

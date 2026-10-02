@@ -330,9 +330,13 @@ F - service health monitoring (ADR-013, design 120; owner 2026-10-02):
 - [x] F0. Design and ADR. Owner decisions: probe every 10 minutes with the
       smallest call; balance warning on a minimum amount OR a minimum number of
       projected days, whichever first; notices to admin only for now
-- [ ] F1 (P0). Durable state per vendor model and per route, route severity,
+- [x] F1a (P0). Durable state per vendor model and per route (`health`
+      schema, `incr/08`), route severity decided at the moment a model changes,
       transition events, `GET /capability/health[/events]`, `/readyz`
-      attention list; active probes every 10 minutes for idle models
+      `routeHealth`; fed by every real call on the chat and S2S paths
+- [ ] F1b (P0). Active probes every 10 minutes for idle models, with the
+      probe settings and defaults (design 120 section 4.5); `unknown` after two
+      silent intervals
 - [ ] F2 (P1). Balance polling with the two thresholds (DeepSeek first; verify
       which other vendors expose a balance to the key Atlas holds);
       `model_missing` and `unreachable` split out of `unavailable`

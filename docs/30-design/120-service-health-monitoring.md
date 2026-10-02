@@ -162,7 +162,7 @@ refused on write with a 400 that says why.
 | `account_refused` | **one** `account` failure - it does not fix itself | a success (real or probe) |
 | `unavailable` | the circuit breaker trips, or every call / probe in 10 minutes failed `unavailable` / `unreachable` | a success |
 | `model_missing` | `404` from the vendor | a success, or the model is re-pointed |
-| `unknown` | no call and no probe result for 2 intervals | any result |
+| `unknown` | never seen yet. "No call and no probe result for 2 intervals" applies once active probes exist (F1b); before that an idle model would flap between `ok` and `unknown` | any result |
 
 Plus, per vendor: `balance_low` (from §4.3), independent of the model state.
 
@@ -182,6 +182,11 @@ from its first minute.
 
 - State is stored in Atlas's database (a new `health` schema, through db-init
   like every structure change), so a restart loses nothing.
+- **A route's state is decided at the moment a model changes**, from the
+  states at that moment, against the routes as configured (cached, refreshed
+  within a minute of an operator edit). Deciding it later, when the write is
+  queued, reads states that have moved on and can miss a `down` that lasted
+  seconds.
 - **Only transitions become events** - `deepseek-v4-flash: ok ->
   account_refused (402, "Insufficient Balance")`, and later the recovery. A
   failing model does not produce one event per failed call.
@@ -199,7 +204,7 @@ like every L0/L1 link (owner, 2026-09-30).
 |---|---|
 | `GET /capability/health` | current state of every vendor model, vendor balance and route, with severity |
 | `GET /capability/health/events?after=<cursor>` | transitions in order, cursor-paged; the platform keeps the cursor |
-| `/healthz`, `/readyz` | unchanged; `/readyz` gains a non-blocking `attention` list naming any route `down` |
+| `/healthz`, `/readyz` | unchanged; `/readyz` gains a non-blocking `routeHealth` check (`warn`, with `routesDown`, when a route has no working candidate) - non-blocking for the same reason as `registryDrift`: a vendor refusing Atlas is not Atlas failing to serve |
 
 Open for the platform to settle: the credential its server-side job uses on
 the operator plane (operator tokens are issued to people; a read-only machine

@@ -167,6 +167,33 @@ export interface ChangeRecordRow {
   occurredAt: Date;
 }
 
+/** health.subject_states - current health of a vendor model or route (ADR-013). */
+export interface HealthSubjectStateRow {
+  subjectKind: string;
+  subjectKey: string;
+  providerCode: string | null;
+  state: string;
+  since: Date;
+  upstreamStatus: number | null;
+  detail: string | null;
+  updatedAt: Date;
+}
+
+/** health.events - one health transition, append-only (ADR-013). */
+export interface HealthEventRow {
+  id: string;
+  createdAt: Date;
+  subjectKind: string;
+  subjectKey: string;
+  providerCode: string | null;
+  fromState: string;
+  toState: string;
+  severity: string;
+  upstreamStatus: number | null;
+  detail: string | null;
+  affectedRoutes: string[];
+}
+
 interface PrismaMutationResult {
   count: number;
 }
@@ -219,6 +246,8 @@ export interface AtlasPrismaClient {
   requestRecord: PrismaDelegate<RequestRecordRow>;
   errorRecord: PrismaDelegate<ErrorRecordRow>;
   changeRecord: PrismaDelegate<ChangeRecordRow>;
+  healthSubjectState: PrismaDelegate<HealthSubjectStateRow>;
+  healthEvent: PrismaDelegate<HealthEventRow>;
   $connect(): Promise<void>;
   $disconnect(): Promise<void>;
   /**
