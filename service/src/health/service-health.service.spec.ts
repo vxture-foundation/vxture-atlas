@@ -6,7 +6,7 @@ import { decodeCursor, encodeCursor, ServiceHealthService } from "./service-heal
 import { mockRouteModelFacts } from "./route-facts.fixtures";
 import { upstreamHealth } from "./upstream-health";
 
-describe("ServiceHealthService.current - a route naming a model that cannot serve it (design 120 section 4.4)", () => {
+describe("ServiceHealthService.current - a route naming a model that cannot serve the route, design 120 section 4.4", () => {
   beforeEach(() => {
     upstreamHealth.resetForTests();
     vi.spyOn(prisma.modelEndpoint, "findMany").mockResolvedValue([
