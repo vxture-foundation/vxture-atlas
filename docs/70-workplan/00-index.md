@@ -349,7 +349,7 @@ F - service health monitoring (ADR-013, design 120; owner 2026-10-02):
       after the top-up; `doubao-seed-2-0-lite` still paused by the account
       cap (`chat/fast`, `chat/extract` degraded, served by their fallbacks);
       `doubao-pro-32k` 404 (`embedding/default`'s fallback - and a chat model)
-- [ ] F2 (P1). Vendor balance warnings: DeepSeek read hourly
+- [x] F2 (P1). Vendor balance warnings: DeepSeek read hourly
       (`/user/balance`, the call key), either threshold warns (amount, or
       days left from the 7-day decline, top-ups excluded), samples in
       `health.balance_samples` (`incr/10`), thresholds per vendor in
@@ -358,7 +358,12 @@ F - service health monitoring (ADR-013, design 120; owner 2026-10-02):
       billing AK/SK) and Zhipu (no API) reported `not_supported` with the
       reason, and refuse thresholds. `unreachable` split out of
       `unavailable`; Zhipu `429` business codes (`1113`, `1308`-`1321`) are
-      `account`. Built; release pending (db-init `incr/10` first)
+      `account`. Released as v0.7.24 (2026-10-02; db-init `incr/10` first,
+      102/102 column grants). The container gate caught the reader using a
+      keyless model and was fixed before merge. First production pass:
+      DeepSeek CNY 47.55, below the CNY 100 default -> `balance_low`
+      (warning); doubao, zhipu and openai (`sub-api.i-tudou.com`)
+      `not_supported` with the reason
 - [ ] F3 (P2). Configuration checks (fallback able to serve the capability -
       four routes fail this today), degradation, Atlas's own items as
       components
