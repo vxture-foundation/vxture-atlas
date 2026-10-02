@@ -14,6 +14,7 @@ import {
 } from "../observability/reasoning-tool-exposure";
 import { randomUUID } from "node:crypto";
 
+import { upstreamHealth } from "../health/upstream-health";
 import { ProviderHttpError } from "../providers/base.provider";
 import {
   classifyUpstreamStatus,
@@ -245,6 +246,7 @@ export class ModelRuntimeService {
           );
           const latencyMs = Date.now() - startedAt;
           this.circuitBreaker.recordSuccess(model.modelCode);
+          upstreamHealth.recordSuccess(model.modelCode, model.provider);
 
           await this.recordUsage(
             model,
@@ -509,6 +511,11 @@ export class ModelRuntimeService {
               },
             );
             this.circuitBreaker.recordFailure(model.modelCode);
+            upstreamHealth.recordFailure(
+              model.modelCode,
+              model.provider,
+              new Error("provider reported an in-stream error after partial output"),
+            );
             this.logAttempt(
               ctx,
               model,
@@ -542,6 +549,7 @@ export class ModelRuntimeService {
           }
 
           this.circuitBreaker.recordSuccess(model.modelCode);
+          upstreamHealth.recordSuccess(model.modelCode, model.provider);
 
           // Recorded even when the done frame carried no usage: a served
           // stream with NULL token columns is still a served request, and a
@@ -1389,6 +1397,9 @@ export class ModelRuntimeService {
     if (!NOT_A_HEALTH_SIGNAL.has(normalised.code)) {
       this.circuitBreaker.recordFailure(model.modelCode);
     }
+    // ADR-013: the vendor model's durable health. Classified from the ORIGINAL
+    // error; calls that say nothing about the vendor are ignored there.
+    upstreamHealth.recordFailure(model.modelCode, model.provider, error, normalised.code);
     const latencyMs = Date.now() - startedAt;
     this.logAttempt(ctx, model, fallbackAttempt, event, "provider_error", {
       latencyMs,

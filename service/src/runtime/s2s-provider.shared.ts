@@ -39,6 +39,7 @@ import { resolveApiKey, managedKeyAliasOf } from "./resolve-api-key";
 import { modelBehaviorVersion } from "../model-behavior-version";
 import { batch4Columns, billingReasons, hostOf } from "../reqlog/record-facts";
 import { ModelRuntimeException } from "./runtime.errors";
+import { upstreamHealth } from "../health/upstream-health";
 import {
   classifyUpstreamStatus,
   preferReported,
@@ -406,12 +407,13 @@ export async function runWithS2sFailover<T>(
       continue;
     }
     try {
-      return await attempt(gated);
+      const served = await attempt(gated);
+      upstreamHealth.recordSuccess(gated.model.modelCode, gated.model.provider);
+      return served;
     } catch (error) {
-      reported = preferReported(
-        reported,
-        toS2sProviderError(error, gated.model, gated.requestId),
-      );
+      const normalised = toS2sProviderError(error, gated.model, gated.requestId);
+      upstreamHealth.recordFailure(gated.model.modelCode, gated.model.provider, error, normalised.code);
+      reported = preferReported(reported, normalised);
       if (index === candidates.length - 1) break;
     } finally {
       // The gate acquired a concurrency slot when a max_concurrent policy

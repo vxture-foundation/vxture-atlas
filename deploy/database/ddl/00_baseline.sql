@@ -35,6 +35,7 @@ CREATE SCHEMA IF NOT EXISTS reqlog;        -- high-frequency AI request logs / e
 CREATE SCHEMA IF NOT EXISTS model;         -- model governance config (provider/model/grant/price_rule/policy)
 CREATE SCHEMA IF NOT EXISTS provisioning;  -- C3 provisioning webhook receiver state (workspace status + delivery idempotency)
 CREATE SCHEMA IF NOT EXISTS audit;         -- operator change trail over every /capability write (append-only, product_250 M-5)
+CREATE SCHEMA IF NOT EXISTS health;        -- vendor model / route health as durable state + transition events (ADR-013, incr/08)
 
 -- ═══ schema key ═══
 -- Provider API key vault. Never store plaintext keys - only AES-256-GCM
@@ -601,6 +602,44 @@ CREATE TABLE IF NOT EXISTS audit.change_records (
 -- "what happened to THIS provider" - the question M-5 exists to answer.
 CREATE INDEX IF NOT EXISTS idx_change_records_resource
   ON audit.change_records (resource_type, resource_id, occurred_at DESC);
+
+-- --- health (ADR-013, design 120; incr/08) ---
+-- subject_states: the CURRENT state of each vendor model and route, updated in
+-- place on a transition, durable so a restart does not forget a refused account.
+-- events: every transition, append-only; the platform pulls them by cursor.
+CREATE TABLE IF NOT EXISTS health.subject_states (
+    subject_kind     varchar(8)    NOT NULL,
+    subject_key      varchar(128)  NOT NULL,
+    provider_code    varchar(64),
+    state            varchar(24)   NOT NULL,
+    since            timestamptz   NOT NULL,
+    upstream_status  smallint,
+    detail           varchar(500),
+    updated_at       timestamptz   NOT NULL DEFAULT now(),
+    CONSTRAINT pk_health_subject_states PRIMARY KEY (subject_kind, subject_key),
+    CONSTRAINT chk_health_subject_states_kind CHECK (subject_kind IN ('model','route')),
+    CONSTRAINT chk_health_subject_states_state CHECK (state IN
+      ('ok','rate_limited','account_refused','unavailable','model_missing','unknown','degraded','down'))
+);
+
+CREATE TABLE IF NOT EXISTS health.events (
+    id               uuid          PRIMARY KEY DEFAULT gen_random_uuid(),
+    created_at       timestamptz   NOT NULL DEFAULT now(),
+    subject_kind     varchar(8)    NOT NULL,
+    subject_key      varchar(128)  NOT NULL,
+    provider_code    varchar(64),
+    from_state       varchar(24)   NOT NULL,
+    to_state         varchar(24)   NOT NULL,
+    severity         varchar(8)    NOT NULL,
+    upstream_status  smallint,
+    detail           varchar(500),
+    affected_routes  text[],
+    CONSTRAINT chk_health_events_kind CHECK (subject_kind IN ('model','route')),
+    CONSTRAINT chk_health_events_severity CHECK (severity IN ('info','warning','critical'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_health_events_cursor
+  ON health.events (created_at, id);
 -- "what has this operator been doing" - the other direction, for review.
 CREATE INDEX IF NOT EXISTS idx_change_records_operator
   ON audit.change_records (operator_sub, occurred_at DESC);

@@ -26,7 +26,9 @@ type MetricName =
   | "platform_consume_outcomes_total"
   | "reqlog_write_failures_total"
   | "upstream_usage_unmapped_keys_total"
-  | "upstream_http_errors_total";
+  | "upstream_http_errors_total"
+  | "health_transitions_total"
+  | "health_write_failures_total";
 
 type MetricDefinition = {
   type: "counter" | "gauge" | "histogram";
@@ -142,6 +144,18 @@ const METRIC_DEFINITIONS: Record<MetricName, MetricDefinition> = {
     type: "counter",
     help: "upstream_http_errors_total 上游 HTTP 失败（provider；status；class=account|rate_limit|request|server|other）",
     labelNames: ["provider", "status", "class"],
+  },
+  /** ADR-013: a vendor model or route changed health state (`to` is the new state). */
+  health_transitions_total: {
+    type: "counter",
+    help: "health_transitions_total 健康状态变化（kind=model|route；to 为新状态）",
+    labelNames: ["kind", "to"],
+  },
+  /** ADR-013: a health transition that could not be written - the platform would not see it. */
+  health_write_failures_total: {
+    type: "counter",
+    help: "health_write_failures_total 健康状态写库失败数",
+    labelNames: [],
   },
   upstream_usage_unmapped_keys_total: {
     type: "counter",

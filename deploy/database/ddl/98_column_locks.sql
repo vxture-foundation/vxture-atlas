@@ -38,6 +38,14 @@ REVOKE UPDATE ON reqlog.error_records FROM atlas_svc;
 -- withholds DELETE. A row, once written, is the record.
 REVOKE UPDATE ON audit.change_records FROM atlas_svc;
 
+-- --- health (ADR-013, incr/08) ---
+-- subject_states: the identity (subject_kind, subject_key) is never written.
+REVOKE UPDATE ON health.subject_states FROM atlas_svc;
+GRANT UPDATE (provider_code, state, since, upstream_status, detail, updated_at)
+  ON health.subject_states TO atlas_svc;
+-- events: append-only.
+REVOKE UPDATE ON health.events FROM atlas_svc;
+
 -- --- model (authority = docs/design/data_model_200_schema.md section 1, platform repo) ---
 -- provider_code / model_code are the visible-code identity - never writable;
 -- renaming one is a new provider/model, not an edit.
