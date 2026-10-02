@@ -341,6 +341,18 @@ export interface UpstreamCallRecord {
   notSupported?: readonly string[];
 }
 
+/**
+ * A write to `health.probe_settings` (ADR-013, design 120 section 4.5). `null`
+ * clears an override so the level above applies; an absent field is untouched.
+ * Named `Update*Input` so check-column-writes holds it to the column grants.
+ */
+export interface UpdateProbeSettingInput {
+  probeIntervalMinutes?: number | null;
+  probeEnabled?: boolean | null;
+  updatedBy?: string | null;
+  updatedAt?: Date;
+}
+
 export interface IModelProvider {
   readonly providerName: string;
   chat(request: ProviderChatRequest): Promise<ProviderChatResponse>;

@@ -1160,11 +1160,49 @@ No query parameters (any is `400 HEALTH_UNKNOWN_FILTER`).
    `down` for anything that already polls `/readyz`; it is not a second
    notification source.
 
-### Settings (F1b, not yet live)
+### Probe settings - `GET` / `PATCH /capability/health-settings`
 
-Probe interval and probing on/off per model and per vendor, with defaults
-(design 120 section 4.5), edited from opera. The paths are fixed when F1b
-ships and will be added here and on #562.
+Edited from opera (owner, 2026-10-02). Resolution: model -> vendor -> the
+server's `.env` (`HEALTH_PROBE_INTERVAL_MINUTES`, `HEALTH_PROBES_ENABLED`) ->
+built-in (10 minutes, on).
+
+`GET /capability/health-settings` (no query parameters):
+
+```json
+{
+  "global": { "intervalMinutes": 10, "enabled": true, "intervalSource": "default", "enabledSource": "default" },
+  "overrides": [
+    { "subjectKind": "model", "subjectKey": "deepseek-v4-pro", "probeIntervalMinutes": 30,
+      "probeEnabled": null, "updatedBy": "opr_...", "updatedAt": "2026-10-02T10:00:00.000Z" }
+  ],
+  "targets": [
+    { "modelCode": "deepseek-v4-pro", "providerCode": "deepseek", "state": "ok",
+      "lastResultAt": "2026-10-02T10:05:00.000Z",
+      "intervalMinutes": 30, "intervalSource": "model", "enabled": true, "enabledSource": "default" }
+  ]
+}
+```
+
+`targets` are the models probed: the active models a route names, plus any
+model already seen. Each value carries the level it came from (`model` /
+`provider` / `global` / `default`).
+
+`PATCH /capability/health-settings/:subject`, `:subject` = `model:<model_code>`
+or `provider:<provider_code>`:
+
+```json
+{ "probeIntervalMinutes": 30, "probeEnabled": false }
+```
+
+- Either field, or both. `probeIntervalMinutes` 5-60; `null` clears the
+  override so the level above applies.
+- Answers `{ "override": {...}, "effective": {...} }` - what is now stored, and
+  what is now in effect for that model (or, for a vendor, for its models with
+  no override of their own).
+- `400 HEALTH_SETTING_INVALID` (range, type, unknown field, empty body, bad
+  subject); `404 HEALTH_SETTING_UNKNOWN_SUBJECT` (no such model or vendor).
+- The writer is taken from the verified operator token, never the body; the
+  change is in `audit.change_records` as resource `health-settings`.
 
 ## Tenant self-service plane
 

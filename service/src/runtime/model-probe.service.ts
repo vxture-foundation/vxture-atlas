@@ -2,7 +2,7 @@ import { HttpStatus, Inject, Injectable, Logger } from "@nestjs/common";
 import { randomUUID } from "node:crypto";
 
 import { ProviderKeyService } from "../provider-keys/provider-key.service";
-import { resolveWireFor } from "../providers/wire";
+import { resolveWireFor, supportedThinkingModes } from "../providers/wire";
 import type { ResolvedWire } from "../providers/wire";
 import { normalizeProtocol } from "../providers/protocol";
 import { COMMERCE_SENTINEL_UUID } from "../quota/quota.service";
@@ -42,6 +42,8 @@ import type {
 const PROBE_MAX_TOKENS = 2048;
 const PROBE_TIMEOUT_MS = 20_000;
 const PROBE_PROMPT = "ping";
+/** ADR-013: the health probe's budget when reasoning can be turned off. */
+const HEALTH_PROBE_MAX_TOKENS = 16;
 
 /**
  * 同一模型两次自检之间的最小间隔。
@@ -93,9 +95,11 @@ export interface ModelProbeCheck {
  * traffic reads `unknown` forever**, so an operator cannot verify a newly
  * onboarded provider before sending it real load.
  *
- * This closes that gap on demand only. There is deliberately no periodic
- * active probing - that would reintroduce exactly the recurring upstream cost
- * the traffic-derived design exists to avoid.
+ * This closes that gap on demand. Periodic probing was once ruled out here
+ * for its recurring upstream cost; the owner has since accepted that cost
+ * (ADR-013, 2026-10-02): `probeForHealth` below is called every 10 minutes for
+ * any model without real traffic, with the smallest call that proves the model
+ * answers. That one feeds health state, not this operator view.
  */
 export interface ProviderProbeResult {
   providerId: string;
@@ -234,6 +238,65 @@ export class ModelProbeService {
 
     await this.recordProbe(model, requestId, result);
     return result;
+  }
+
+  /**
+   * ADR-013 active probe: the smallest call that proves the model answers.
+   *
+   * - chat (and parse - a vision chat model): one prompt with
+   *   `thinking: "off"` and a 16-token budget when the model can turn
+   *   reasoning off; otherwise the operator probe's budget, so a reasoning chain
+   *   cannot spend it and fake a failure (the 2026-08-25 lesson).
+   * - embedding: one short text. rerank: one query, one candidate.
+   *
+   * Returns the ORIGINAL error so health can classify it (402 vs 429 vs 5xx).
+   * Recorded like the operator probe: reqlog `usage_type='test'` under the
+   * platform sentinel, never reported to platform metering - no tenant pays.
+   * No cooldown: the scheduler is the only caller and paces itself.
+   */
+  async probeForHealth(model: AiModelRecord): Promise<{ ok: boolean; error?: unknown }> {
+    const requestId = `health-probe-${randomUUID()}`;
+    const provider = this.router.resolve(model);
+    const apiKey = await this.resolveKeyQuietly(model, requestId);
+    const startedAt = Date.now();
+    let outcome: { ok: boolean; error?: unknown; totalTokens: number };
+
+    try {
+      if (model.modelType === "embedding") {
+        const r = await withTimeout(() =>
+          provider.embed({ endpointUrl: model.endpointUrl, apiKey, modelCode: model.modelCode, texts: [PROBE_PROMPT], ...(model.config != null ? { config: model.config } : {}) }),
+        );
+        outcome = { ok: true, totalTokens: r.usage?.totalTokens ?? 0 };
+      } else if (model.modelType === "rerank") {
+        const r = await withTimeout(() =>
+          provider.rerank({ endpointUrl: model.endpointUrl, apiKey, modelCode: model.modelCode, query: PROBE_PROMPT, candidates: [{ id: "0", text: PROBE_PROMPT }], ...(model.config != null ? { config: model.config } : {}) }),
+        );
+        outcome = { ok: true, totalTokens: r.usage?.totalTokens ?? 0 };
+      } else {
+        const canTurnOff = supportedThinkingModes(resolveWireFor(model)).includes("off");
+        const request = {
+          ...buildProbeRequest(model, apiKey),
+          ...(canTurnOff ? { thinking: "off" as const, maxTokens: HEALTH_PROBE_MAX_TOKENS } : {}),
+        };
+        const r = await withTimeout((signal) => provider.chat({ ...request, signal }));
+        outcome = { ok: true, totalTokens: r.totalTokens ?? 0 };
+      }
+    } catch (error) {
+      outcome = { ok: false, error, totalTokens: 0 };
+    }
+
+    await this.requestLog.record({
+      requestId,
+      status: outcome.ok ? "success" : "error",
+      tenantId: COMMERCE_SENTINEL_UUID,
+      workspaceId: COMMERCE_SENTINEL_UUID,
+      modelCode: model.modelCode,
+      providerCode: model.provider,
+      totalTokens: outcome.totalTokens,
+      latencyMs: Date.now() - startedAt,
+      usageType: "test",
+    });
+    return outcome.ok ? { ok: true } : { ok: false, error: outcome.error };
   }
 
   /**

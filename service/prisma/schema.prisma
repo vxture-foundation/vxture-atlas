@@ -580,3 +580,17 @@ model HealthEvent {
   @@map("events")
   @@schema("health")
 }
+
+/// Active-probe overrides per model or vendor (incr/09). NULL = inherit.
+model HealthProbeSetting {
+  subjectKind          String   @map("subject_kind") @db.VarChar(8)
+  subjectKey           String   @map("subject_key") @db.VarChar(128)
+  probeIntervalMinutes Int?     @map("probe_interval_minutes") @db.SmallInt
+  probeEnabled         Boolean? @map("probe_enabled")
+  updatedBy            String?  @map("updated_by") @db.VarChar(128)
+  updatedAt            DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  @@id([subjectKind, subjectKey], map: "pk_health_probe_settings")
+  @@map("probe_settings")
+  @@schema("health")
+}

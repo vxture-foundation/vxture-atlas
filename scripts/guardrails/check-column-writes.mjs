@@ -63,6 +63,7 @@ const INPUT_TO_TABLE = {
   UpdateModelEndpointInput: "model.model_endpoints",
   UpdateModelPriceRuleInput: "model.model_price_rules",
   UpdateModelPolicyInput: "model.model_policies",
+  UpdateProbeSettingInput: "health.probe_settings",
 };
 
 /**

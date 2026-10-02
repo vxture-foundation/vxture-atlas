@@ -77,9 +77,13 @@ Every real call is classified as in §2 (v0.7.20 already does `account` and
 
 ### 4.2 Active probes
 
-- **Every 10 minutes** (owner, 2026-10-02), each active model with **no real
-  call in the last 10 minutes** gets one probe. A model with traffic is not
+- **Every 10 minutes** (owner, 2026-10-02), each probe target with **no
+  result in the last 10 minutes** gets one probe. A model with traffic is not
   probed - the traffic is the probe.
+- **Targets**: the active models a route names (primary or fallback), plus
+  any model already seen. That is what callers depend on; probing every
+  registered model would spend calls on models nothing routes to (the dev
+  registry holds 128 chat models).
 - **Smallest possible call.** Chat: one prompt, `thinking: "off"` where the
   model supports it, the smallest output budget. A model that cannot turn
   reasoning off gets the budget the existing probe uses, so the reasoning chain
@@ -144,9 +148,15 @@ Resolution, most specific first:
 
 The amount and days defaults are proposals the owner can change.
 
-No configurable-but-inert: `GET /capability/health` reports, for every
-subject, the **value in effect and the level it came from** (model / vendor /
-global / built-in), so the form can say "using the default, 10 minutes". A
+Interface: `GET /capability/health-settings` lists the global level, every
+override and, for every probe target, the **value in effect and the level it
+came from** (model / vendor / global / built-in), so the form can say "using
+the default, 10 minutes". `PATCH /capability/health-settings/model:<code>` or
+`/provider:<code>` writes an override; `null` clears it.
+
+No configurable-but-inert: every value is reported with its source; an
+unreadable `.env` value refuses start-up; a setting on a model or vendor that
+does not exist is refused (`404 HEALTH_SETTING_UNKNOWN_SUBJECT`). A
 vendor without a balance API reports its thresholds as not applicable, rather
 than accepting a number that can never fire. A value outside its range is
 refused on write with a 400 that says why.
@@ -162,7 +172,7 @@ refused on write with a 400 that says why.
 | `account_refused` | **one** `account` failure - it does not fix itself | a success (real or probe) |
 | `unavailable` | the circuit breaker trips, or every call / probe in 10 minutes failed `unavailable` / `unreachable` | a success |
 | `model_missing` | `404` from the vendor | a success, or the model is re-pointed |
-| `unknown` | never seen yet. "No call and no probe result for 2 intervals" applies once active probes exist (F1b); before that an idle model would flap between `ok` and `unknown` | any result |
+| `unknown` | never seen yet; or an `ok` model with no result for 2 intervals (quietly - idleness is not news). A failing model is never moved here: with no successful call there is no reason to think it recovered | any result |
 
 Plus, per vendor: `balance_low` (from §4.3), independent of the model state.
 

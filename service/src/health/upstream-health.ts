@@ -117,6 +117,8 @@ export function classifyFailure(error: unknown, normalisedCode?: string): Health
 export class UpstreamHealth {
   private readonly logger = new Logger("UpstreamHealth");
   private readonly models = new Map<string, { provider: string; record: ModelHealthRecord }>();
+  /** When each model last produced a result (a call or a probe), epoch ms. In memory only. */
+  private readonly lastResult = new Map<string, number>();
   private readonly routes = new Map<string, RouteHealthState>();
   private store: HealthStore | undefined;
   private queue: Promise<void> = Promise.resolve();
@@ -190,6 +192,49 @@ export class UpstreamHealth {
     return this.models.get(modelCode)?.record.state;
   }
 
+  /** When the model last produced a result in this process; undefined = not since start. */
+  lastResultAt(modelCode: string): number | undefined {
+    return this.lastResult.get(modelCode);
+  }
+
+  /** Every model with a recorded state (seen live, or restored). */
+  seenModels(): string[] {
+    return [...this.models.keys()];
+  }
+
+  /**
+   * An `ok` model with no result for `silentForMs` becomes `unknown`, quietly -
+   * idleness is not news. A failing model is NOT moved: with no successful call
+   * there is no reason to believe it recovered.
+   */
+  markUnknownIfSilent(modelCode: string, silentForMs: number): void {
+    const entry = this.models.get(modelCode);
+    if (!entry || entry.record.state !== "ok") return;
+    const last = this.lastResult.get(modelCode);
+    const at = this.now();
+    if (last !== undefined && at - last < silentForMs) return;
+    if (last === undefined && at - entry.record.since < silentForMs) return;
+    const next: ModelHealthRecord = { state: "unknown", since: at, consecutiveFailures: 0 };
+    this.models.set(modelCode, { provider: entry.provider, record: next });
+    metricsRegistry.incCounter("health_transitions_total", { kind: "model", to: "unknown" });
+    if (this.store) {
+      const store = this.store;
+      this.enqueue(() =>
+        store.save({
+          subjectKind: "model",
+          subjectKey: modelCode,
+          providerCode: entry.provider,
+          from: "ok",
+          to: "unknown",
+          since: new Date(at),
+          severity: "info",
+          affectedRoutes: [],
+          event: false,
+        }),
+      );
+    }
+  }
+
   /** Every transition queued so far has been written. For tests and shutdown. */
   flushed(): Promise<void> {
     return this.queue;
@@ -198,6 +243,7 @@ export class UpstreamHealth {
   /** Tests only. */
   resetForTests(now?: () => number): void {
     this.models.clear();
+    this.lastResult.clear();
     this.routes.clear();
     this.store = undefined;
     this.queue = Promise.resolve();
@@ -213,6 +259,7 @@ export class UpstreamHealth {
     facts: { upstreamStatus?: number; detail?: string },
   ): void {
     const at = this.now();
+    this.lastResult.set(modelCode, at);
     const current = this.models.get(modelCode)?.record ?? initialRecord(at);
     const next = nextRecord(current, signal, at, facts);
     this.models.set(modelCode, { provider, record: next });
