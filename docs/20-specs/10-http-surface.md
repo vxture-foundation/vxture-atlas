@@ -1164,13 +1164,13 @@ No query parameters (any is `400 HEALTH_UNKNOWN_FILTER`).
 
 Edited from opera (owner, 2026-10-02). Resolution: model -> vendor -> the
 server's `.env` (`HEALTH_PROBE_INTERVAL_MINUTES`, `HEALTH_PROBES_ENABLED`) ->
-built-in (10 minutes, on).
+built-in (60 minutes, on).
 
 `GET /capability/health-settings` (no query parameters):
 
 ```json
 {
-  "global": { "intervalMinutes": 10, "enabled": true, "intervalSource": "default", "enabledSource": "default" },
+  "global": { "intervalMinutes": 60, "enabled": true, "intervalSource": "default", "enabledSource": "default" },
   "overrides": [
     { "subjectKind": "model", "subjectKey": "deepseek-v4-pro", "probeIntervalMinutes": 30,
       "probeEnabled": null, "updatedBy": "opr_...", "updatedAt": "2026-10-02T10:00:00.000Z" }

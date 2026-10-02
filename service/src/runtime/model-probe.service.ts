@@ -97,7 +97,7 @@ export interface ModelProbeCheck {
  *
  * This closes that gap on demand. Periodic probing was once ruled out here
  * for its recurring upstream cost; the owner has since accepted that cost
- * (ADR-013, 2026-10-02): `probeForHealth` below is called every 10 minutes for
+ * (ADR-013, 2026-10-02): `probeForHealth` below is called every 60 minutes for
  * any model without real traffic, with the smallest call that proves the model
  * answers. That one feeds health state, not this operator view.
  */

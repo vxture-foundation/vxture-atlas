@@ -77,9 +77,10 @@ Every real call is classified as in §2 (v0.7.20 already does `account` and
 
 ### 4.2 Active probes
 
-- **Every 10 minutes** (owner, 2026-10-02), each probe target with **no
-  result in the last 10 minutes** gets one probe. A model with traffic is not
-  probed - the traffic is the probe.
+- **Every 60 minutes by default** (owner, 2026-10-02; first set at 10 and
+  lowered the same day - probes spend tokens), each probe target with **no
+  result in its interval** gets one probe. A model with traffic is not probed -
+  the traffic is the probe. A tighter cadence is an override (section 4.5).
 - **Targets**: the active models a route names (primary or fallback), plus
   any model already seen. That is what callers depend on; probing every
   registered model would spend calls on models nothing routes to (the dev
@@ -139,7 +140,7 @@ Resolution, most specific first:
 
 | Setting | Level | Built-in default | Allowed |
 |---|---|---|---|
-| probe interval | model / vendor | 10 minutes | 5-60 minutes |
+| probe interval | model / vendor | 60 minutes | 5-60 minutes |
 | probe enabled | model | on | on / off |
 | balance minimum | vendor | CNY 100 / USD 15, in the vendor's currency | >= 0; 0 = do not warn on amount |
 | days left minimum | vendor | 3 days | 0-30; 0 = do not warn on days |
@@ -151,7 +152,7 @@ The amount and days defaults are proposals the owner can change.
 Interface: `GET /capability/health-settings` lists the global level, every
 override and, for every probe target, the **value in effect and the level it
 came from** (model / vendor / global / built-in), so the form can say "using
-the default, 10 minutes". `PATCH /capability/health-settings/model:<code>` or
+the default, 60 minutes". `PATCH /capability/health-settings/model:<code>` or
 `/provider:<code>` writes an override; `null` clears it.
 
 No configurable-but-inert: every value is reported with its source; an

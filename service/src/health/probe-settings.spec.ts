@@ -10,7 +10,7 @@ import {
 describe("readGlobalProbeSettings - the .env level", () => {
   it("falls back to the built-in default, and says so", () => {
     expect(readGlobalProbeSettings({})).toEqual({
-      intervalMinutes: 10,
+      intervalMinutes: 60,
       enabled: true,
       intervalSource: "default",
       enabledSource: "default",
@@ -54,7 +54,7 @@ describe("effectiveProbeSettings - most specific first, with the source", () => 
 
   it("nothing set: the default, labelled as the default", () => {
     expect(effectiveProbeSettings(subject, [], global)).toEqual({
-      intervalMinutes: 10,
+      intervalMinutes: 60,
       intervalSource: "default",
       enabled: true,
       enabledSource: "default",
@@ -63,7 +63,7 @@ describe("effectiveProbeSettings - most specific first, with the source", () => 
 
   it("another model's override does not apply", () => {
     const rows = [{ subjectKind: "model", subjectKey: "other", probeIntervalMinutes: 60, probeEnabled: false }];
-    expect(effectiveProbeSettings(subject, rows, global).intervalMinutes).toBe(10);
+    expect(effectiveProbeSettings(subject, rows, global).intervalMinutes).toBe(60);
   });
 });
 
