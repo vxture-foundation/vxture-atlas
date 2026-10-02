@@ -122,9 +122,15 @@ Applies to every `/v1` surface, generation included.
   and counting it took Doubao out for 30 s under one caller's burst on
   2026-10-01, sending every request to a fallback that could not serve.
 - **The upstream refused Atlas's own account** (`401` key refused, `402`
-  payment required - an exhausted balance, `403` forbidden) -> `503
-  UPSTREAM_ACCOUNT_REFUSED`, `retryable: false`: nothing changes until the
-  owner tops up or rotates the key. The fallback chain is still tried, and the
+  payment required - an exhausted balance, `403` forbidden, and a `429` whose
+  body names an account limit) -> `503 UPSTREAM_ACCOUNT_REFUSED`,
+  `retryable: false`, with the vendor's own words in `message`: nothing changes
+  until the owner tops up, rotates the key or lifts the limit. Vendors reuse
+  `429` for both: on 2026-10-02 Doubao's 429 turned out to be `SetLimitExceeded`
+  - a usage cap set on the account had paused the model ("Safe Experience
+  Mode"). The account-limit codes are a list of observed vendor codes
+  (`ACCOUNT_LIMIT_SIGNATURES` in `runtime/upstream-status.ts`), extended only
+  from observation. The fallback chain is still tried, and the
   breaker does count it - skipping a dead account saves a round trip.
 - Upstream `404` (model mapping), `408` and `5xx` stay `PROVIDER_UNAVAILABLE`
   and do count.

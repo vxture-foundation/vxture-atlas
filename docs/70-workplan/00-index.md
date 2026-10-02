@@ -307,9 +307,13 @@ E - usage reaches the platform (ADR-010, owner 2026-09-30):
       30 s, every request fell through to a DeepSeek account answering 402,
       and 180 of 188 calls failed - all marked retryable, so they were retried
       into the same wall). Upstream 429 -> `RATE_LIMITED` with the vendor's
-      Retry-After, outside the breaker; 401/402/403 ->
-      `UPSTREAM_ACCOUNT_REFUSED` (new, not retryable); a mixed chain reports
-      the retryable failure. The S2S path now normalises each attempt, so the
+      Retry-After, outside the breaker; 401/402/403, **and a 429 whose body
+      names an account limit** -> `UPSTREAM_ACCOUNT_REFUSED` (new, not
+      retryable); a mixed chain reports the retryable failure. The container
+      check on 2026-10-02 hit a real Doubao 429 and it was not throttling: it
+      was `SetLimitExceeded`, a usage cap on the account that paused
+      `doubao-seed-2-0-lite` ("Safe Experience Mode"). So on `chat/fast` both
+      the primary and the fallback were accounts the owner has to fix. The S2S path now normalises each attempt, so the
       status metric counts every attempt, not only the last. **Contract
       fingerprint moves** (53 codes)
 - [ ] E7. Operators enter vendor prices (production has none, 2026-10-01).

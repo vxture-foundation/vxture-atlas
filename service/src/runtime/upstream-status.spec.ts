@@ -5,6 +5,7 @@ import { metricsRegistry } from "./metrics.registry";
 import { toS2sProviderError } from "./s2s-provider.shared";
 import {
   recordUpstreamHttpStatus,
+  upstreamFailureClass,
   upstreamStatusClass,
   upstreamStatusHint,
 } from "./upstream-status";
@@ -88,5 +89,34 @@ describe("the S2S path classifies an upstream 429", () => {
 
     expect(err.code).toBe("RATE_LIMITED");
     expect(err.getResponse()).toMatchObject({ retryable: true, retryAfterMs: 3_000 });
+  });
+});
+
+// Observed 2026-10-02: Doubao's 429 was not throttling but an account usage cap
+// that paused the model. Same status, opposite handling.
+describe("a 429 that is an account limit", () => {
+  const DOUBAO_SET_LIMIT =
+    '{"error":{"code":"SetLimitExceeded","message":"Your account [2101304184] has reached the set usage limit for the [doubao-seed-2-0-lite] model, and the model service has been paused. To continue using this model, please visit the Model Activation page to adjust or close the \\"Safe Experience Mode\\".","param":"","type":"TooManyRequests"}}';
+
+  it("is UPSTREAM_ACCOUNT_REFUSED, not retryable, and carries the vendor's own instructions", () => {
+    const model = { modelCode: "doubao-seed-2-0-lite-260428", provider: "doubao" } as AiModelRecord;
+    const err = toS2sProviderError(new ProviderHttpError("x", 429, "openai-compatible", DOUBAO_SET_LIMIT), model, "r");
+
+    expect(err.code).toBe("UPSTREAM_ACCOUNT_REFUSED");
+    expect(err.getResponse()).toMatchObject({ retryable: false });
+    expect(err.message).toContain("Safe Experience Mode");
+  });
+
+  it("is counted as class=account", async () => {
+    recordUpstreamHttpStatus(new ProviderHttpError("x", 429, "openai-compatible", DOUBAO_SET_LIMIT), "doubao");
+    expect(await metricsRegistry.scrape()).toContain(
+      'upstream_http_errors_total{provider="doubao",status="429",class="account"}',
+    );
+  });
+
+  it("leaves a plain 429 as throttling", () => {
+    expect(
+      upstreamFailureClass(new ProviderHttpError("x", 429, "p", '{"error":{"code":"RateLimitExceeded.EndpointRPMExceeded"}}')),
+    ).toBe("rate_limit");
   });
 });
