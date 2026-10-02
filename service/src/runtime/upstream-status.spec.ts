@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { ProviderHttpError } from "../providers/base.provider";
+import { parseRetryAfterMs, ProviderHttpError } from "../providers/base.provider";
 import { metricsRegistry } from "./metrics.registry";
 import { toS2sProviderError } from "./s2s-provider.shared";
 import {
@@ -56,7 +56,8 @@ describe("the S2S error names an account failure", () => {
     const model = { modelCode: "embedding-3", provider: "zhipu" } as AiModelRecord;
     const err = toS2sProviderError(new ProviderHttpError("x", 402, "zhipu", "{}"), model, "req-1");
 
-    expect(err.code).toBe("PROVIDER_UNAVAILABLE");
+    expect(err.code).toBe("UPSTREAM_ACCOUNT_REFUSED");
+    expect(err.getResponse()).toMatchObject({ retryable: false });
     expect(err.message).toContain("zhipu provider returned status 402");
     expect(err.message).toContain("payment required");
     expect(await metricsRegistry.scrape()).toContain(
@@ -68,5 +69,24 @@ describe("the S2S error names an account failure", () => {
 describe("upstreamStatusHint", () => {
   it("adds nothing for a status that already says enough", () => {
     expect(upstreamStatusHint(500)).toBe("");
+  });
+});
+
+describe("the upstream's Retry-After", () => {
+  it("reads delta-seconds and HTTP-dates, and guesses nothing", () => {
+    expect(parseRetryAfterMs("7")).toBe(7_000);
+    expect(parseRetryAfterMs("Wed, 01 Oct 2026 10:00:30 GMT", Date.parse("Wed, 01 Oct 2026 10:00:00 GMT"))).toBe(30_000);
+    expect(parseRetryAfterMs(null)).toBeUndefined();
+    expect(parseRetryAfterMs("soon")).toBeUndefined();
+  });
+});
+
+describe("the S2S path classifies an upstream 429", () => {
+  it("as RATE_LIMITED, carrying the vendor's wait", () => {
+    const model = { modelCode: "rerank", provider: "zhipu" } as AiModelRecord;
+    const err = toS2sProviderError(new ProviderHttpError("x", 429, "zhipu", "", 3_000), model, "req-2");
+
+    expect(err.code).toBe("RATE_LIMITED");
+    expect(err.getResponse()).toMatchObject({ retryable: true, retryAfterMs: 3_000 });
   });
 });

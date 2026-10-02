@@ -51,10 +51,25 @@ export class ProviderHttpError extends Error {
     readonly status: number,
     readonly provider: string,
     readonly responseBody?: string,
+    /** The upstream's own `Retry-After`, in ms, when it sent one (a 429 usually does). */
+    readonly retryAfterMs?: number,
   ) {
     super(message);
     this.name = "ProviderHttpError";
   }
+}
+
+/**
+ * `Retry-After` is either delta-seconds or an HTTP-date (RFC 9110 10.2.3).
+ * Undefined when absent or unreadable - a guessed wait is worse than none.
+ */
+export function parseRetryAfterMs(value: string | null, now: number = Date.now()): number | undefined {
+  if (value === null) return undefined;
+  const trimmed = value.trim();
+  if (/^\d+$/u.test(trimmed)) return Number(trimmed) * 1000;
+  const at = Date.parse(trimmed);
+  if (Number.isNaN(at)) return undefined;
+  return Math.max(0, at - now);
 }
 
 export abstract class BaseProvider implements IModelProvider {
@@ -128,6 +143,7 @@ export abstract class BaseProvider implements IModelProvider {
         response.status,
         this.providerName,
         responseText,
+        parseRetryAfterMs(response.headers.get("retry-after")),
       );
     }
 

@@ -15,7 +15,12 @@ import {
 import { randomUUID } from "node:crypto";
 
 import { ProviderHttpError } from "../providers/base.provider";
-import { recordUpstreamHttpStatus, upstreamStatusHint } from "./upstream-status";
+import {
+  classifyUpstreamStatus,
+  preferReported,
+  recordUpstreamHttpStatus,
+  upstreamStatusHint,
+} from "./upstream-status";
 import {
   CONTEXT_OVERFLOW_SIGNATURES,
   isContextOverflow,
@@ -93,6 +98,9 @@ function honoursThinking(model: AiModelRecord, mode: ThinkingMode): boolean {
  * everyone.
  */
 const NOT_A_HEALTH_SIGNAL: ReadonlySet<ModelRuntimeErrorCode> = new Set([
+  // An upstream 429 means the model is busy, not broken. Counting it took
+  // Doubao out for 30 s under one caller's burst (production, 2026-10-01).
+  "RATE_LIMITED",
   "UPSTREAM_REJECTED_REQUEST",
   "CONTEXT_LENGTH_EXCEEDED",
   "DEADLINE_EXCEEDED",
@@ -295,13 +303,16 @@ export class ModelRuntimeService {
               : {}),
           };
         } catch (error) {
-          lastProviderError = await this.failCandidate(
-            ctx,
-            model,
-            fallbackAttempt,
-            error,
-            startedAt,
-            "model_runtime_provider_failed",
+          lastProviderError = preferReported(
+            lastProviderError,
+            await this.failCandidate(
+              ctx,
+              model,
+              fallbackAttempt,
+              error,
+              startedAt,
+              "model_runtime_provider_failed",
+            ),
           );
         } finally {
           // 无论这个 candidate 有没有配限流策略、有没有真的 acquire 过,
@@ -579,13 +590,16 @@ export class ModelRuntimeService {
           // same fetch, and it must be reported as the caller's budget running
           // out, not as the caller disconnecting.
           if (ctx.deadline?.aborted) {
-            lastProviderError = await this.failCandidate(
-              ctx,
-              model,
-              fallbackAttempt,
-              error,
-              startedAt,
-              "model_runtime_provider_stream_failed",
+            lastProviderError = preferReported(
+              lastProviderError,
+              await this.failCandidate(
+                ctx,
+                model,
+                fallbackAttempt,
+                error,
+                startedAt,
+                "model_runtime_provider_stream_failed",
+              ),
             );
             break;
           }
@@ -639,13 +653,16 @@ export class ModelRuntimeService {
             );
             return;
           }
-          lastProviderError = await this.failCandidate(
-            ctx,
-            model,
-            fallbackAttempt,
-            error,
-            startedAt,
-            "model_runtime_provider_stream_failed",
+          lastProviderError = preferReported(
+            lastProviderError,
+            await this.failCandidate(
+              ctx,
+              model,
+              fallbackAttempt,
+              error,
+              startedAt,
+              "model_runtime_provider_stream_failed",
+            ),
           );
           // Partial output already reached the client - do not let a fallback
           // stream a second answer into the same response. The comment sat
@@ -1056,6 +1073,13 @@ export class ModelRuntimeService {
         { requestId, modelCode: model.modelCode, provider: model.provider },
       );
     }
+
+    const classified = classifyUpstreamStatus(error, {
+      requestId,
+      modelCode: model.modelCode,
+      provider: model.provider,
+    });
+    if (classified !== undefined) return classified;
 
     const message =
       error instanceof ProviderHttpError
