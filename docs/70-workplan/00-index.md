@@ -343,7 +343,12 @@ F - service health monitoring (ADR-013, design 120; owner 2026-10-02):
       default (owner lowered it from 10 the same day: probes spend tokens); `health.probe_settings` (`incr/09`) with model -> vendor ->
       `.env` -> built-in resolution, `GET`/`PATCH /capability/health-settings`
       reporting each value's source; `unknown` after two silent intervals
-      (quietly, `ok` models only)
+      (quietly, `ok` models only). Released as v0.7.23 (2026-10-02; db-init
+      `incr/09` first; v0.7.22 was cancelled before deploy - it carried the
+      10-minute default). The first production pass: DeepSeek v4 flash / pro ok
+      after the top-up; `doubao-seed-2-0-lite` still paused by the account
+      cap (`chat/fast`, `chat/extract` degraded, served by their fallbacks);
+      `doubao-pro-32k` 404 (`embedding/default`'s fallback - and a chat model)
 - [ ] F2 (P1). Balance polling with the two thresholds (DeepSeek first; verify
       which other vendors expose a balance to the key Atlas holds);
       `model_missing` and `unreachable` split out of `unavailable`
