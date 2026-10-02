@@ -1012,6 +1012,160 @@ the platform - never what anyone is charged. A rule entered as a sales price
 would make every such cost wrong with nothing raising an error, which is why
 ADR-012 fixes the meaning.
 
+## Service health (operator plane) - the platform watcher's contract
+
+ADR-013, design `docs/30-design/120-service-health-monitoring.md`. Live from
+v0.7.21 (F1a). This section is the contract the platform's server-side watcher
+(vxture-platform#562) implements against; the design explains why.
+
+### Auth
+
+`OperatorAuthGuard`, like every `/capability/*` route: an RS256 token from the
+platform issuer with `realm = "workforce"`, `userType = "operator"`,
+`scope = "mgmt:atlas"`, a `sub` and an `act.sub`. A missing or wrong token is
+`401` with one of `OPERATOR_TOKEN_MISSING` / `_INVALID` / `_WRONG_SCOPE` /
+`_WRONG_REALM` / `_WRONG_USER_TYPE` / `_MISSING_SUB` / `_MISSING_ACT`.
+
+**Open, and blocking for an unattended job:** these tokens are issued to
+people. Which credential a server-side job uses is the platform's to settle on
+#562 (a machine client with a read-only scope is the likely shape); Atlas will
+accept what is agreed there. Until then the endpoints are callable with an
+operator's own token, e.g. from opera.
+
+### `GET /capability/health` - current state
+
+No query parameters (any is `400 HEALTH_UNKNOWN_FILTER`).
+
+```json
+{
+  "generatedAt": "2026-10-02T09:30:00.000Z",
+  "models": [
+    {
+      "modelCode": "deepseek-v4-flash",
+      "providerCode": "deepseek",
+      "state": "account_refused",
+      "since": "2026-10-01T16:47:11.424Z",
+      "upstreamStatus": 402,
+      "detail": "{\"error\":{\"message\":\"Insufficient Balance\"}}"
+    }
+  ],
+  "routes": [
+    {
+      "code": "chat/fast",
+      "state": "down",
+      "severity": "critical",
+      "primary": { "modelCode": "doubao-seed-2-0-lite-260428", "state": "account_refused" },
+      "fallback": { "modelCode": "deepseek-v4-flash", "state": "account_refused" }
+    },
+    {
+      "code": "rerank/default",
+      "state": "ok",
+      "severity": null,
+      "primary": { "modelCode": "rerank", "state": "unknown" },
+      "fallback": null
+    }
+  ]
+}
+```
+
+| Field | Meaning |
+|---|---|
+| `models[].state` | `ok` / `rate_limited` / `account_refused` / `unavailable` / `model_missing` / `unknown` |
+| `models[]` | **only models with a recorded result** (a real call, or a probe from F1b on) since the state was first kept. It is not the model catalogue; a model absent here is `unknown` |
+| `models[].upstreamStatus`, `detail` | present while the model is failing: the vendor's HTTP status and its own words (up to 300 characters). `detail` often says what to do ("adjust or close the Safe Experience Mode") |
+| `routes[]` | **every active route as configured now**, evaluated at read time |
+| `routes[].state` | `ok` (primary not failing) / `degraded` (primary failing, fallback serving) / `down` (nothing serving) |
+| `routes[].severity` | `null` / `warning` / `critical` |
+| times | ISO 8601, UTC |
+
+`unknown` is not failing: a route whose primary has never been seen is `ok`.
+
+### `GET /capability/health/events` - transitions, by cursor
+
+| Query | Meaning |
+|---|---|
+| `after` | the `nextCursor` of the previous page; omit for the beginning |
+| `limit` | 1-200, default 50 |
+
+```json
+{
+  "items": [
+    {
+      "id": "5b0c...",
+      "createdAt": "2026-10-01T16:47:11.430Z",
+      "subjectKind": "model",
+      "subjectKey": "deepseek-v4-flash",
+      "providerCode": "deepseek",
+      "from": "unknown",
+      "to": "account_refused",
+      "severity": "warning",
+      "upstreamStatus": 402,
+      "detail": "{\"error\":{\"message\":\"Insufficient Balance\"}}",
+      "affectedRoutes": ["chat/fast"]
+    },
+    {
+      "id": "8e21...",
+      "createdAt": "2026-10-01T16:47:11.431Z",
+      "subjectKind": "route",
+      "subjectKey": "chat/fast",
+      "providerCode": null,
+      "from": "degraded",
+      "to": "down",
+      "severity": "critical",
+      "upstreamStatus": null,
+      "detail": null,
+      "affectedRoutes": ["chat/fast"]
+    }
+  ],
+  "nextCursor": "MjAyNi0xMC0wMVQxNjo0NzoxMS40MzFafDhlMjEuLi4"
+}
+```
+
+- **Order**: oldest first, by (`createdAt`, `id`). The cursor is opaque - store
+  it, never build it.
+- **An empty page returns the cursor you sent**, so keeping `nextCursor` after
+  every call is always correct.
+- **One event per transition**, not per failed call: a model failing for a day
+  produces one event when it starts and one when it recovers.
+- **Recovery is an event**: `to: "ok"` with `severity: "info"`, for a model or
+  a route. A route that improves without recovering (`down -> degraded`)
+  carries the severity of where it landed (`warning`).
+- A model's first sighting as healthy is stored without an event.
+- Errors: `400 HEALTH_INVALID_CURSOR` (not a cursor this endpoint issued),
+  `400 HEALTH_INVALID_LIMIT`, `400 HEALTH_UNKNOWN_FILTER`; envelope
+  `{ "code", "message", "retryable": false }`.
+- Retention: events are append-only and not pruned today.
+
+### How the watcher is expected to consume it
+
+1. **Every minute**: `GET /capability/health/events?after=<stored cursor>&limit=200`;
+   while a page comes back full, fetch the next one at once. **Store the cursor
+   only after the page has been handled** - delivery is at-least-once, so
+   de-duplicate on `id`.
+2. **Notify** (admin first, owner 2026-10-02):
+   - `critical` (a route `down`): immediately;
+   - `warning` (a model failing, a route `degraded`): yes;
+   - `info` (a recovery to `ok`): close the open notice for the same
+     `subjectKind` + `subjectKey` rather than raising a new alarm; a route
+     going `down -> degraded` updates its notice to warning.
+   One open notice per subject is enough; later events on it update it.
+3. **First run** (no cursor): read from the beginning; whether to notify for
+   events older than the watcher itself is the platform's choice.
+4. **Watch Atlas itself**: `GET /healthz` on the same minute. Three failures in
+   a row is "Atlas unreachable" (critical); the next success closes it. Atlas
+   cannot report its own death - this is the only place it is seen.
+5. `GET /capability/health` is for a status view (admin), or to rebuild state
+   after the watcher has lost its cursor; it is not needed for notifications.
+6. `/readyz` `checks.routeHealth` (`warn`, `routesDown: [...]`) repeats route
+   `down` for anything that already polls `/readyz`; it is not a second
+   notification source.
+
+### Settings (F1b, not yet live)
+
+Probe interval and probing on/off per model and per vendor, with defaults
+(design 120 section 4.5), edited from opera. The paths are fixed when F1b
+ships and will be added here and on #562.
+
 ## Tenant self-service plane
 
 Auth: `S2sAuthGuard` (`tool:atlas`). **Scope is derived from the token, never
