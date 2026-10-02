@@ -8,7 +8,7 @@ import { routeState, type ModelHealthState, type RouteHealthState } from "./heal
  * has a key Atlas can use, and is of the route's type: the embed and rerank
  * paths call the vendor's embedding / rerank API, so a chat model named
  * there fails on every call, and a chat route cannot be answered by an
- * embedding model. Found in production 2026-10-02: seven of twelve routes
+ * embedding model. Found in production 2026-10-02: six of twelve routes
  * named a model of the wrong type, one of them as the PRIMARY.
  *
  * What this cannot check: a capability no model declares. `chat/vision` needs
