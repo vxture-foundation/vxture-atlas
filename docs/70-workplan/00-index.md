@@ -25,7 +25,7 @@ deferral in `docs/60-operations/10-tech-debt.md`.
 - [x] C3 provisioning webhook - HMAC verify, dual-secret rotation, idempotent,
       per-workspace `seq` ordering (atomic check-and-write)
 - [x] C2 entitlement client - built, but reads `product=atlas`, which the
-      platform no longer resolves (TD-056); the gate falls open until ADR-010 lands
+      platform no longer resolves (TD-056); the gate reads by the caller's product since E4 (2026-10-04)
 - [x] Own `reqlog` request/error history, 6-month retention
       with partition maintenance and a `/readyz` runway alarm; gate refusals,
       streamed responses without a usage frame, and probe traffic
@@ -286,11 +286,23 @@ E - usage reaches the platform (ADR-010, owner 2026-09-30):
       An adapter's `not_supported` declaration was a claim nothing checked;
       a vendor that starts reporting a new figure now names it. Known fields:
       `service/src/reqlog/usage-keys.ts`. Released as v0.7.17 (2026-10-01)
-- [ ] E4. Consume under the caller's product with raw tokens in four
-      dimensions, and C2 read by the caller's product - in the shape #547
-      settles on
-- [ ] E5. Backfill from `reqlog` the calls that were served and never billed,
-      if the platform wants them
+- [x] E4. Report under the caller's product with raw tokens in four
+      dimensions (`reportTokens`, the shape vxture-platform ADR-013 / #581
+      settled on: the same `POST /usage/consume`, a `tokens` body,
+      `request_id` + `attempt_index` as the idempotency key, `occurred_at` =
+      started_at, rerank candidates and parse pages as their own units), and
+      the C2 read and quota gate by the caller's product. The platform
+      converts to `ai.credit` and deducts; a report it recorded without
+      charging (`credit_skip_reason`) leaves `usage_event_id` empty as
+      `not_applicable`, correlated by `request_id`. Released as v0.7.31
+      (2026-10-04)
+- [x] E5. Backfill: `scripts/ops/backfill-token-usage.mjs --before <switch
+      instant> --apply` replays served rows with `usage_event_id IS NULL` as
+      `backfill: true` - recorded by the platform, not deducted (ADR-013 D7).
+      Rerank pool sizes are unrecoverable for refused rows (`billed_amount`
+      was written only on acceptance); those go out with their upstream
+      token usage or are counted as skipped. Runs against production once the
+      platform side is deployed and the callers exist in its catalog
 - [x] E6. Price rules mean the vendor's price, written from the admin console
       (ADR-012); the platform's "sales price" wording and the admin form's
       missing cache-write fields raised as vxture-platform#554

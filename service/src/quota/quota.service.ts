@@ -58,10 +58,20 @@ export class QuotaService {
   private async checkEntitlement(
     model: AiModelRecord,
     workspaceId: string | undefined,
+    /**
+     * ADR-010 / ADR-013 D11: the C2 view is read under the CALLER's product.
+     * Without a verified caller there is no product to read it for - and
+     * `product=atlas` resolves nothing since 2026-09-23 - so the gate falls
+     * open exactly as it does for an unreachable platform.
+     */
+    callerProductCode: string | undefined,
   ): Promise<void> {
-    if (!workspaceId) return;
+    if (!workspaceId || !callerProductCode) return;
 
-    const outcome = await this.entitlements.resolve(workspaceId);
+    const outcome = await this.entitlements.resolve(
+      workspaceId,
+      callerProductCode,
+    );
     if (outcome.kind !== "resolved") return;
 
     const pools = outcome.view.quota_pools ?? [];
@@ -111,7 +121,11 @@ export class QuotaService {
     const applicationScope = resolveApplicationScope(request);
     await this.assertGranted(model, request, applicationScope, auth);
 
-    await this.checkEntitlement(model, auth?.workspaceId);
+    await this.checkEntitlement(
+      model,
+      auth?.workspaceId,
+      auth?.callerProductCode,
+    );
     await this.checkRateLimit(model, request.tenantId);
   }
 

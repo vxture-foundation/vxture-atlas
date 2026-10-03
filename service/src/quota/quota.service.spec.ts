@@ -367,6 +367,9 @@ describe("QuotaService C2 entitlement gate (TD-016)", () => {
   const grantRepo = {
     findBestGrant: vi.fn(async () => ({ id: "g1" })),
     findApplicablePolicy: vi.fn().mockResolvedValue(null),
+    // The product axis holds nothing here; the tenant grant above authorizes.
+    listProductEndpointGrants: vi.fn(async () => []),
+    reachableModelCodes: vi.fn(async () => new Set<string>()),
   };
 
   function svcWith(resolve: () => Promise<unknown>) {
@@ -386,7 +389,7 @@ describe("QuotaService C2 entitlement gate (TD-016)", () => {
     }));
 
     await expect(
-      svc.assertAllowed(model, { tenantId: WS }, { workspaceId: WS }),
+      svc.assertAllowed(model, { tenantId: WS }, { workspaceId: WS, callerProductCode: "karda" }),
     ).rejects.toMatchObject({ code: "QUOTA_EXCEEDED" });
   });
 
@@ -397,7 +400,7 @@ describe("QuotaService C2 entitlement gate (TD-016)", () => {
     }));
 
     await expect(
-      svc.assertAllowed(model, { tenantId: WS }, { workspaceId: WS }),
+      svc.assertAllowed(model, { tenantId: WS }, { workspaceId: WS, callerProductCode: "karda" }),
     ).resolves.toBeUndefined();
   });
 
@@ -410,7 +413,7 @@ describe("QuotaService C2 entitlement gate (TD-016)", () => {
     }));
 
     await expect(
-      svc.assertAllowed(model, { tenantId: WS }, { workspaceId: WS }),
+      svc.assertAllowed(model, { tenantId: WS }, { workspaceId: WS, callerProductCode: "karda" }),
     ).resolves.toBeUndefined();
   });
 
@@ -418,7 +421,7 @@ describe("QuotaService C2 entitlement gate (TD-016)", () => {
     const svc = svcWith(async () => ({ kind: "unreachable", reason: "ETIMEDOUT" }));
 
     await expect(
-      svc.assertAllowed(model, { tenantId: WS }, { workspaceId: WS }),
+      svc.assertAllowed(model, { tenantId: WS }, { workspaceId: WS, callerProductCode: "karda" }),
     ).resolves.toBeUndefined();
   });
 
@@ -429,5 +432,29 @@ describe("QuotaService C2 entitlement gate (TD-016)", () => {
     await svc.assertAllowed(model, { tenantId: WS }, {});
 
     expect(resolve).not.toHaveBeenCalled();
+  });
+
+  it("skips the C2 read when the token carries no caller product - there is no product to read the view for (ADR-013 D11)", async () => {
+    const resolve = vi.fn(async () => ({
+      kind: "resolved",
+      view: { quota_pools: [{ metric: "ai.credit", limit: 1, remaining: 0, priority: 1 }] },
+    }));
+    const svc = svcWith(resolve as never);
+
+    // Fails open, exactly as for an unreachable platform - not a denial.
+    await expect(
+      svc.assertAllowed(model, { tenantId: WS }, { workspaceId: WS }),
+    ).resolves.toBeUndefined();
+
+    expect(resolve).not.toHaveBeenCalled();
+  });
+
+  it("reads the view under the caller's product, never under atlas", async () => {
+    const resolve = vi.fn(async () => ({ kind: "resolved", view: { quota_pools: [] } }));
+    const svc = svcWith(resolve as never);
+
+    await svc.assertAllowed(model, { tenantId: WS }, { workspaceId: WS, callerProductCode: "karda" });
+
+    expect(resolve).toHaveBeenCalledWith(WS, "karda");
   });
 });

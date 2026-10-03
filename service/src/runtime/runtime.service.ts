@@ -38,7 +38,11 @@ import {
 import { RequestLogService } from "../reqlog/request-log.service";
 import type { RequestLogEntry } from "../reqlog/request-log.types";
 import { batch4Columns, billingReasons, hostOf } from "../reqlog/record-facts";
-import { PlatformEntitlementClient } from "../platform/platform-entitlement.client";
+import {
+  PlatformEntitlementClient,
+  splitUsage,
+  type TokenReportOutcome,
+} from "../platform/platform-entitlement.client";
 import type { S2sAuthContext } from "./guards/s2s-auth.guard";
 import { ModelCircuitBreakerService } from "./model-circuit-breaker.service";
 import { ModelRegistryService } from "../registry/model-registry.service";
@@ -1644,18 +1648,31 @@ export class ModelRuntimeService {
     const applicationScope = resolveApplicationScope(request);
     const reported = usage !== undefined && usage.usageReported !== false;
 
-    // C3 consume is the platform's sole write path into the metering kernel.
-    // Called after the fact because the amount is the realized token count;
-    // gating already happened on the C2 read. `billed` false => served but
-    // not billed, which is the reconciliation signal (billed_amount IS NULL)
-    // described in docs/30-design/210-usage-metering-and-history.md.
-    const consumed =
+    // C3 is the platform's sole write path into the metering kernel. Called
+    // after the fact because the counts are the realized ones; gating already
+    // happened on the C2 read. `billed` false => served but not billed, which
+    // is the reconciliation signal (billed_amount IS NULL) described in
+    // docs/30-design/210-usage-metering-and-history.md.
+    //
+    // ADR-010 / platform ADR-013 (#547): the report is raw tokens in four
+    // non-overlapping dimensions under the CALLER's product, with the instant
+    // the call started - the platform converts to credits and deducts. Until
+    // 2026-10-04 this sent `product:"atlas"` + total tokens, which the platform
+    // had refused since atlas left its catalog (TD-056).
+    const consumed: TokenReportOutcome =
       auth?.workspaceId && reported && usage.totalTokens > 0
-        ? await this.entitlements.consume({
+        ? await this.entitlements.reportTokens({
             workspaceId: auth.workspaceId,
-            metric: CHAT_METRIC,
-            amount: usage.totalTokens,
-            idempotencyKey: requestId,
+            callerProductCode: auth.callerProductCode,
+            requestId,
+            ...(attemptIndex !== undefined ? { attemptIndex } : {}),
+            occurredAt: outcome.facts?.startedAt ?? new Date(),
+            modelCode: model.modelCode,
+            providerCode: model.provider,
+            tokens: splitUsage(usage),
+            ...(usage.reasoningTokens !== undefined
+              ? { reasoningTokens: usage.reasoningTokens }
+              : {}),
           })
         : { billed: false };
 

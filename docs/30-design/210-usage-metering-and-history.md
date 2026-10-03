@@ -51,11 +51,17 @@ deliberately does not learn them - it sees a `metric_key` and an amount.
 
 ## 3. Atlas side
 
-> **Superseded in part by ADR-010 (2026-09-30).** The metric table below is
-> the wire Atlas still sends (`product: "atlas"`, `atlas.*` metrics), and the
-> platform refuses all of it since atlas left the product catalog (TD-056).
-> ADR-010 replaces it with raw tokens in four dimensions under the caller's
-> product; this section is rewritten when that payload lands.
+> **Wire since 2026-10-04 (ADR-010; platform ADR-013).** Every served call is
+> reported to `POST /usage/consume` as raw facts under the CALLER's product
+> (`act.sub` on the S2S token, never `atlas`): `tokens: {input, output,
+> cache_write, cache_read}` - non-overlapping, so `input` is `input_tokens`
+> minus both cache kinds - with `request_id` + `attempt_index` (the platform's
+> idempotency key), `occurred_at` (= `started_at`), `model_code`,
+> `provider_code`, `reasoning_tokens`, and the capability's own unit where it
+> has one (`rerank_candidates`, `parse_pages`). The platform converts to
+> `ai.credit` with an operator-set rate and deducts; Atlas neither converts nor
+> pre-deducts. The `cost_unit` table below describes reqlog's OWN columns -
+> what Atlas reported, in the capability's unit - not the wire.
 
 `reqlog.request_records` (monthly `PARTITION BY RANGE (created_at)`) is the
 detailed history layer:
@@ -153,8 +159,17 @@ is the platform's event id echoed back into Atlas's row. Neither is an FK
 - "what did workspace W spend this cycle" -> platform, authoritative
 - "which model/user/agent produced that spend" -> Atlas, joined on
   `request_id` / `usage_event_id`
-- an Atlas row with `usage_event_id IS NULL` means the consume call did not
-  land - the reconciliation signal that makes the split safe to operate
+- an Atlas row with `usage_event_id IS NULL` says why in
+  `dimension_status.usageEventId` (ADR-011): `not_reported` / `not_reached` /
+  `not_configured` - the report did not land, the reconciliation signal that
+  makes the split safe to operate; `not_applicable` - the platform recorded
+  the raw fact and by design moved no credit for it (a backfilled row, a
+  failed attempt, no rate in force, or only the fractional carry moved), so
+  there is no deduction event to echo. Those rows join the platform's
+  `metering.token_usage_events` on `request_id` + `attempt_index`
+- rows served before 2026-10-04 are replayed by
+  `scripts/ops/backfill-token-usage.mjs` (`backfill: true`, recorded and not
+  charged - ADR-013 D7); nothing is written back, the table is append-only
 
 ## 5. Retention
 

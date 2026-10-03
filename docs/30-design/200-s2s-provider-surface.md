@@ -64,8 +64,10 @@ The contract-layer-first boundary is
   both a model and a capability. Optional today because karda and vxtpl predate
   it; X-2 makes it mandatory, and that step needs the callers, not Atlas.
 - Atlas is the **sole inference-metering entry point**: token and call
-  consumption is accounted here and reported to the platform via C3 consume.
-  Callers do not report model token usage themselves.
+  consumption is accounted here and reported to the platform via C3
+  `POST /usage/consume` as raw tokens under the CALLER's product (ADR-010);
+  the platform prices and deducts `ai.credit`. Callers do not report model
+  token usage themselves.
 - Attribution is taken from verified token claims, never from the request body.
 
 ### 1.3 Credentials
@@ -151,7 +153,7 @@ Applies to every `/v1` surface, generation included.
 | Version pinning | `modelCode` is itself the versioned identifier (e.g. `embed-bge-m3-v2`); no `latest` alias is exposed. `dimension` is immutable for a given `modelCode` - a new algorithm or dimension is registered as a **new** `modelCode`, and existing vector stores keep using the old one |
 | Batching | one `texts` array per request; provisional ceiling 256, to be confirmed against a real model |
 | Idempotency | no server-side cache; callers de-duplicate if they need to |
-| Metering | C3 consume `metric = atlas.embed`, amount = upstream-reported total tokens; when the provider reports no usage, nothing is consumed and the reqlog row's NULL `billed_amount` is the reconciliation signal - a number is never invented |
+| Metering | C3 report (ADR-010): the upstream-reported prompt tokens as raw `tokens.input` under the caller's product, priced by the platform; when the provider reports no usage, nothing is reported and the reqlog row's NULL `billed_amount` is the reconciliation signal - a number is never invented |
 
 ## 3. A2 - Parse (layout / OCR / table / formula)
 
@@ -182,7 +184,7 @@ action, not a code change.
 | Score distribution | measured range is heavily compressed at the top (a fully unrelated candidate can score 0.998 vs 1.0 for a relevant one): ORDER is reliable, absolute-score thresholds are NOT - do not build "score > X means relevant" cutoffs on this model |
 | Degradation | when rerank is unavailable, fail fast with `503 PROVIDER_UNAVAILABLE` (`retryable: true`) rather than hanging, so the caller can fall back to its own ordering and mark the result degraded. This row promised `RERANK_UNAVAILABLE` until 2026-08-16; that code was declared, never thrown, and has been removed. A rerank-specific alias would be a second word for a meaning that already has one, and the caller's action is identical either way - X-4 |
 | Attribution | `workspaceId` = the workspace that triggered the request, not the asset owner |
-| Metering | C3 consume `metric = atlas.rerank`, amount = candidate pool size (the cross-encoder cost driver; deterministic even when the upstream reports no token usage). Upstream token usage still lands in reqlog when reported |
+| Metering | C3 report (ADR-010): `rerank_candidates` = candidate pool size (the cross-encoder cost driver; deterministic even when the upstream reports no token usage), plus the upstream token usage when reported, under the caller's product; the platform's rate table prices each unit. Upstream token usage still lands in reqlog when reported |
 
 ## 5. Tenant model list and task-profile routing
 

@@ -1,6 +1,7 @@
 # ADR-010: Usage is reported to the platform as raw tokens, under the caller's product
 
-- Status: Accepted (owner, 2026-09-30)
+- Status: Accepted (owner, 2026-09-30); implemented 2026-10-04 (receiving side
+  vxture-platform ADR-013 / #581, reporting side Atlas v0.7.31)
 - Date: 2026-09-30
 - Deciders: owner
 
@@ -45,17 +46,27 @@ ADR-001.
 
 ## Consequences
 
-- The platform needs a way to receive the raw record. The current consume takes
-  one metric and one amount under a globally unique idempotency key, so four
-  dimensions do not fit. The shape is the platform's to design:
-  vxture-platform#547. Atlas changes its payload and its C2 read to match what
-  that issue settles on.
-- Atlas does not capture cache-write tokens today (e.g. Claude's
-  `cache_creation_input_tokens`). Adding that dimension is Atlas work: adapters
-  plus a `reqlog` column through db-init.
-- Until #547 lands, inference usage still does not reach the platform. Every
-  call has a `reqlog` row with its token counts, `request_id` and a NULL
-  `billed_amount`, which is the record a backfill would be built from.
+- The receiving shape is the platform's (ADR-013, #547 / #581): the same
+  `POST /usage/consume`, with `tokens: {input, output, cache_write, cache_read}`
+  + `request_id` + `attempt_index` (together the idempotency key) +
+  `occurred_at` + `model_code` / `provider_code`, optional `reasoning_tokens`,
+  `rerank_candidates`, `parse_pages`, `outcome`, `backfill`; a body carrying
+  both this and the old `metric` + `amount` is refused. Atlas sends that shape
+  (`PlatformEntitlementClient.reportTokens`) and reads C2 by the caller's
+  product since 2026-10-04. The platform converts with an operator-set rate,
+  carries the fraction per (workspace, product) and deducts whole `ai.credit`.
+- Cache-write tokens are captured since usage-record batch 1 (`incr/04`), so
+  the fourth dimension is real on every adapter that reports it.
+- Calls served before the switch have a `reqlog` row with `usage_event_id IS
+  NULL`; `scripts/ops/backfill-token-usage.mjs` replays them with `backfill:
+  true`, which the platform records and deliberately does not charge
+  (ADR-013 D7). A failed failover attempt is reported as `outcome: failed`
+  and likewise recorded, never charged (D8).
+- A report the platform recorded without a deduction (backfill, failed attempt,
+  no rate in force, or only the fractional carry moved) has no event id to
+  echo; the row's `dimension_status.usageEventId` says `not_applicable`, and
+  the fact is correlated by `request_id` against
+  `metering.token_usage_events`.
 - A refused consume now names the platform's reason in the log and counts it in
   `platform_consume_outcomes_total{metric,outcome,reason}`. A refusal like this
   one is a non-zero `outcome="rejected"` series from its first occurrence.
@@ -63,6 +74,5 @@ ADR-001.
   `ai.credit` are being corrected by their owners: vxture-platform#547 and
   `vxture-arda`#214.
 - `docs/30-design/210-usage-metering-and-history.md` §3 and the Metering rows in
-  `200-s2s-provider-surface.md` describe the current wire (`product: "atlas"`,
-  `atlas.*` metrics), which this ADR retires. They are rewritten when the
-  payload changes.
+  `200-s2s-provider-surface.md` described the retired wire (`product: "atlas"`,
+  `atlas.*` metrics); rewritten 2026-10-04 with the payload.

@@ -62,7 +62,7 @@ function makeService(
   };
 
   const entitlements = {
-    consume: vi.fn().mockResolvedValue({ billed: false }),
+    reportTokens: vi.fn().mockResolvedValue({ billed: false }),
   };
 
   const rateLimiter = { releaseConcurrency: vi.fn() };
@@ -272,11 +272,13 @@ describe("ParseService.parse", () => {
       workspaceId: "ws-1",
     }, AUTH);
 
-    expect(entitlements.consume).toHaveBeenCalledWith(
+    // ADR-013: pages travel as their own unit field under the caller's
+    // product; the platform's rate table prices them, Atlas does not convert.
+    expect(entitlements.reportTokens).toHaveBeenCalledWith(
       expect.objectContaining({
         workspaceId: AUTH.workspaceId,
-        metric: "atlas.parse",
-        amount: 3,
+        callerProductCode: "karda",
+        parsePages: 3,
       }),
     );
   });
@@ -351,7 +353,7 @@ describe("ParseService.parse", () => {
       workspaceId: "ws-body",
     }, AUTH);
 
-    expect(entitlements.consume).toHaveBeenCalledWith(
+    expect(entitlements.reportTokens).toHaveBeenCalledWith(
       expect.objectContaining({ workspaceId: AUTH.workspaceId }),
     );
   });
@@ -378,7 +380,7 @@ describe("ParseService.parse", () => {
       workspaceId: "ws-body",
     }, authWithoutWorkspace);
 
-    expect(entitlements.consume).toHaveBeenCalledWith(
+    expect(entitlements.reportTokens).toHaveBeenCalledWith(
       expect.objectContaining({ workspaceId: "ws-body" }),
     );
   });

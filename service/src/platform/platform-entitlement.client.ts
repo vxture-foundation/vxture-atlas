@@ -12,7 +12,6 @@ const DEFAULT_CACHE_TTL_MS = 30_000;
  * limit for the life of the process.
  */
 const CACHE_MAX_ENTRIES = 10_000;
-const PRODUCT_CODE = "atlas";
 
 /**
  * Why the outcome is a discriminated union rather than
@@ -39,7 +38,79 @@ export interface ConsumeOutcome {
    * dimension_status. `not_configured` = no platform link, `rejected` = the
    * platform refused it, `failed` = it could not be reached.
    */
-  notBilledBecause?: "not_configured" | "no_amount" | "rejected" | "failed";
+  notBilledBecause?:
+    | "not_configured"
+    | "no_amount"
+    | "rejected"
+    | "failed"
+    /** ADR-010: a report is attributed to the CALLER's product; without a verified caller there is nothing to attribute it to. */
+    | "no_caller";
+}
+
+/**
+ * ADR-010 / platform ADR-013 (vxture-platform#547): one inference, reported as raw
+ * tokens in four non-overlapping dimensions, under the CALLER's product. The
+ * platform converts to `ai.credit` with an operator-set rate and deducts; Atlas
+ * neither converts nor pre-deducts.
+ */
+export interface TokenReport {
+  workspaceId: string;
+  /** `act.sub` on the verified S2S token - the product the usage counts against. Never "atlas". */
+  callerProductCode: string;
+  /** One per logical request; with `attemptIndex` it is the platform's idempotency key. */
+  requestId: string;
+  attemptIndex?: number;
+  /** `failed` = a failover attempt the upstream charged for and the caller got nothing from. Recorded, never deducted (owner 2026-10-03). */
+  outcome?: "served" | "failed";
+  /** When the call happened (started_at), not when it is reported - a backfill keeps the original instant. */
+  occurredAt: Date;
+  modelCode?: string;
+  providerCode?: string;
+  /** Four non-overlapping counts: uncached input, output, cache write, cache read. */
+  tokens: { input: number; output: number; cacheWrite: number; cacheRead: number };
+  /** Subset of output; listed, never added. */
+  reasoningTokens?: number;
+  rerankCandidates?: number;
+  parsePages?: number;
+  /** Historical rows replayed after the cutover: facts only, no credit deduction (owner 2026-10-03). */
+  backfill?: boolean;
+}
+
+export interface TokenReportOutcome extends ConsumeOutcome {
+  /** The platform's raw-fact row (metering.token_usage_events.id). */
+  tokenEventId?: string;
+  /** Micro-credits this report converted to (1 credit = 1,000,000); absent when not converted. */
+  creditsMicro?: number;
+  /** Whole credits actually deducted after the fractional carry (0 = only the carry moved). */
+  creditsDeducted?: number;
+  creditSkipReason?: "pre_cutover" | "failed_attempt" | "no_rate";
+  /** The platform's quota did not cover the deduction - information, not a verdict (the call was already served). */
+  gated?: boolean;
+}
+
+/**
+ * Atlas's `input_tokens` counts EVERY input token (uncached, cache read and
+ * cache write - see 210 §3 "Token convention"); the platform wants the four
+ * dimensions non-overlapping, so the uncached part is what is left after the
+ * two cache kinds. Clamped at 0: an upstream that reports a cache figure larger
+ * than its prompt total is a vendor bug, and a negative token count must not
+ * reach the platform (its CHECK would refuse the whole report).
+ */
+export function splitUsage(usage: {
+  promptTokens: number;
+  completionTokens: number;
+  cachedInputTokens?: number | undefined;
+  cacheWriteInputTokens?: number | undefined;
+}): TokenReport["tokens"] {
+  const cacheRead = Math.max(0, Math.trunc(usage.cachedInputTokens ?? 0));
+  const cacheWrite = Math.max(0, Math.trunc(usage.cacheWriteInputTokens ?? 0));
+  const input = Math.max(0, Math.trunc(usage.promptTokens) - cacheRead - cacheWrite);
+  return {
+    input,
+    output: Math.max(0, Math.trunc(usage.completionTokens)),
+    cacheWrite,
+    cacheRead,
+  };
 }
 
 const NOT_BILLED: ConsumeOutcome = { billed: false };
@@ -82,24 +153,37 @@ export class PlatformEntitlementClient {
    * `unreachable` result must not pin a degraded verdict for the whole TTL
    * once the platform recovers.
    */
-  async resolve(workspaceId: string): Promise<EntitlementOutcome> {
+  async resolve(
+    workspaceId: string,
+    /**
+     * ADR-010 / ADR-013 D11: the C2 view is per (workspace, product), and the
+     * product is the CALLER's (`act.sub`), never "atlas" - atlas left the
+     * platform catalog on 2026-09-23 and `product=atlas` resolves nothing.
+     * `ai.credit` is a platform-level shared key, so the workspace's pools show
+     * up under any product that participates.
+     */
+    callerProductCode: string,
+  ): Promise<EntitlementOutcome> {
     const base = this.baseUrl;
     const token = this.token;
     if (!base || !token) {
       return { kind: "not-configured" };
     }
 
-    const cached = this.cache.get(workspaceId);
+    // Keyed by (product, workspace): two products reading the same workspace are
+    // two views, and the platform's sharing policy may answer them differently.
+    const cacheKey = `${callerProductCode}:${workspaceId}`;
+    const cached = this.cache.get(cacheKey);
     if (cached) {
       if (cached.expiresAt > Date.now()) {
         return cached.outcome;
       }
       // An expired entry is dead weight - reads skip it, so leaving it in the
       // map is unbounded growth, one workspace at a time.
-      this.cache.delete(workspaceId);
+      this.cache.delete(cacheKey);
     }
 
-    const url = `${base.replace(/\/+$/, "")}/platform/entitlements?workspace_id=${encodeURIComponent(workspaceId)}&product=${PRODUCT_CODE}`;
+    const url = `${base.replace(/\/+$/, "")}/platform/entitlements?workspace_id=${encodeURIComponent(workspaceId)}&product=${encodeURIComponent(callerProductCode)}`;
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), DEFAULT_TIMEOUT_MS);
 
@@ -126,12 +210,12 @@ export class PlatformEntitlementClient {
       // iteration order is insertion order, so the first key is the oldest.
       if (
         this.cache.size >= CACHE_MAX_ENTRIES &&
-        !this.cache.has(workspaceId)
+        !this.cache.has(cacheKey)
       ) {
         const oldest = this.cache.keys().next().value;
         if (oldest !== undefined) this.cache.delete(oldest);
       }
-      this.cache.set(workspaceId, {
+      this.cache.set(cacheKey, {
         outcome,
         expiresAt: Date.now() + this.ttlMs,
       });
@@ -146,37 +230,38 @@ export class PlatformEntitlementClient {
   }
 
   /**
-   * C3 consume, the platform's **sole** write path into the
-   * metering kernel (`data_commerce_200_metering.md` §11: products must not
-   * write the usage tables directly).
+   * ADR-010 / platform ADR-013: report one inference as raw tokens under the
+   * caller's product. Same endpoint as `consume` (`POST /usage/consume`); the
+   * `tokens` field selects the shape on the platform side.
    *
-   * Called after the work is done, because the amount is the realized amount
-   * (tokens for chat/embed, candidates for rerank). Gating already happened
-   * on the C2 read, which is cheap and cached; this call is the accounting
-   * write.
-   *
-   * Returns `billed: false` for every failure mode - including a `409 gated`
-   * (quota exhausted). Refusing to serve a response we have *already produced*
-   * would waste the upstream spend without recovering anything; the honest
-   * record is that it ran and was not billed, which reconciliation can see.
-   *
-   * Never throws: an accounting failure must not turn a served inference into
-   * an error for the caller.
+   * Same posture as `consume`: called after the fact, never throws, every
+   * failure mode is `billed: false` with a reason the reqlog row can name.
+   * `billed: true` means the platform recorded the raw fact; whether credits
+   * were deducted is a separate answer (`creditsDeducted` / `creditSkipReason`)
+   * - a backfilled or failed attempt is recorded and deliberately not charged.
    */
-  async consume(input: {
-    workspaceId: string;
-    metric: string;
-    amount: number;
-    idempotencyKey: string;
-  }): Promise<ConsumeOutcome> {
+  async reportTokens(input: TokenReport): Promise<TokenReportOutcome> {
     const base = this.baseUrl;
     const token = this.token;
+    const metric = "ai.tokens";
     if (!base || !token) {
-      recordConsume(input.metric, "skipped", "not_configured");
+      recordConsume(metric, "skipped", "not_configured");
       return { ...NOT_BILLED, notBilledBecause: "not_configured" };
     }
-    if (!Number.isFinite(input.amount) || input.amount <= 0) {
-      recordConsume(input.metric, "skipped", "no_amount");
+    if (!input.callerProductCode) {
+      recordConsume(metric, "skipped", "no_caller");
+      return { ...NOT_BILLED, notBilledBecause: "no_caller" };
+    }
+    const t = input.tokens;
+    const total = t.input + t.output + t.cacheWrite + t.cacheRead;
+    const units = (input.rerankCandidates ?? 0) + (input.parsePages ?? 0);
+    if (
+      ![t.input, t.output, t.cacheWrite, t.cacheRead].every(
+        (n) => Number.isSafeInteger(n) && n >= 0,
+      ) ||
+      (total <= 0 && units <= 0)
+    ) {
+      recordConsume(metric, "skipped", "no_amount");
       return { ...NOT_BILLED, notBilledBecause: "no_amount" };
     }
 
@@ -193,46 +278,81 @@ export class PlatformEntitlementClient {
           },
           body: JSON.stringify({
             workspace_id: input.workspaceId,
-            product: PRODUCT_CODE,
-            metric: input.metric,
-            amount: Math.trunc(input.amount),
-            // Stable per request, so a retry cannot double-charge - the
-            // platform's usage_idempotencies table is keyed on this.
-            idempotency_key: input.idempotencyKey,
+            product: input.callerProductCode,
+            request_id: input.requestId,
+            ...(input.attemptIndex !== undefined
+              ? { attempt_index: input.attemptIndex }
+              : {}),
+            ...(input.outcome ? { outcome: input.outcome } : {}),
+            occurred_at: input.occurredAt.toISOString(),
+            ...(input.modelCode ? { model_code: input.modelCode } : {}),
+            ...(input.providerCode ? { provider_code: input.providerCode } : {}),
+            tokens: {
+              input: t.input,
+              output: t.output,
+              cache_write: t.cacheWrite,
+              cache_read: t.cacheRead,
+            },
+            ...(input.reasoningTokens !== undefined
+              ? { reasoning_tokens: input.reasoningTokens }
+              : {}),
+            ...(input.rerankCandidates !== undefined
+              ? { rerank_candidates: input.rerankCandidates }
+              : {}),
+            ...(input.parsePages !== undefined
+              ? { parse_pages: input.parsePages }
+              : {}),
+            ...(input.backfill ? { backfill: true } : {}),
           }),
           signal: controller.signal,
         },
       );
 
       if (!response.ok) {
-        // The status alone said "400" for weeks while the reason - a product
-        // row the platform had deleted - sat in the body unread.
         const detail = await refusalDetail(response);
-        recordConsume(input.metric, "rejected", detail.reason);
+        recordConsume(metric, "rejected", detail.reason);
         this.logger.warn(
-          `C3 consume returned ${response.status} (${detail.message}) for workspace=${input.workspaceId} metric=${input.metric} - request served, not billed`,
+          `token report returned ${response.status} (${detail.message}) for workspace=${input.workspaceId} product=${input.callerProductCode} request=${input.requestId} - request served, not billed`,
         );
         return { ...NOT_BILLED, notBilledBecause: "rejected" };
       }
-      recordConsume(input.metric, "billed", "ok");
-      // Defensive parse: today's ConsumeResponseBody carries no event id
-      // (correlation is via request_id / idempotency_key on both sides), but
-      // the design (210 §4) wants the platform's usage_events.id echoed back
-      // into reqlog. Read it if/when the platform ships the field, under
-      // either naming convention, without making success depend on the body.
-      let usageEventId: string | undefined;
+      recordConsume(metric, "billed", "ok");
+      let body: Record<string, unknown> = {};
       try {
-        const body = (await response.json()) as Record<string, unknown>;
-        const raw = body["event_id"] ?? body["eventId"];
-        if (typeof raw === "string" && raw.trim()) usageEventId = raw;
+        body = (await response.json()) as Record<string, unknown>;
       } catch {
-        // body unreadable - billing still succeeded, correlation via request_id
+        // body unreadable - the fact landed (200), correlation via request_id
       }
-      return { billed: true, ...(usageEventId ? { usageEventId } : {}) };
+      const str = (k: string): string | undefined =>
+        typeof body[k] === "string" && (body[k] as string).trim()
+          ? (body[k] as string)
+          : undefined;
+      const num = (k: string): number | undefined =>
+        typeof body[k] === "number" ? (body[k] as number) : undefined;
+      // Read each once into a const so the conditional spreads narrow to the
+      // defined type (exactOptionalPropertyTypes refuses `prop: T | undefined`).
+      const usageEventId = str("event_id");
+      const tokenEventId = str("token_event_id");
+      const creditsMicro = num("credits_micro");
+      const creditsDeducted = num("credits_deducted");
+      const skip = str("credit_skip_reason");
+      const creditSkipReason =
+        skip === "pre_cutover" || skip === "failed_attempt" || skip === "no_rate"
+          ? skip
+          : undefined;
+      return {
+        billed: true,
+        ...(usageEventId !== undefined ? { usageEventId } : {}),
+        ...(tokenEventId !== undefined ? { tokenEventId } : {}),
+        ...(creditsMicro !== undefined ? { creditsMicro } : {}),
+        ...(creditsDeducted !== undefined ? { creditsDeducted } : {}),
+        ...(creditSkipReason !== undefined ? { creditSkipReason } : {}),
+        ...(body.gated === true ? { gated: true as const } : {}),
+      };
     } catch (error) {
-      recordConsume(input.metric, "failed", "unreachable");
+      recordConsume(metric, "failed", "unreachable");
       this.logger.warn(
-        `C3 consume failed (${error instanceof Error ? error.message : String(error)}) - request served, not billed`,
+        `token report failed (${error instanceof Error ? error.message : String(error)}) - request served, not billed`,
       );
       return { ...NOT_BILLED, notBilledBecause: "failed" };
     } finally {

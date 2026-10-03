@@ -128,7 +128,12 @@ export class TenancyService {
    */
   async quotas(auth: S2sAuthContext | undefined): Promise<TenancyQuotaResponse> {
     const workspaceId = this.resolveScopeId(auth, "workspace");
-    const outcome = await this.entitlements.resolve(workspaceId);
+    // ADR-010 / ADR-013 D11: the C2 view is read under the CALLER's product.
+    // A request with no verified caller has no product to read it for; that is
+    // "unavailable" (we could not ask), not "uncovered" (the platform said no).
+    const outcome = auth?.callerProductCode
+      ? await this.entitlements.resolve(workspaceId, auth.callerProductCode)
+      : ({ kind: "unreachable", reason: "no caller product on the token" } as const);
 
     if (outcome.kind !== "resolved") {
       return {
