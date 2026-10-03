@@ -60,7 +60,7 @@ function makeService(model: AiModelRecord, providerOverrides: Partial<{
   };
 
   const entitlements = {
-    consume: vi.fn().mockResolvedValue({ billed: false }),
+    reportTokens: vi.fn().mockResolvedValue({ billed: false }),
   };
 
   const rateLimiter = { releaseConcurrency: vi.fn() };
@@ -234,13 +234,18 @@ describe("EmbeddingService.embed", () => {
       workspaceId: "ws-1",
     }, AUTH);
 
-    expect(entitlements.consume).toHaveBeenCalledWith(
+    // ADR-013: the prompt count travels as raw input tokens under the
+    // caller's product; there is no completion side and no metric/amount.
+    expect(entitlements.reportTokens).toHaveBeenCalledWith(
       expect.objectContaining({
         workspaceId: AUTH.workspaceId,
-        metric: "atlas.embed",
-        amount: 7,
+        callerProductCode: "karda",
+        tokens: { input: 7, output: 0, cacheWrite: 0, cacheRead: 0 },
       }),
     );
+    const sent = entitlements.reportTokens.mock.calls[0]?.[0] as Record<string, unknown>;
+    expect(sent).not.toHaveProperty("metric");
+    expect(sent).not.toHaveProperty("amount");
   });
 
   it("does not consume when the provider reports no usage - never invent a number", async () => {
@@ -259,7 +264,7 @@ describe("EmbeddingService.embed", () => {
       workspaceId: "ws-1",
     }, AUTH);
 
-    expect(entitlements.consume).not.toHaveBeenCalled();
+    expect(entitlements.reportTokens).not.toHaveBeenCalled();
   });
 
   it("records a reqlog error row and an error record on a gate refusal", async () => {
@@ -357,7 +362,7 @@ describe("EmbeddingService.embed", () => {
       authWithoutWorkspaceClaim,
     );
 
-    expect(entitlements.consume).toHaveBeenCalledWith(
+    expect(entitlements.reportTokens).toHaveBeenCalledWith(
       expect.objectContaining({ workspaceId: "ws-body" }),
     );
     expect(requestLog.record).toHaveBeenCalledWith(
@@ -410,7 +415,7 @@ describe("EmbeddingService.embed", () => {
       AUTH, // carries workspaceId "ws-1"
     );
 
-    expect(entitlements.consume).toHaveBeenCalledWith(
+    expect(entitlements.reportTokens).toHaveBeenCalledWith(
       expect.objectContaining({ workspaceId: AUTH.workspaceId }),
     );
     expect(requestLog.record).toHaveBeenCalledWith(

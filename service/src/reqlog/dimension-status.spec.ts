@@ -162,9 +162,24 @@ describe("classifyNulls - each word, and only when it is true", () => {
 
 describe("billingReasons - the platform is the other side", () => {
   const ctx = { reported: true, workspaceKnown: true };
-  it("billed: only the event id is empty, because the platform never returns one", () => {
-    expect(billingReasons({ billed: true }, ctx)).toEqual({ usageEventId: "not_supported" });
+  it("billed and deducted: only a missing event id is empty, and that is the platform's omission", () => {
     expect(billingReasons({ billed: true, usageEventId: "e1" }, ctx)).toEqual({});
+    expect(billingReasons({ billed: true, creditsDeducted: 3 }, ctx)).toEqual({
+      usageEventId: "not_reported",
+    });
+    expect(billingReasons({ billed: true }, ctx)).toEqual({ usageEventId: "not_reported" });
+  });
+  it("recorded but by design not charged: no deduction event exists for this call (ADR-013)", () => {
+    expect(billingReasons({ billed: true, creditSkipReason: "pre_cutover" }, ctx)).toEqual({
+      usageEventId: "not_applicable",
+    });
+    expect(billingReasons({ billed: true, creditSkipReason: "failed_attempt" }, ctx)).toEqual({
+      usageEventId: "not_applicable",
+    });
+    // Only the fractional carry moved: nothing was deducted this call.
+    expect(billingReasons({ billed: true, creditsDeducted: 0 }, ctx)).toEqual({
+      usageEventId: "not_applicable",
+    });
   });
   it.each([
     ["rejected", "not_reported"],

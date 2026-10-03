@@ -490,7 +490,7 @@ describe("ModelRuntimeService runtime flow", () => {
     };
     entitlements: {
       resolve: ReturnType<typeof vi.fn>;
-      consume: ReturnType<typeof vi.fn>;
+      reportTokens: ReturnType<typeof vi.fn>;
     };
     circuitBreaker: ModelCircuitBreakerService;
     rateLimiter: ModelRateLimiterService;
@@ -573,11 +573,11 @@ describe("ModelRuntimeService runtime flow", () => {
       record: vi.fn().mockResolvedValue(undefined),
       recordError: vi.fn().mockResolvedValue(undefined),
     };
-    // Consume is covered in its own cases; default to "not
+    // The token report is covered in its own cases; default to "not
     // billed" so the pre-existing assertions stay about routing/fallback.
     const entitlements = {
       resolve: vi.fn().mockResolvedValue({ kind: "not-configured" }),
-      consume: vi.fn().mockResolvedValue({ billed: false }),
+      reportTokens: vi.fn().mockResolvedValue({ billed: false }),
     };
     const circuitBreaker = new ModelCircuitBreakerService();
     const rateLimiter = new ModelRateLimiterService();
@@ -682,7 +682,7 @@ describe("ModelRuntimeService runtime flow", () => {
       service.chat(makeRequest({ modelCode: "primary-model" })),
     ).rejects.toMatchObject({ code: "NOT_ENTITLED" });
     expect(provider.chat).not.toHaveBeenCalled();
-    expect(entitlements.consume).not.toHaveBeenCalled();
+    expect(entitlements.reportTokens).not.toHaveBeenCalled();
   });
 
   // The trap the X-1 rename walked into: `runtimeStatusFromError` compares the
@@ -736,7 +736,7 @@ describe("ModelRuntimeService runtime flow", () => {
       service.chat(makeRequest({ modelCode: "primary-model" })),
     ).rejects.toMatchObject({ code: "QUOTA_EXCEEDED" });
     expect(provider.chat).not.toHaveBeenCalled();
-    expect(entitlements.consume).not.toHaveBeenCalled();
+    expect(entitlements.reportTokens).not.toHaveBeenCalled();
   });
 
   // Found 2026-08-18, still true until 2026-09-30: the quota gate throws
@@ -1414,13 +1414,13 @@ describe("ModelRuntimeService runtime flow", () => {
     expect(requestLog.record).not.toHaveBeenCalledWith(
       expect.objectContaining({ status: "success" }),
     );
-    expect(entitlements.consume).not.toHaveBeenCalled();
+    expect(entitlements.reportTokens).not.toHaveBeenCalled();
   });
 
   // ── C3 consume ─────────────────────────────────────────────────────────
   it("bills realized tokens and records that it was billed", async () => {
     const h = makeRuntime();
-    h.entitlements.consume.mockResolvedValue({ billed: true });
+    h.entitlements.reportTokens.mockResolvedValue({ billed: true });
 
     await h.service.chat(
       {
@@ -1428,15 +1428,26 @@ describe("ModelRuntimeService runtime flow", () => {
       { workspaceId: "ws-1" } as never,
     );
 
-    expect(h.entitlements.consume).toHaveBeenCalledWith(
+    // ADR-013: realized tokens in the platform's four dimensions, with the
+    // instant the call started; no metric and no amount - the conversion to
+    // credits is the platform's, under an operator-set rate.
+    expect(h.entitlements.reportTokens).toHaveBeenCalledWith(
       expect.objectContaining({
         workspaceId: "ws-1",
-        metric: "atlas.chat",
-        // amount is the realized token count, matching the descriptor's
-        // per_unit metering declaration - the two must not drift apart.
-        amount: expect.any(Number),
+        requestId: expect.any(String),
+        occurredAt: expect.any(Date),
+        modelCode: "primary-model",
+        tokens: {
+          input: expect.any(Number),
+          output: expect.any(Number),
+          cacheWrite: expect.any(Number),
+          cacheRead: expect.any(Number),
+        },
       }),
     );
+    const sent = h.entitlements.reportTokens.mock.calls[0]?.[0] as Record<string, unknown>;
+    expect(sent).not.toHaveProperty("metric");
+    expect(sent).not.toHaveProperty("amount");
     const logged = h.requestLog.record.mock.calls[0]?.[0] as {
       billedMetricKey?: string;
     };
@@ -1448,7 +1459,7 @@ describe("ModelRuntimeService runtime flow", () => {
     // The contract field is pending platform-side; the client parses it
     // defensively, and this asserts the thread-through once it appears.
     const h = makeRuntime();
-    h.entitlements.consume.mockResolvedValue({
+    h.entitlements.reportTokens.mockResolvedValue({
       billed: true,
       usageEventId: "3a7b1a4e-0000-4000-8000-000000000001",
     });
@@ -1469,7 +1480,7 @@ describe("ModelRuntimeService runtime flow", () => {
     // A served inference must not become an error because accounting failed;
     // the absent billedAmount is the reconciliation signal instead.
     const h = makeRuntime();
-    h.entitlements.consume.mockResolvedValue({ billed: false });
+    h.entitlements.reportTokens.mockResolvedValue({ billed: false });
 
     await expect(
       h.service.chat(
@@ -1495,7 +1506,7 @@ describe("ModelRuntimeService runtime flow", () => {
       tenantId: "2a4271d4-ac9a-4fa6-b479-4f71d8e996e8",
     } as never);
 
-    expect(h.entitlements.consume).not.toHaveBeenCalled();
+    expect(h.entitlements.reportTokens).not.toHaveBeenCalled();
   });
 
   // Endpoint routing. The registry harness above gives
@@ -1741,7 +1752,7 @@ describe("ModelRuntimeService runtime flow", () => {
       expect(row.outputTokens).toBeUndefined();
       expect(row.totalTokens).toBeUndefined();
       // No realized amount -> nothing to consume, even with a workspace.
-      expect(h.entitlements.consume).not.toHaveBeenCalled();
+      expect(h.entitlements.reportTokens).not.toHaveBeenCalled();
     });
 
     it("fails over on an in-stream error before any output, without leaking the error frame to the client", async () => {
@@ -1797,7 +1808,7 @@ describe("ModelRuntimeService runtime flow", () => {
       expect(h.requestLog.recordError).toHaveBeenCalledWith(
         expect.objectContaining({ modelCode: "primary-model" }),
       );
-      expect(h.entitlements.consume).not.toHaveBeenCalled();
+      expect(h.entitlements.reportTokens).not.toHaveBeenCalled();
     });
 
     it("does not continue to the fallback when the provider throws after partial output", async () => {
@@ -1889,7 +1900,7 @@ describe("ModelRuntimeService runtime flow", () => {
         { workspaceId: "ws-1" } as never,
       );
 
-      expect(h.entitlements.consume).not.toHaveBeenCalled();
+      expect(h.entitlements.reportTokens).not.toHaveBeenCalled();
       const row = h.requestLog.record.mock.calls[0]?.[0] as {
         status?: string;
         inputTokens?: number;
@@ -2543,7 +2554,7 @@ describe("ModelRuntimeService runtime flow", () => {
 
       await service.chat(makeRequest({ modelCode: "primary-model" }));
 
-      expect(entitlements.consume.mock.calls.length).toBeLessThanOrEqual(1);
+      expect(entitlements.reportTokens.mock.calls.length).toBeLessThanOrEqual(1);
     });
 
     it("does not relabel usage_type - that word belongs to the caller", async () => {

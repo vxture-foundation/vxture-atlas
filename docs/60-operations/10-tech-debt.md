@@ -910,6 +910,16 @@ questions Atlas needs answered are on #547. Atlas's side of the recovery is
 ready: rows carry `product_code`, the raw token splits, and `request_id` as an
 idempotency key.
 
+**Atlas side landed 2026-10-04 (v0.7.31)**: `reportTokens` sends every served
+call as raw tokens under the caller's product, in the shape platform ADR-013
+(#581) settled on; the C2 read and the quota gate read by the caller's
+product; `scripts/ops/backfill-token-usage.mjs` replays the rows served before
+the switch with `backfill: true` (recorded, not deducted - ADR-013 D7).
+**Closes when** the platform side is deployed and a production read shows the
+first deducted report; the two callers seen so far (tenderforge, yucer) must
+exist as L2 products in the platform catalog first, or every report is still
+`unknown_product`.
+
 ## TD-057
 
 **Wrong**: `model_price_rules` has one input rate and one cached-input (read)

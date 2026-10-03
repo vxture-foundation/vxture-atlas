@@ -49,7 +49,8 @@ import {
 import { RequestLogService } from "../reqlog/request-log.service";
 import {
   PlatformEntitlementClient,
-  type ConsumeOutcome,
+  splitUsage,
+  type TokenReportOutcome,
 } from "../platform/platform-entitlement.client";
 import type { S2sAuthContext } from "./guards/s2s-auth.guard";
 import type {
@@ -193,15 +194,43 @@ export async function withRequestLog<T>(
   try {
     const result = await call(meter);
 
-    // Consume mirrors the chat path: after the fact (the amount is realized),
+    // Reporting mirrors the chat path: after the fact (the amount is realized),
     // only for a token-derived workspace, never throwing into the response.
-    const consumed: ConsumeOutcome =
+    //
+    // ADR-010 / platform ADR-013 (#547): raw tokens under the CALLER's product.
+    // embed bills tokens; rerank bills the candidate pool and parse bills
+    // pages - those two travel as their own fields and the upstream token
+    // usage (when reported) rides along, so the platform's rate table can
+    // price each unit without Atlas guessing a conversion.
+    // embed reports prompt tokens and no completion side (there is none);
+    // a missing half is zero, not a reason to drop the whole reading.
+    const u = reading.usage;
+    const tokens =
+      u !== undefined &&
+      (u.promptTokens !== undefined || u.completionTokens !== undefined)
+        ? splitUsage({
+            promptTokens: u.promptTokens ?? 0,
+            completionTokens: u.completionTokens ?? 0,
+            cachedInputTokens: u.cachedInputTokens,
+            cacheWriteInputTokens: u.cacheWriteInputTokens,
+          })
+        : { input: 0, output: 0, cacheWrite: 0, cacheRead: 0 };
+    const consumed: TokenReportOutcome =
       metering && auth?.workspaceId && (reading.amount ?? 0) > 0
-        ? await metering.entitlements.consume({
+        ? await metering.entitlements.reportTokens({
             workspaceId: auth.workspaceId,
-            metric: metering.metric,
-            amount: reading.amount as number,
-            idempotencyKey: gated.requestId,
+            callerProductCode: auth.callerProductCode,
+            requestId: gated.requestId,
+            occurredAt: new Date(startedAt),
+            modelCode: gated.model.modelCode,
+            providerCode: gated.model.provider,
+            tokens,
+            ...(metering.metric === "atlas.rerank"
+              ? { rerankCandidates: reading.amount as number }
+              : {}),
+            ...(metering.metric === "atlas.parse"
+              ? { parsePages: reading.amount as number }
+              : {}),
           })
         : { billed: false };
 

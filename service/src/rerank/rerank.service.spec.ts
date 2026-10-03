@@ -65,7 +65,7 @@ function makeService(
   };
 
   const entitlements = {
-    consume: vi.fn().mockResolvedValue({ billed: false }),
+    reportTokens: vi.fn().mockResolvedValue({ billed: false }),
   };
 
   const rateLimiter = {
@@ -270,11 +270,13 @@ describe("RerankService.rerank", () => {
       workspaceId: "ws-1",
     }, AUTH);
 
-    expect(entitlements.consume).toHaveBeenCalledWith(
+    // ADR-013: the candidate pool travels as its own unit field under the
+    // caller's product; the platform's rate table prices it.
+    expect(entitlements.reportTokens).toHaveBeenCalledWith(
       expect.objectContaining({
         workspaceId: AUTH.workspaceId,
-        metric: "atlas.rerank",
-        amount: CANDIDATES.length,
+        callerProductCode: "karda",
+        rerankCandidates: CANDIDATES.length,
       }),
     );
   });
@@ -295,7 +297,7 @@ describe("RerankService.rerank", () => {
       tenantId: "tenant-1",
     });
 
-    expect(entitlements.consume).not.toHaveBeenCalled();
+    expect(entitlements.reportTokens).not.toHaveBeenCalled();
   });
 
   it("records a gate refusal in reqlog and rethrows the refusal untouched", async () => {
@@ -392,7 +394,7 @@ describe("RerankService.rerank", () => {
       workspaceId: "ws-body",
     }, AUTH);
 
-    expect(entitlements.consume).toHaveBeenCalledWith(
+    expect(entitlements.reportTokens).toHaveBeenCalledWith(
       expect.objectContaining({ workspaceId: AUTH.workspaceId }),
     );
   });
@@ -415,7 +417,7 @@ describe("RerankService.rerank", () => {
       workspaceId: "ws-body",
     }, authWithoutWorkspace);
 
-    expect(entitlements.consume).toHaveBeenCalledWith(
+    expect(entitlements.reportTokens).toHaveBeenCalledWith(
       expect.objectContaining({ workspaceId: "ws-body" }),
     );
   });
