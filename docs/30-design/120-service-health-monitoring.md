@@ -185,6 +185,33 @@ The first sighting of a working part is stored quietly, like a model's. An
 unreadable runway is not a partition state: `/readyz` reports the read itself
 failing.
 
+### 4.7 Degradation
+
+A model that answers, but badly, is `degraded` (warning). Routes still count
+it as serving - callers get answers - so a degraded model never turns a route
+`degraded` or `down`; the model's own event is the notice. No setting: both
+rules are relative to the model itself.
+
+- **Empty answers**: a non-streaming chat call that returns 200 with no content
+  and no tool call, when the cause is not the caller's spent budget
+  (`OUTPUT_BUDGET_EXHAUSTED` stays outside health). Three in a row make the
+  model degraded; one answer with content clears it. Until F3b-B these were
+  classified as "not a health signal" and seen by nothing.
+- **Slower than usual**: every ten minutes (first pass a minute after start),
+  each active model's last 10 successful calls of the past 24 hours against
+  the 7 days before them (at least 30 calls); probes excluded. Chat models are
+  compared per output token (calls with 20 or more output tokens), so a long
+  answer is not slow; embedding and rerank on raw latency. Slow at 3x the
+  baseline median, normal again below 2x, held in between so one borderline
+  pass does not flap. Too few calls is no verdict. Production medians ran from
+  5.8 s to 64 s on 2026-10-03, which is why no single threshold works, and its
+  volume (about 65 calls a week on the busiest model) is why the recent sample
+  is the last calls rather than the last hour.
+
+A model that is refused or down stays in that state; `slow` is remembered and
+applies once it serves again. After a restart the slow flag is re-judged
+within a minute rather than restored.
+
 ### 4.5 Settings and defaults
 
 Every detection setting is editable, and every one has a default, so nothing
@@ -246,6 +273,7 @@ has no amount threshold until one is set on the vendor; the view reports it as
 | `unavailable` | the circuit breaker trips, or every call / probe in 10 minutes failed `unavailable` / `unreachable`, and the latest failure was an answer (5xx, timeout) | a success |
 | `unreachable` | the same, but the latest failure never reached the vendor (DNS / TLS / connect). Split out because a different person fixes it: the network path from Atlas, not the vendor | a success |
 | `model_missing` | `404` from the vendor | a success, or the model is re-pointed |
+| `degraded` | three empty answers in a row, or slower than its own baseline (section 4.7); routes still count it as serving | an answer with content and not slow |
 | `unknown` | never seen yet; or an `ok` model with no result for 2 intervals (quietly - idleness is not news). A failing model is never moved here: with no successful call there is no reason to think it recovered | any result |
 
 ### 5.1a Per vendor - balance

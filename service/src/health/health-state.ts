@@ -12,6 +12,7 @@ export const MODEL_HEALTH_STATES = [
   "unreachable",
   "model_missing",
   "unknown",
+  "degraded",
 ] as const;
 export type ModelHealthState = (typeof MODEL_HEALTH_STATES)[number];
 
@@ -25,7 +26,15 @@ export type HealthSignal =
   | "rate_limited"
   | "unavailable"
   | "unreachable"
-  | "model_missing";
+  | "model_missing"
+  /** A 200 with no content and no tool call, not the caller's budget (F3b-B). */
+  | "empty"
+  /** From the degradation evaluator: slower than its own baseline / back to normal. */
+  | "slow"
+  | "not_slow";
+
+/** Empty answers in a row that make a model degraded. */
+export const DEGRADED_AFTER_EMPTY = 3;
 
 /** Consecutive failures that make a model unavailable - the breaker's own threshold. */
 export const UNAVAILABLE_AFTER_FAILURES = 5;
@@ -44,6 +53,10 @@ export interface ModelHealthRecord {
   consecutiveFailures: number;
   firstFailureAt?: number;
   firstRateLimitAt?: number;
+  /** Empty answers since the last answer with content (F3b-B). */
+  consecutiveEmpty?: number;
+  /** Set by the degradation evaluator; survives successes until it clears it. */
+  slow?: boolean;
 }
 
 export function initialRecord(at: number): ModelHealthRecord {
@@ -80,6 +93,13 @@ export function isFailing(state: ModelHealthState | undefined): boolean {
  *
  * Once a model is account_refused or model_missing, an outage or throttling
  * signal does not move it: the account is still refused. Only a success does.
+ *
+ * - degraded (F3b-B): the model answers, but badly - DEGRADED_AFTER_EMPTY empty
+ *   answers in a row, or slower than its own baseline (`slow`, set and cleared
+ *   by the evaluator). Entered only from a serving state (ok / unknown /
+ *   degraded): a refused account stays refused. A success clears the empty
+ *   count but not `slow`; a model that is slow stays degraded until the
+ *   evaluator says otherwise. Routes still count it as serving.
  */
 export function nextRecord(
   record: ModelHealthRecord,
@@ -95,8 +115,36 @@ export function nextRecord(
     ...(facts.detail !== undefined ? { detail: facts.detail } : {}),
   });
 
+  const serving = record.state === "ok" || record.state === "unknown" || record.state === "degraded";
+  const settle = (r: ModelHealthRecord, why: string | undefined): ModelHealthRecord => {
+    const degraded = r.slow === true || (r.consecutiveEmpty ?? 0) >= DEGRADED_AFTER_EMPTY;
+    const state: ModelHealthState = degraded ? "degraded" : "ok";
+    const base = { ...r, state, since: record.state === state ? record.since : at };
+    delete base.upstreamStatus;
+    delete base.detail;
+    return degraded && why !== undefined ? { ...base, detail: why } : degraded && record.detail !== undefined ? { ...base, detail: record.detail } : base;
+  };
+
   if (signal === "success") {
-    return { state: "ok", since: record.state === "ok" ? record.since : at, consecutiveFailures: 0 };
+    const cleared: ModelHealthRecord = {
+      state: "ok",
+      since: record.since,
+      consecutiveFailures: 0,
+      ...(record.slow ? { slow: true } : {}),
+    };
+    return settle(cleared, record.slow ? record.detail : undefined);
+  }
+  if (signal === "slow" || signal === "not_slow") {
+    const marked = { ...record, slow: signal === "slow" };
+    if (!serving) return marked;
+    return settle(marked, signal === "slow" ? facts.detail : undefined);
+  }
+  if (signal === "empty") {
+    const consecutiveEmpty = (record.consecutiveEmpty ?? 0) + 1;
+    const counted = { ...record, consecutiveEmpty };
+    if (!serving) return counted;
+    if (consecutiveEmpty < DEGRADED_AFTER_EMPTY && record.state !== "degraded") return counted;
+    return settle(counted, `${consecutiveEmpty} empty answers in a row${facts.detail ? `: ${facts.detail}` : ""}`);
   }
   if (signal === "account") return enter("account_refused");
   if (signal === "model_missing") return enter("model_missing");
@@ -141,7 +189,7 @@ export function routeState(
 }
 
 export function modelSeverity(to: ModelHealthState): HealthSeverity {
-  return isFailing(to) ? "warning" : "info";
+  return isFailing(to) || to === "degraded" ? "warning" : "info";
 }
 
 export function routeSeverity(to: RouteHealthState): HealthSeverity {

@@ -109,7 +109,10 @@ export function classifyFailure(error: unknown, normalisedCode?: string): Health
     }
   }
   if (error instanceof UpstreamTimeoutError) return "unavailable";
-  if (error instanceof UpstreamCallFailure) return undefined; // answered, with nothing usable
+  // Answered 200 with nothing usable. The caller's spent budget is not the
+  // vendor's health (OUTPUT_BUDGET_EXHAUSTED above); anything else is an empty
+  // answer, and three in a row make the model degraded (F3b-B).
+  if (error instanceof UpstreamCallFailure) return error.outputBudgetExhausted ? undefined : "empty";
   if (error instanceof ModelRuntimeException) return undefined; // Atlas's own refusal
   if (error instanceof Error && error.name === "AbortError") return undefined; // caller or deadline
   if (error instanceof TypeError && /fetch failed/iu.test(error.message)) return "unreachable";
@@ -256,6 +259,16 @@ export class UpstreamHealth {
     });
   }
 
+  /**
+   * From the degradation evaluator (F3b-B): slower than its own baseline, or
+   * back to normal. Not a call result, so it does not count as a fresh result
+   * for the probe scheduler.
+   */
+  markSlow(modelCode: string, provider: string, slow: boolean, detail?: string): void {
+    if (!this.models.has(modelCode) && !slow) return;
+    this.apply(modelCode, provider, slow ? "slow" : "not_slow", detail !== undefined ? { detail } : {}, false);
+  }
+
   /** Every transition queued so far has been written. For tests and shutdown. */
   flushed(): Promise<void> {
     return this.queue;
@@ -278,9 +291,10 @@ export class UpstreamHealth {
     provider: string,
     signal: HealthSignal,
     facts: { upstreamStatus?: number; detail?: string },
+    isResult = true,
   ): void {
     const at = this.now();
-    this.lastResult.set(modelCode, at);
+    if (isResult) this.lastResult.set(modelCode, at);
     const current = this.models.get(modelCode)?.record ?? initialRecord(at);
     const next = nextRecord(current, signal, at, facts);
     this.models.set(modelCode, { provider, record: next });
