@@ -102,16 +102,12 @@ Two contracts, not implementation details:
 - **The endpoint owns its failover chain.** On endpoint routing, the
   endpoint's `fallbackModelCode` is the only chain - the resolved model's own
   `config.fallbackModelCodes` does not stack on top. One route, one authority.
-- **An endpoint may point at any model.** The registry does not check its
-  `category` against the target's `modelType`. Whether the upstream implements
-  the call is answered at call time, not guessed by the registry: by `501` when
-  the adapter lacks the capability, and by the vendor's own refusal when it has
-  it (a Zhipu chat model named on a rerank route reaches Zhipu's rerank API and
-  is refused there). Not refused at write time, but **reported**: a route of a
-  typed category (`chat` / `embedding` / `rerank`) naming a model of another
-  type is listed in `/capability/health` `routes[].configIssues`, and that
-  model counts as not serving the route (design 120 section 4.4). Whether to
-  refuse such a write is an open owner decision.
+- **A route names models of its own type** (ADR-014, 2026-10-03; it replaces
+  "an endpoint may point at any model"). A `chat` / `embedding` / `rerank`
+  route must name models of that type; a write that would break this is
+  refused with `400 MODEL_ADMIN_VALIDATION_FAILED`. Only what the write changes
+  is judged, so a route written earlier can still be edited and repointed.
+  Other categories are not judged by type.
 
 Naming an endpoint never widens authority: grants are still checked against
 the *resolved model*.
