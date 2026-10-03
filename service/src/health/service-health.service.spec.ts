@@ -70,6 +70,8 @@ describe("ServiceHealthService.current - what the platform's watcher reads", () 
       ["rerank/default", "ok", null], // never seen: not counted as failing
     ]);
     expect(view.routes[2]?.primary).toEqual({ modelCode: "rerank", state: "unknown" });
+    // F3b-A: Atlas's own components are always listed, unknown until a signal arrives.
+    expect(view.atlas.map((c) => c.component)).toEqual(["usage_reporting", "request_log", "partitions"]);
     expect(view.models.find((m) => m.modelCode === "deepseek-flash")).toMatchObject({
       state: "account_refused",
       upstreamStatus: 402,

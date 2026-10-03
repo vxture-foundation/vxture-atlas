@@ -617,10 +617,10 @@ CREATE TABLE IF NOT EXISTS health.subject_states (
     detail           varchar(500),
     updated_at       timestamptz   NOT NULL DEFAULT now(),
     CONSTRAINT pk_health_subject_states PRIMARY KEY (subject_kind, subject_key),
-    CONSTRAINT chk_health_subject_states_kind CHECK (subject_kind IN ('model','route','vendor')),
+    CONSTRAINT chk_health_subject_states_kind CHECK (subject_kind IN ('model','route','vendor','atlas')),
     CONSTRAINT chk_health_subject_states_state CHECK (state IN
       ('ok','rate_limited','account_refused','unavailable','unreachable','model_missing','unknown',
-       'degraded','down','balance_low','not_supported'))
+       'degraded','down','balance_low','not_supported','failing','at_risk'))
 );
 
 CREATE TABLE IF NOT EXISTS health.events (
@@ -635,7 +635,7 @@ CREATE TABLE IF NOT EXISTS health.events (
     upstream_status  smallint,
     detail           varchar(500),
     affected_routes  text[],
-    CONSTRAINT chk_health_events_kind CHECK (subject_kind IN ('model','route','vendor')),
+    CONSTRAINT chk_health_events_kind CHECK (subject_kind IN ('model','route','vendor','atlas')),
     CONSTRAINT chk_health_events_severity CHECK (severity IN ('info','warning','critical'))
 );
 

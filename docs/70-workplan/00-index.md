@@ -385,8 +385,12 @@ F - service health monitoring (ADR-013, design 120; owner 2026-10-02):
       `chat/extract` -> `glm-5.2`, `chat/default` -> `doubao-seed-2-1-turbo`,
       `chat/deterministic` / `chat/reasoning` -> `doubao-seed-2-0-pro-260215`,
       `chat/vision` -> `deepseek-v4-pro`)
-- [ ] F3b (P2). Degradation (latency, empty answers), Atlas's own items as
-      components
+- [ ] F3b-A (P2). Atlas's own components as health subjects
+      (`subjectKind: atlas`, `incr/11`): `usage_reporting`, `request_log`,
+      `partitions`, on the same events and `/capability/health` `atlas[]`.
+      Built; release pending (db-init `incr/11` first)
+- [ ] F3b-B (P2). Degradation: empty answers (3 in a row) and slowness
+      against the model's own 7-day median (3x), no configuration
 - [ ] F4 (platform). Server-side watcher, events into admin notices, admin
       state view, opera request log showing error code and message - raised
       on the platform repo

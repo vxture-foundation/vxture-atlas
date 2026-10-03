@@ -1,5 +1,6 @@
 import { Logger } from "@nestjs/common";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { atlasHealth } from "../health/atlas-health";
 
 import { Prisma } from "../generated/prisma";
 import { prisma } from "../prisma";
@@ -393,6 +394,16 @@ describe("RequestLogService - write failures are counted", () => {
     expect(await metricsRegistry.scrape()).toContain(
       'reqlog_write_failures_total{table="request_records",reason="missing_column"',
     );
+  });
+
+  it("tells atlasHealth a record was lost, with its table and class (F3b-A)", async () => {
+    vi.spyOn(Logger.prototype, "warn").mockImplementation(() => undefined);
+    const record = vi.spyOn(atlasHealth, "recordRequestLogFailure");
+    vi.spyOn(prisma.requestRecord, "create").mockRejectedValue(new Error("permission denied for table request_records") as never);
+
+    await new RequestLogService().record({ requestId: "req-f3b", status: "success" });
+
+    expect(record).toHaveBeenCalledWith("request_records", "permission_denied");
   });
 
   it("sorts driver wording into a closed vocabulary", () => {

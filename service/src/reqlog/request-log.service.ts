@@ -1,5 +1,6 @@
 import { Injectable, Logger } from "@nestjs/common";
 import { serviceIdentity } from "@vxture/shared";
+import { atlasHealth } from "../health/atlas-health";
 
 import { Prisma } from "../generated/prisma";
 import { prisma } from "../prisma";
@@ -444,8 +445,7 @@ export function writeFailureReason(error: unknown): string {
 }
 
 function recordWriteFailure(table: string, error: unknown): void {
-  metricsRegistry.incCounter("reqlog_write_failures_total", {
-    table,
-    reason: writeFailureReason(error),
-  });
+  const reason = writeFailureReason(error);
+  metricsRegistry.incCounter("reqlog_write_failures_total", { table, reason });
+  atlasHealth.recordRequestLogFailure(table, reason);
 }

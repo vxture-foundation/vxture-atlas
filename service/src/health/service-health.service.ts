@@ -2,6 +2,7 @@ import { BadRequestException, Inject, Injectable } from "@nestjs/common";
 
 import { prisma } from "../prisma";
 import { routeSeverity, type HealthSeverity } from "./health-state";
+import { atlasHealth } from "./atlas-health";
 import { evaluateRoute, type RouteConfigIssue } from "./route-config";
 import { PrismaHealthStore } from "./health.store";
 import { upstreamHealth } from "./upstream-health";
@@ -31,6 +32,8 @@ export interface ServiceHealthView {
   }[];
   /** Vendor balances (P1): ok / balance_low / not_supported / unknown, with the thresholds in effect. */
   vendors: VendorBalanceView[];
+  /** Atlas's own components (F3b-A): usage_reporting, request_log, partitions - ok / failing / at_risk / unknown. */
+  atlas: { component: string; state: string; since: string; detail?: string }[];
 }
 
 export interface HealthEventView {
@@ -107,6 +110,12 @@ export class ServiceHealthService {
         };
       }),
       vendors,
+      atlas: atlasHealth.snapshot().map((c) => ({
+        component: c.component,
+        state: c.state,
+        since: c.since.toISOString(),
+        ...(c.detail !== undefined ? { detail: c.detail } : {}),
+      })),
     };
   }
 

@@ -1,5 +1,6 @@
 import { Injectable, Logger } from "@nestjs/common";
 import type { EntitlementResponseSingle } from "@vxture/shared";
+import { atlasHealth } from "../health/atlas-health";
 
 import { metricsRegistry } from "../runtime/metrics.registry";
 
@@ -255,6 +256,7 @@ function recordConsume(
     outcome,
     reason,
   });
+  atlasHealth.recordConsume(outcome, reason);
 }
 
 /**
