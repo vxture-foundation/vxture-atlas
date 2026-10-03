@@ -23,7 +23,7 @@ pnpm type-check:all
 
 | Module | Holds | Status |
 |---|---|---|
-| `runtime/` | chat pipeline, health/readiness, metrics, `/status`, registry admin service, API-key resolution, the shared S2S provider helper | complete |
+| `runtime/` | chat pipeline, `/healthz` / `/readyz` (status changes logged), metrics, `/status`, registry admin service, API-key resolution, the shared S2S provider helper | complete |
 | `runtime/guards/` | `S2sAuthGuard` (data plane), `OperatorAuthGuard` (capability plane), `InternalDiagnosticsGuard` | complete; no step-up guard - the step-up criterion and ceremony are platform's (#165) |
 | `registry/` | provider/model/grant/price-rule/policy reads, grant and task-profile resolution, reqlog usage rollups | complete |
 | `router/` | dispatch to a provider adapter: specialization layer (Zhipu embed/rerank) then `protocol` layer; a protocol that cannot be normalized is `503 MODEL_NOT_ROUTABLE` - no silent fallback | complete |
@@ -32,6 +32,7 @@ pnpm type-check:all
 | `platform/` | C2 entitlement client + C3 `POST /usage/consume` caller | **broken (TD-056)**: both still name `product: "atlas"`, which the platform removed from its catalog on 2026-09-23, so every consume is refused `400 unknown_product` and the C2 read resolves nothing. Replacement per ADR-010, waiting on vxture-platform#547 |
 | `reqlog/` | per-request and per-error history writes | complete; the usage record carries every dimension of the usage-record checklist (`incr/04`-`incr/07`), its own cost, and a reason for each empty dimension (ADR-011); vendor usage fields Atlas does not map are counted (`upstream_usage_unmapped_keys_total`); `product_id` stays NULL by design (`product_code` is the resolvable form); A1/A3 rows DO carry token counts whenever the upstream reports usage - Zhipu reports it for both embed and rerank, and for embed that same total is what C3 was billed |
 | `tenancy/` | `/tenancy/*` self-service reads, scope from the token | complete |
+| `health/` | service health (ADR-013, design 120): durable state per vendor model, route, vendor balance and Atlas component (`health` schema, `incr/08`-`incr/11`); passive classification of every call, active probes (60-min default, keyless models skipped), vendor balance reads (DeepSeek; others `not_supported` with the reason), route configuration checks, degradation (empty answers, slower than the model's own baseline), Atlas's own components (usage reporting, request log, partitions); transitions as events; `/capability/health[/events]` and `/capability/health-settings` | complete on Atlas's side (v0.7.21-v0.7.30); nobody is notified until the platform's watcher exists (F4, vxture-platform#562); empty **streams** are not detected |
 | `provider-keys/` | envelope-encrypted key vault + rotation log | complete |
 | `gateway-api-keys/` | Atlas-issued gateway API keys (`vxk_ext_`): issue/rotate/revoke/lifecycle on `/capability/api-keys`, one-way sha256 storage, secret shown exactly once | CRUD complete; no auth path accepts these keys yet (TD-034) |
 | `provisioning/` | C3 webhook - signature, idempotency, ordering, persistence | complete |
