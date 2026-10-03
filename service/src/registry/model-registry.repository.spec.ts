@@ -209,6 +209,21 @@ describe("operator aggregations exclude probe traffic", () => {
     expect(sql).toContain("usage_type IS DISTINCT FROM 'test'");
   });
 
+  // A one-month question must read one partition: the month is a created_at
+  // range, which Postgres prunes on, not to_char(created_at), which it cannot.
+  it.each(["listUsageSummaries", "listUsageRollup"] as const)(
+    "%s filters the month as a prunable created_at range",
+    async (method) => {
+      if (method === "listUsageSummaries") await repo.listUsageSummaries({ cycleMonth: "2026-10" });
+      else await repo.listUsageRollup({ dimension: "provider", cycleMonth: "2026-10" });
+
+      const sql = flat(queryRawUnsafe.mock.calls.at(-1)![0] as string);
+      expect(sql).toContain("created_at >= to_date($4, 'YYYY-MM')");
+      expect(sql).toContain("created_at < to_date($4, 'YYYY-MM') + interval '1 month'");
+      expect(sql).not.toMatch(/to_char\(date_trunc\('month', created_at\), 'YYYY-MM'\) = \$4/u);
+    },
+  );
+
   it("listUsageRollup filters usage_type='test'", async () => {
     await repo.listUsageRollup({ dimension: "provider" });
 
