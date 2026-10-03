@@ -14,6 +14,7 @@ import {
   WIRE_SCHEMA_VERSION,
 } from "../providers/wire";
 import type { ResolvedWire } from "../providers/wire";
+import { TYPED_CATEGORIES } from "../health/route-config";
 import { ModelAdminException } from "./model-admin.errors";
 import { modelBehaviorVersion } from "../model-behavior-version";
 import { metricsRegistry } from "./metrics.registry";
@@ -526,6 +527,27 @@ export interface ProtocolCatalogResponse {
   protocols: ProtocolCatalogEntry[];
 }
 
+/**
+ * A route of a typed category must name a model of that type (design 120
+ * section 4.4): the embed and rerank paths call the vendor's embedding and
+ * rerank APIs, so a chat model named there fails on every call, and a chat
+ * route cannot be answered by an embedding model. Production had seven routes
+ * like that on 2026-10-02, one as the primary.
+ */
+function assertModelServesCategory(
+  model: AiModelRecord,
+  category: string,
+  field: "primaryModelCode" | "fallbackModelCode",
+): void {
+  if (!TYPED_CATEGORIES.has(category) || model.modelType === category) return;
+  throw new ModelAdminException(
+    HttpStatus.BAD_REQUEST,
+    "MODEL_ADMIN_VALIDATION_FAILED",
+    `${field} "${model.modelCode}" is a ${model.modelType} model; a ${category} route needs a ${category} model`,
+    { field, modelCode: model.modelCode },
+  );
+}
+
 @Injectable()
 export class ModelAdminService {
   constructor(
@@ -910,8 +932,8 @@ export class ModelAdminService {
     endpointId: string,
     body: UpdateModelEndpointBody,
   ): Promise<ModelEndpointAdminRecord> {
-    await this.assertEndpointExists(endpointId);
-    const input = await this.normalizeUpdateEndpoint(body);
+    const existing = await this.assertEndpointExists(endpointId);
+    const input = await this.normalizeUpdateEndpoint(body, existing);
     const endpoint = await this.repository.updateEndpoint(endpointId, input);
     return mapEndpoint(endpoint);
   }
@@ -1333,48 +1355,84 @@ export class ModelAdminService {
       body.primaryModelCode,
       "primaryModelCode",
     );
-    await this.assertModelCodeExists(primaryModelCode, "primaryModelCode");
+    const category = body.category
+      ? requiredString(body.category, "category")
+      : "chat";
+    assertModelServesCategory(
+      await this.assertModelCodeExists(primaryModelCode, "primaryModelCode"),
+      category,
+      "primaryModelCode",
+    );
 
     const fallbackModelCode = optionalString(body.fallbackModelCode);
     if (fallbackModelCode) {
-      await this.assertModelCodeExists(fallbackModelCode, "fallbackModelCode");
+      assertModelServesCategory(
+        await this.assertModelCodeExists(fallbackModelCode, "fallbackModelCode"),
+        category,
+        "fallbackModelCode",
+      );
     }
 
     return {
       code: requiredString(body.code, "code"),
-      category: body.category
-        ? requiredString(body.category, "category")
-        : "chat",
+      category,
       primaryModelCode,
       fallbackModelCode,
       isActive: body.state === undefined ? true : isActiveState(body.state),
     };
   }
 
+  /**
+   * Only what the write CHANGES is judged: a route already naming a model of
+   * the wrong type can still be edited in other ways, and pointing it at a
+   * right one is how it gets fixed. A category change re-judges both models,
+   * because it is the change that makes them wrong.
+   */
   private async normalizeUpdateEndpoint(
     body: UpdateModelEndpointBody,
+    existing: ModelEndpointRecord,
   ): Promise<UpdateModelEndpointInput> {
     const input: UpdateModelEndpointInput = {};
 
     if (body.category !== undefined)
       input.category = requiredString(body.category, "category");
+    const category = input.category ?? existing.category;
+    const categoryChanged = input.category !== undefined && input.category !== existing.category;
+
     if (body.primaryModelCode !== undefined) {
       const primaryModelCode = requiredString(
         body.primaryModelCode,
         "primaryModelCode",
       );
-      await this.assertModelCodeExists(primaryModelCode, "primaryModelCode");
+      assertModelServesCategory(
+        await this.assertModelCodeExists(primaryModelCode, "primaryModelCode"),
+        category,
+        "primaryModelCode",
+      );
       input.primaryModelCode = primaryModelCode;
+    } else if (categoryChanged) {
+      assertModelServesCategory(
+        await this.assertModelCodeExists(existing.primaryModelCode, "primaryModelCode"),
+        category,
+        "primaryModelCode",
+      );
     }
     if (body.fallbackModelCode !== undefined) {
       const fallbackModelCode = optionalString(body.fallbackModelCode);
       if (fallbackModelCode) {
-        await this.assertModelCodeExists(
-          fallbackModelCode,
+        assertModelServesCategory(
+          await this.assertModelCodeExists(fallbackModelCode, "fallbackModelCode"),
+          category,
           "fallbackModelCode",
         );
       }
       input.fallbackModelCode = fallbackModelCode;
+    } else if (categoryChanged && existing.fallbackModelCode) {
+      assertModelServesCategory(
+        await this.assertModelCodeExists(existing.fallbackModelCode, "fallbackModelCode"),
+        category,
+        "fallbackModelCode",
+      );
     }
 
     return input;
@@ -1389,7 +1447,7 @@ export class ModelAdminService {
   private async assertModelCodeExists(
     modelCode: string,
     field: "primaryModelCode" | "fallbackModelCode",
-  ): Promise<void> {
+  ): Promise<AiModelRecord> {
     const model = await this.repository.findModelByCode(modelCode);
     if (!model) {
       throw new ModelAdminException(
@@ -1399,6 +1457,7 @@ export class ModelAdminService {
         { field, modelCode },
       );
     }
+    return model;
   }
 
   private normalizeCreateModel(body: CreateAiModelBody): CreateAiModelInput {

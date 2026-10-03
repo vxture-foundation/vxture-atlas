@@ -155,10 +155,10 @@ chat model as fallback; `rerank/quality` has one as its **primary**.
   healthy chat fallback read `degraded` ("callers are still served") while
   every caller failed; it now reads `down`. `rerank/quality` reads `degraded`
   for as long as its primary is a chat model.
-- **Not refused at write time.** The product definition records the opposite
-  as a contract ("an endpoint may point at any model", `20-specs/20`).
-  Refusing such a write would reverse it; that is an open owner decision, not
-  part of this check.
+- **Refused at write time** from ADR-014 (2026-10-03): a write that would make
+  a route name a model of another type gets `400`. Only what the write changes
+  is judged, so the routes written before stay editable and keep being
+  reported until repointed.
 - **Not judged**: a capability no model declares. `chat/vision` needs an
   image-capable model and no model declares `vision`, so it is not judged by
   its name.

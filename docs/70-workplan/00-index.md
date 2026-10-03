@@ -371,9 +371,13 @@ F - service health monitoring (ADR-013, design 120; owner 2026-10-02):
       vendor 401. Released as v0.7.25 (2026-10-02, no DDL). Production
       `/readyz` names six routes: `embedding/default` / `fast` / `quality`,
       `rerank/default` / `fast` (chat fallback) and `rerank/quality` (chat
-      primary); no route down; keyless probes 0. **Owner decision open**: refuse such a route at write
-      time, which reverses the "an endpoint may point at any model" contract
-      (`20-specs/20`)
+      primary); no route down; keyless probes 0
+- [ ] F3a. Refuse a wrong-type route at write time (ADR-014, owner
+      2026-10-03; replaces the "any model" contract). Built; release pending
+- [ ] F3c (operator, opera). Fix the six routes (owner, 2026-10-03): clear
+      the fallback of `embedding/default` / `fast` / `quality`,
+      `rerank/default` / `fast`; point `rerank/quality` at `rerank` with no
+      fallback. Then confirm `/readyz` `routesMisconfigured` is empty
 - [ ] F3b (P2). Degradation (latency, empty answers), Atlas's own items as
       components
 - [ ] F4 (platform). Server-side watcher, events into admin notices, admin

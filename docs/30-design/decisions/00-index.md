@@ -22,3 +22,4 @@ restating its reasoning.
 | ADR-011 | [Every empty usage dimension says why it is empty](ADR-011-every-empty-usage-dimension-says-why.md) | Accepted | 2026-09-30 |
 | ADR-012 | [A price rule is the vendor's price, set in the admin console](ADR-012-price-rules-are-vendor-prices.md) | Accepted | 2026-10-01 |
 | ADR-013 | [Service health is durable Atlas state, pulled by the platform](ADR-013-service-health-is-atlas-state-pulled-by-the-platform.md) | Accepted | 2026-10-02 |
+| ADR-014 | [A route names models of its own type](ADR-014-a-route-names-models-of-its-own-type.md) | Accepted | 2026-10-03 |

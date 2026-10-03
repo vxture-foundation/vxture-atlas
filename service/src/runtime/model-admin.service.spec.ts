@@ -1478,6 +1478,44 @@ describe("Endpoint write path (TD-028, vxture-atlas#143)", () => {
     expect(result).toMatchObject({ id: created.id, code: "chat/default" });
   });
 
+  // ADR-014: all six wrong-type routes in production were created this way.
+  it("createEndpoint refuses an embedding route whose fallback is a chat model, without writing", async () => {
+    const repo = makeRepositoryMock();
+    repo.findModelByCode.mockImplementation((code: string) =>
+      Promise.resolve(
+        code === "embedding-3"
+          ? makeModelRecord({ modelCode: "embedding-3", modelType: "embedding" })
+          : makeModelRecord({ modelCode: code, modelType: "chat" }),
+      ),
+    );
+    repo.findEndpointByCode.mockResolvedValue(null);
+    const svc = makeService(repo);
+
+    await expect(
+      svc.createEndpoint({
+        code: "embedding/default",
+        category: "embedding",
+        primaryModelCode: "embedding-3",
+        fallbackModelCode: "doubao-pro-32k",
+      }),
+    ).rejects.toMatchObject({
+      code: "MODEL_ADMIN_VALIDATION_FAILED",
+      message: expect.stringContaining('fallbackModelCode "doubao-pro-32k" is a chat model'),
+    });
+    expect(repo.createEndpoint).not.toHaveBeenCalled();
+  });
+
+  it("createEndpoint judges no type for a category without a rule", async () => {
+    const repo = makeRepositoryMock();
+    repo.findModelByCode.mockResolvedValue(makeModelRecord({ modelType: "chat" }));
+    repo.findEndpointByCode.mockResolvedValue(null);
+    repo.createEndpoint.mockResolvedValue(makeEndpointRecord({ category: "parse" }));
+    const svc = makeService(repo);
+
+    await svc.createEndpoint({ code: "parse/default", category: "parse", primaryModelCode: "gpt-4o" });
+    expect(repo.createEndpoint).toHaveBeenCalled();
+  });
+
   it("createEndpoint rejects a primaryModelCode that matches no model, without writing", async () => {
     const repo = makeRepositoryMock();
     repo.findModelByCode.mockResolvedValue(null);
@@ -1582,6 +1620,7 @@ describe("Endpoint write path (TD-028, vxture-atlas#143)", () => {
     const repo = makeRepositoryMock();
     const existing = makeEndpointRecord();
     repo.findEndpointById.mockResolvedValue(existing);
+    repo.findModelByCode.mockResolvedValue(makeModelRecord({ modelType: "embedding" }));
     repo.updateEndpoint.mockResolvedValue(
       makeEndpointRecord({ category: "embedding" }),
     );
@@ -1594,8 +1633,42 @@ describe("Endpoint write path (TD-028, vxture-atlas#143)", () => {
     expect(repo.updateEndpoint).toHaveBeenCalledWith(existing.id, {
       category: "embedding",
     });
-    expect(repo.findModelByCode).not.toHaveBeenCalled();
     expect(result.category).toBe("embedding");
+  });
+
+  // Design 120 section 4.4: seven production routes named a model of the
+  // wrong type on 2026-10-02, one as the primary.
+  it("refuses a route model of the wrong type, naming the field and both types", async () => {
+    const repo = makeRepositoryMock();
+    repo.findEndpointById.mockResolvedValue(makeEndpointRecord({ category: "rerank", primaryModelCode: "rerank" }));
+    repo.findModelByCode.mockResolvedValue(makeModelRecord({ modelCode: "glm-5.2", modelType: "chat" }));
+    const svc = makeService(repo);
+
+    await expect(
+      svc.updateEndpoint("00000000-0000-4000-a000-000000000020", { fallbackModelCode: "glm-5.2" }),
+    ).rejects.toMatchObject({
+      code: "MODEL_ADMIN_VALIDATION_FAILED",
+      message: expect.stringContaining("is a chat model; a rerank route needs a rerank model"),
+    });
+    expect(repo.updateEndpoint).not.toHaveBeenCalled();
+  });
+
+  it("a category change re-judges the models already named; an unrelated edit of a wrong route is allowed", async () => {
+    const repo = makeRepositoryMock();
+    repo.findEndpointById.mockResolvedValue(makeEndpointRecord({ category: "chat", primaryModelCode: "gpt-4o" }));
+    repo.findModelByCode.mockResolvedValue(makeModelRecord({ modelType: "chat" }));
+    repo.updateEndpoint.mockResolvedValue(makeEndpointRecord());
+    const svc = makeService(repo);
+
+    await expect(
+      svc.updateEndpoint("00000000-0000-4000-a000-000000000020", { category: "embedding" }),
+    ).rejects.toMatchObject({ code: "MODEL_ADMIN_VALIDATION_FAILED" });
+
+    repo.findEndpointById.mockResolvedValue(
+      makeEndpointRecord({ category: "rerank", primaryModelCode: "glm-5.2" }),
+    );
+    await svc.setEndpointActive("00000000-0000-4000-a000-000000000020", false);
+    expect(repo.updateEndpoint).toHaveBeenCalledWith("00000000-0000-4000-a000-000000000020", { isActive: false });
   });
 
   it("setEndpointActive(false) deactivates via updateEndpoint({ isActive: false })", async () => {
