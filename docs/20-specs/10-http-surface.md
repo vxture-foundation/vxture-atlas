@@ -1160,6 +1160,10 @@ No query parameters (any is `400 HEALTH_UNKNOWN_FILTER`).
   a route. A route that improves without recovering (`down -> degraded`)
   carries the severity of where it landed (`warning`).
 - A model's first sighting as healthy is stored without an event.
+- A route event can come from a route **edit** as well as from a model
+  changing: routes are re-judged once a minute against their current
+  configuration, so clearing the fallback of a route whose primary is failing
+  is a `degraded -> down` event within a minute.
 - `subjectKind` is `model`, `route` or `vendor`. A vendor event is a balance
   transition: `to: "balance_low"` (`warning`; `critical` when the vendor says
   the key can no longer spend or nothing is left), `to: "unknown"` (`warning`,

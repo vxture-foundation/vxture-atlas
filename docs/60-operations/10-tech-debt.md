@@ -60,6 +60,7 @@ because those are the ones still needing a decision.
 | [TD-055](#td-055) | Context-overflow signatures live in code; adding a provider's needs a release | 2026-09-29 |
 | [TD-056](#td-056) | Inference usage never reaches the platform: every C3 consume is refused | 2026-09-30 |
 | [TD-057](#td-057) | Cache-write rates exist in the API but no operator page can set them | 2026-09-30 |
+| [TD-058](#td-058) | `updated_at` is never maintained on any registry table | 2026-10-03 |
 
 ## Closed
 
@@ -940,3 +941,22 @@ real the day a Claude route is live.
 no production row is priced at all - every one reads `not_configured`. That is
 an operations gap, not this entry's, but it is why none of the above has met
 real data yet.
+
+## TD-058
+
+**Wrong**: none of the 16 update paths in `model-registry.repository.ts` sets
+`updatedAt`, and no database trigger does either. Every registry row
+(`model_providers`, `models`, `model_endpoints`, the two grant tables,
+`model_policies`, `model_price_rules`) keeps the `updated_at` it was created
+with, however often it is edited. Found 2026-10-03: thirteen route edits in
+production left every route's `updated_at` at its creation date. The column
+is granted to `atlas_svc` (`98_column_locks.sql`), so this is code only.
+
+**Impact**: a reader of `updated_at` - an operator list sorted by "last
+changed", a drift check - is told nothing has changed. The authoritative
+record of who changed what and when is `audit.change_records`, which is
+written; this column is the only place that disagrees with it.
+
+**Recovery**: set `updatedAt: new Date()` in every repository update (and on
+activate / deactivate / soft delete), with one test per table that it moves.
+No DDL. Optionally backfill from `audit.change_records`.

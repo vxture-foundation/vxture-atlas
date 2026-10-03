@@ -263,6 +263,12 @@ from its first minute.
   within a minute of an operator edit). Deciding it later, when the write is
   queued, reads states that have moved on and can miss a `down` that lasted
   seconds.
+- **And again every minute, against the routes as configured now.** A route
+  can change state with no model changing: on 2026-10-03 an operator cleared
+  the fallbacks of `chat/fast` and `chat/extract` while their primary was
+  refused, which made both `down`, and the stored state stayed `degraded` with
+  no event. A route edit that breaks or restores a route is an event like any
+  other (the probe scheduler re-judges every route before each pass).
 - **Only transitions become events** - `deepseek-v4-flash: ok ->
   account_refused (402, "Insufficient Balance")`, and later the recovery. A
   failing model does not produce one event per failed call.
