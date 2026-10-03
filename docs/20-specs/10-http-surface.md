@@ -1093,7 +1093,7 @@ No query parameters (any is `400 HEALTH_UNKNOWN_FILTER`).
 
 | Field | Meaning |
 |---|---|
-| `models[].state` | `ok` / `rate_limited` / `account_refused` / `unavailable` (the vendor answered badly or late) / `unreachable` (the call never reached the vendor: DNS / TLS / connect) / `model_missing` / `unknown` |
+| `models[].state` | `ok` / `rate_limited` / `account_refused` / `unavailable` (the vendor answered badly or late) / `unreachable` (the call never reached the vendor: DNS / TLS / connect) / `model_missing` / `degraded` (answers, but badly: three empty answers in a row, or slower than its own 7-day baseline - routes still count it as serving; design 120 section 4.7) / `unknown` |
 | `models[]` | **only models with a recorded result** (a real call, or a probe from F1b on) since the state was first kept. It is not the model catalogue; a model absent here is `unknown` |
 | `models[].upstreamStatus`, `detail` | present while the model is failing: the vendor's HTTP status and its own words (up to 300 characters). `detail` often says what to do ("adjust or close the Safe Experience Mode") |
 | `routes[]` | **every active route as configured now**, evaluated at read time |

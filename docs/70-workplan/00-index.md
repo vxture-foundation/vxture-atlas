@@ -392,8 +392,11 @@ F - service health monitoring (ADR-013, design 120; owner 2026-10-02):
       Production: `partitions` ok (13 months). `usage_reporting` unverified
       until real traffic - it should turn `failing` on the third refused
       consume (TD-056)
-- [ ] F3b-B (P2). Degradation: empty answers (3 in a row) and slowness
-      against the model's own 7-day median (3x), no configuration
+- [ ] F3b-B (P2). Degradation (model state `degraded`, warning; routes
+      still count it as serving): empty answers (3 in a row; were "not a
+      health signal" before) and slowness - last 10 calls vs the 7 days
+      before, per output token for chat, 3x to enter and under 2x to leave.
+      No configuration, no DDL. Built; release pending
 - [ ] F4 (platform). Server-side watcher, events into admin notices, admin
       state view, opera request log showing error code and message - raised
       on the platform repo
