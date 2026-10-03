@@ -1,5 +1,6 @@
 import { Logger } from "@nestjs/common";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { atlasHealth } from "../health/atlas-health";
 
 import { metricsRegistry } from "../runtime/metrics.registry";
 import { PlatformEntitlementClient } from "./platform-entitlement.client";
@@ -171,6 +172,16 @@ describe("PlatformEntitlementClient.consume", () => {
     const scrape = await metricsRegistry.scrape();
     expect(scrape).toContain('outcome="rejected",reason="http_403"');
     expect(scrape).not.toContain("Workspace 42");
+  });
+
+  it("tells atlasHealth what happened to the report, the refusal word included (F3b-A)", async () => {
+    vi.spyOn(Logger.prototype, "warn").mockImplementation(() => undefined);
+    const record = vi.spyOn(atlasHealth, "recordConsume");
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse({ message: "unknown_product" }, false, 400)));
+
+    await new PlatformEntitlementClient().consume(input);
+
+    expect(record).toHaveBeenCalledWith("rejected", "unknown_product");
   });
 
   it("counts a billed consume", async () => {

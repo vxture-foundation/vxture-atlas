@@ -1105,6 +1105,7 @@ No query parameters (any is `400 HEALTH_UNKNOWN_FILTER`).
 | `vendors[].currency`, `balance`, `daysLeft` | the last reading; `daysLeft` absent until there are 6 hours of history with some spend |
 | `vendors[].lastReadError` | present while reads fail: the vendor's status and words |
 | `vendors[].settings` | the thresholds in effect and the level each came from (`provider` / `global` / `default`); `minAmount` is in the vendor's currency, `null` when no level names one for it |
+| `atlas[]` | Atlas's own components, always all three: `{ component, state, since, detail? }`. `component`: `usage_reporting` (C3 consume accepted by the platform), `request_log` (reqlog writes), `partitions` (reqlog partition runway). `state`: `ok` / `failing` / `at_risk` (partitions only) / `unknown` (no signal yet). Design 120 section 4.6 |
 | times | ISO 8601, UTC |
 
 `unknown` is not failing: a route whose primary has never been seen is `ok`.
@@ -1164,7 +1165,10 @@ No query parameters (any is `400 HEALTH_UNKNOWN_FILTER`).
   changing: routes are re-judged once a minute against their current
   configuration, so clearing the fallback of a route whose primary is failing
   is a `degraded -> down` event within a minute.
-- `subjectKind` is `model`, `route` or `vendor`. A vendor event is a balance
+- `subjectKind` is `model`, `route`, `vendor` or `atlas`. An `atlas` event is
+  one of Atlas's own components changing: `usage_reporting` / `partitions`
+  `to: failing` or `at_risk` (`warning`), `request_log` `to: failing`
+  (`critical` - a request record was lost), `to: ok` (`info`). A vendor event is a balance
   transition: `to: "balance_low"` (`warning`; `critical` when the vendor says
   the key can no longer spend or nothing is left), `to: "unknown"` (`warning`,
   reads failing), `to: "ok"` (`info`, recovered). Its `detail` carries the

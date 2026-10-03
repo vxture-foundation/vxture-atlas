@@ -1,6 +1,7 @@
 import { HealthProbeScheduler } from "./health/health-probe.scheduler";
 import { HealthSettingsService } from "./health/health-settings.service";
 import { VendorBalanceMonitor } from "./health/vendor-balance.monitor";
+import { AtlasHealthMonitor } from "./health/atlas-health.monitor";
 import { HealthStoreBootstrap } from "./health/health.store";
 import { ServiceHealthController } from "./health/service-health.controller";
 import { ServiceHealthService } from "./health/service-health.service";
@@ -114,6 +115,7 @@ import { AuditMiddleware } from "./audit/audit.middleware";
     HealthProbeScheduler,
     HealthSettingsService,
     VendorBalanceMonitor,
+    AtlasHealthMonitor,
   ],
   exports: [
     ModelRuntimeService,
