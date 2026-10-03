@@ -64,6 +64,8 @@ export class HealthProbeScheduler implements OnModuleInit, OnModuleDestroy {
     if (this.running) return { probed: [] };
     this.running = true;
     try {
+      // Route edits change route states too; judge them before probing.
+      await upstreamHealth.syncRoutes();
       const targets = await this.targets();
       const rows = (await prisma.healthProbeSetting.findMany()) as ProbeSettingRow[];
       const global = this.globalSettings();

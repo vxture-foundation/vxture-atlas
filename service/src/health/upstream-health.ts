@@ -238,6 +238,24 @@ export class UpstreamHealth {
     }
   }
 
+  /**
+   * Re-read the routes and re-judge every one. A route can change state with
+   * no model changing: on 2026-10-03 an operator cleared the fallbacks of
+   * `chat/fast` and `chat/extract` while their primary was refused, which made
+   * both `down` - and the stored state stayed `degraded`, with no event,
+   * because routes were only re-judged when a model moved. Called once a
+   * minute by the probe scheduler.
+   */
+  syncRoutes(): Promise<void> {
+    const store = this.store;
+    if (!store) return Promise.resolve();
+    return this.enqueue(async () => {
+      this.routeDefs = await store.listRoutes();
+      this.routeDefsAt = this.now();
+      for (const t of this.reevaluateRoutes(this.now())) await store.save(t);
+    });
+  }
+
   /** Every transition queued so far has been written. For tests and shutdown. */
   flushed(): Promise<void> {
     return this.queue;

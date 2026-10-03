@@ -100,6 +100,13 @@ describe("HealthProbeScheduler.tick", () => {
     expect(upstreamHealth.modelState("doubao-lite")).toBe("ok");
   });
 
+  it("re-judges the routes every pass, so a route edit is noticed without any model changing", async () => {
+    const sync = vi.spyOn(upstreamHealth, "syncRoutes");
+    const { scheduler } = build({ active: [], routes: [] });
+    await scheduler.tick(NOW);
+    expect(sync).toHaveBeenCalledTimes(1);
+  });
+
   it("a model with no usable key is skipped, not filed as a vendor refusal, and not retried every minute", async () => {
     const { scheduler, prober } = build({
       active: [model("keyless")],

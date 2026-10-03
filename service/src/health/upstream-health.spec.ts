@@ -45,7 +45,7 @@ describe("classifyFailure - what a failed call says about the vendor", () => {
 class FakeStore implements HealthStore {
   saved: Transition[] = [];
   constructor(
-    private readonly routes: RouteDef[],
+    public routes: RouteDef[],
     private readonly preloaded: Awaited<ReturnType<HealthStore["load"]>> = { models: [], routes: [] },
   ) {}
   async load() {
@@ -90,6 +90,31 @@ describe("upstreamHealth - transitions reach the store, calls do not", () => {
     ]);
     const deepseek = events.find((t) => t.subjectKey === "deepseek-flash");
     expect(deepseek).toMatchObject({ upstreamStatus: 402, detail: "Insufficient Balance", affectedRoutes: ["chat/fast"] });
+  });
+
+  it("an operator clearing the fallback of a route whose primary is failing makes it down - an event, with no model changing", async () => {
+    const store = new FakeStore([CHAT_FAST]);
+    await upstreamHealth.attach(store);
+    upstreamHealth.recordFailure("doubao-lite", "doubao", new ProviderHttpError("x", 429, "p", DOUBAO_SET_LIMIT));
+    upstreamHealth.recordSuccess("deepseek-flash", "deepseek");
+    await upstreamHealth.flushed();
+    expect(store.saved.filter((t) => t.subjectKind === "route").map((t) => t.to)).toEqual(["degraded"]);
+
+    store.routes = [{ ...CHAT_FAST, fallback: null }];
+    await upstreamHealth.syncRoutes();
+
+    expect(store.saved.at(-1)).toMatchObject({
+      subjectKind: "route",
+      subjectKey: "chat/fast",
+      from: "degraded",
+      to: "down",
+      severity: "critical",
+      event: true,
+    });
+    // Nothing changed since: the next sync writes nothing.
+    const count = store.saved.length;
+    await upstreamHealth.syncRoutes();
+    expect(store.saved).toHaveLength(count);
   });
 
   it("a recovery is an event too, and the route comes back", async () => {
