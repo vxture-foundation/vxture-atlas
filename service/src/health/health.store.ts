@@ -4,6 +4,7 @@ import { prisma } from "../prisma";
 import { API_KEY_OPTIONAL_PROVIDERS } from "../runtime/resolve-api-key";
 import { MODEL_HEALTH_STATES, type ModelHealthState, type RouteHealthState } from "./health-state";
 import { routeConfigIssues, type ModelFacts } from "./route-config";
+import { atlasHealth, type AtlasHealthStore } from "./atlas-health";
 import { upstreamHealth, type HealthStore, type RouteDef, type Transition } from "./upstream-health";
 
 /**
@@ -16,7 +17,13 @@ import { upstreamHealth, type HealthStore, type RouteDef, type Transition } from
  * Like `reqlog` and `audit`, this calls Prisma directly from a service: it is
  * a write-mostly path with no repository logic worth a layer.
  */
-export class PrismaHealthStore implements HealthStore {
+export class PrismaHealthStore implements HealthStore, AtlasHealthStore {
+  /** Atlas's own components as last stored (F3b-A). */
+  async loadAtlas(): ReturnType<AtlasHealthStore["loadAtlas"]> {
+    const rows = await prisma.healthSubjectState.findMany({ where: { subjectKind: "atlas" } });
+    return rows.map((r) => ({ component: r.subjectKey, state: r.state, since: r.since, detail: r.detail }));
+  }
+
   async load(): ReturnType<HealthStore["load"]> {
     const rows = await prisma.healthSubjectState.findMany();
     const modelStates: ReadonlySet<string> = new Set(MODEL_HEALTH_STATES);
@@ -135,10 +142,11 @@ export class HealthStoreBootstrap implements OnModuleInit {
   private readonly logger = new Logger(HealthStoreBootstrap.name);
 
   onModuleInit(): void {
-    void upstreamHealth.attach(new PrismaHealthStore()).catch((error: unknown) => {
-      this.logger.warn(
-        `health state restore failed: ${error instanceof Error ? error.message : String(error)}`,
-      );
-    });
+    const store = new PrismaHealthStore();
+    const warn = (error: unknown): void => {
+      this.logger.warn(`health state restore failed: ${error instanceof Error ? error.message : String(error)}`);
+    };
+    void upstreamHealth.attach(store).catch(warn);
+    void atlasHealth.attach(store).catch(warn);
   }
 }

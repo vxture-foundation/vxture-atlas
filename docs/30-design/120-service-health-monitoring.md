@@ -167,6 +167,24 @@ chat model as fallback; `rerank/quality` has one as its **primary**.
   that the vendor answers with `401` - which read as the vendor refusing
   Atlas.
 
+### 4.6 Atlas's own components
+
+Vendors and routes are not the only things that fail. Three of Atlas's own
+working parts are health subjects too (`subjectKind: "atlas"`), on the same
+state store, event feed and `/capability/health` as models and routes. They
+are facts Atlas already measured - in counters nothing read, and in
+`/readyz` - so no threshold has to be configured.
+
+| Component | Signal | `failing` | Severity | Recovers |
+|---|---|---|---|---|
+| `usage_reporting` | every C3 consume outcome | 3 reports in a row refused or failed (`skipped` - nothing to bill, platform not configured - does not count) | warning: calls are served, not billed; recoverable from `reqlog` | one accepted report |
+| `request_log` | a `reqlog` write failing | any write failure | **critical**: that record is lost for good | 10 minutes with no failure |
+| `partitions` | the reqlog partition runway, read every 10 minutes | rows in the DEFAULT partition (`at_risk` under two months ahead) | warning | runway back to two months or more |
+
+The first sighting of a working part is stored quietly, like a model's. An
+unreadable runway is not a partition state: `/readyz` reports the read itself
+failing.
+
 ### 4.5 Settings and defaults
 
 Every detection setting is editable, and every one has a default, so nothing
@@ -241,6 +259,10 @@ has no amount threshold until one is set on the vendor; the view reports it as
 
 Independent of the model state: a vendor can be `balance_low` while its models
 serve, which is the point - the warning comes before the `402`.
+
+### 5.1b Per Atlas component
+
+`ok` / `failing` / `at_risk` / `unknown` - see section 4.6.
 
 ### 5.2 Per route - this is the severity
 

@@ -379,16 +379,18 @@ describe("AtlasHealthService readiness deadline", () => {
   it("a blocked readiness is logged once with the failing check and its reason, and counted", async () => {
     process.env["ATLAS_TEST_KEY"] = "configured";
     const warn = vi.spyOn(Logger.prototype, "warn").mockImplementation(() => undefined);
+    // Fails at once: two never-settling calls would wait out the 2 s deadline
+    // twice, which under a full parallel run overran the 5 s test timeout.
     const service = new AtlasHealthService(
-      makeRepository({ checkDatabaseConnectivity: vi.fn(() => new Promise<void>(() => {})) }),
+      makeRepository({ checkDatabaseConnectivity: vi.fn().mockRejectedValue(new Error("db down (logging test)")) }),
       makeVault(),
     );
 
     await service.ready();
     await service.ready();
 
-    const lines = warn.mock.calls.map((c) => String(c[0])).filter((l) => l.startsWith("readiness "));
-    expect(lines).toEqual([expect.stringMatching(/^readiness start -> blocked: database \(\d+ms: check did not answer within 2000ms\)/u)]);
+    const lines = warn.mock.calls.map((c) => String(c[0])).filter((l) => / -> /u.test(l));
+    expect(lines).toEqual([expect.stringMatching(/^readiness start -> blocked: database \(\d+ms: .+\)/u)]);
     expect(await metricsRegistry.scrape()).toMatch(/readiness_check_failures_total\{check="database"\} [2-9]/u);
   });
 

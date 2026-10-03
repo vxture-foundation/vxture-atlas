@@ -147,10 +147,10 @@ const METRIC_DEFINITIONS: Record<MetricName, MetricDefinition> = {
     help: "upstream_http_errors_total 上游 HTTP 失败（provider；status；class=account|rate_limit|request|server|other）",
     labelNames: ["provider", "status", "class"],
   },
-  /** ADR-013: a vendor model or route changed health state (`to` is the new state). */
+  /** ADR-013: a vendor model, route, vendor balance or Atlas component changed health state (`to` is the new state). */
   health_transitions_total: {
     type: "counter",
-    help: "health_transitions_total 健康状态变化（kind=model|route；to 为新状态）",
+    help: "health_transitions_total 健康状态变化（kind=model|route|vendor|atlas；to 为新状态）",
     labelNames: ["kind", "to"],
   },
   /** ADR-013: a health transition that could not be written - the platform would not see it. */

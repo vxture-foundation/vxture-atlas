@@ -42,7 +42,7 @@ export interface RouteDef {
 }
 
 export interface Transition {
-  subjectKind: "model" | "route" | "vendor";
+  subjectKind: "model" | "route" | "vendor" | "atlas";
   subjectKey: string;
   providerCode?: string;
   from: string;
