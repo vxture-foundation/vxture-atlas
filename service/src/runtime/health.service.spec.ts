@@ -9,7 +9,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { mockRouteModelFacts } from "../health/route-facts.fixtures";
 import { prisma } from "../prisma";
+import { Logger } from "@nestjs/common";
+
 import { AtlasHealthService } from "./health.service";
+import { metricsRegistry } from "./metrics.registry";
 import type { ModelRegistryRepository } from "../registry/model-registry.repository";
 import type {
   AiModelRecord,
@@ -363,6 +366,39 @@ describe("AtlasHealthService readiness deadline", () => {
     /* The point of the deadline: still `blocked`, still naming the dependency.
        A prober that gave up first would have had neither. */
     expect(result.status).toBe("blocked");
+  });
+
+  it("a blocked readiness is logged once with the failing check and its reason, and counted", async () => {
+    process.env["ATLAS_TEST_KEY"] = "configured";
+    const warn = vi.spyOn(Logger.prototype, "warn").mockImplementation(() => undefined);
+    const service = new AtlasHealthService(
+      makeRepository({ checkDatabaseConnectivity: vi.fn(() => new Promise<void>(() => {})) }),
+      makeVault(),
+    );
+
+    await service.ready();
+    await service.ready();
+
+    const lines = warn.mock.calls.map((c) => String(c[0])).filter((l) => l.startsWith("readiness "));
+    expect(lines).toEqual([expect.stringMatching(/^readiness start -> blocked: database \(\d+ms: check did not answer within 2000ms\)/u)]);
+    expect(await metricsRegistry.scrape()).toMatch(/readiness_check_failures_total\{check="database"\} [2-9]/u);
+  });
+
+  it("keeps the error text off the unguarded /readyz but writes it to the server log, once per window", async () => {
+    process.env["ATLAS_TEST_KEY"] = "configured";
+    const warn = vi.spyOn(Logger.prototype, "warn").mockImplementation(() => undefined);
+    const secret = "connect ECONNREFUSED 10.9.8.7:5432 user atlas_svc (readiness test)";
+    const service = new AtlasHealthService(
+      makeRepository({ checkDatabaseConnectivity: vi.fn().mockRejectedValue(new Error(secret)) }),
+      makeVault(),
+    );
+
+    const first = await service.ready();
+    await service.ready();
+
+    expect(String(first.checks.database.message)).not.toContain("10.9.8.7");
+    const detailLines = warn.mock.calls.map((c) => String(c[0])).filter((l) => l.includes(secret));
+    expect(detailLines).toEqual([`readiness check failed: ${secret}`]);
   });
 
   it("answers well inside a prober's timeout even when a dependency is gone", async () => {
