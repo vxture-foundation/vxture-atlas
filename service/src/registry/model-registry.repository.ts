@@ -1606,7 +1606,11 @@ export class ModelRegistryRepository {
         AND ($1::uuid IS NULL OR tenant_id = $1)
         AND ($2::uuid IS NULL OR application_id = $2)
         AND ($3::varchar IS NULL OR application_type = $3)
-        AND ($4::varchar IS NULL OR to_char(date_trunc('month', created_at), 'YYYY-MM') = $4)
+        -- A created_at range, not to_char(created_at) = $4: Postgres can
+        -- prune partitions on the range (one month read, not all of them);
+        -- the to_char form scanned every partition for a one-month question.
+        AND ($4::varchar IS NULL OR (created_at >= to_date($4, 'YYYY-MM')
+                                     AND created_at < to_date($4, 'YYYY-MM') + interval '1 month'))
         AND ($5::varchar IS NULL OR provider_code = $5)
         AND ($6::varchar IS NULL OR model_code = $6)
         AND ($7::varchar IS NULL OR product_code = $7)
@@ -1666,7 +1670,11 @@ export class ModelRegistryRepository {
         AND ($1::uuid IS NULL OR tenant_id = $1)
         AND ($2::uuid IS NULL OR application_id = $2)
         AND ($3::varchar IS NULL OR application_type = $3)
-        AND ($4::varchar IS NULL OR to_char(date_trunc('month', created_at), 'YYYY-MM') = $4)
+        -- A created_at range, not to_char(created_at) = $4: Postgres can
+        -- prune partitions on the range (one month read, not all of them);
+        -- the to_char form scanned every partition for a one-month question.
+        AND ($4::varchar IS NULL OR (created_at >= to_date($4, 'YYYY-MM')
+                                     AND created_at < to_date($4, 'YYYY-MM') + interval '1 month'))
         AND ($5::varchar IS NULL OR provider_code = $5)
         AND ($6::varchar IS NULL OR model_code = $6)
         AND ($7::varchar IS NULL OR product_code = $7)

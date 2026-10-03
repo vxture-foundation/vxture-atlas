@@ -523,7 +523,12 @@ export class AtlasHealthService {
   ): Promise<HealthCheckResult> {
     const startedAt = Date.now();
     try {
-      const summaries = await this.repository.listUsageSummaries({});
+      // The current month only: proving the read path works must not cost a
+      // scan of the whole request log, which grows without bound and is read
+      // on every /readyz poll. Partition pruning keeps this to one partition.
+      const summaries = await this.repository.listUsageSummaries({
+        cycleMonth: new Date().toISOString().slice(0, 7),
+      });
       return {
         status: "pass",
         latencyMs: Date.now() - startedAt,

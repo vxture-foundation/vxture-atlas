@@ -60,6 +60,7 @@ because those are the ones still needing a decision.
 | [TD-055](#td-055) | Context-overflow signatures live in code; adding a provider's needs a release | 2026-09-29 |
 | [TD-056](#td-056) | Inference usage never reaches the platform: every C3 consume is refused | 2026-09-30 |
 | [TD-057](#td-057) | Cache-write rates exist in the API but no operator page can set them | 2026-09-30 |
+| [TD-059](#td-059) | The first `/readyz` after a fresh image start can answer `blocked` on dev; cause unknown | 2026-10-03 |
 
 ## Closed
 
@@ -941,3 +942,26 @@ real the day a Claude route is live.
 no production row is priced at all - every one reads `not_configured`. That is
 an operations gap, not this entry's, but it is why none of the above has met
 real data yet.
+
+## TD-059
+
+**Observed** (dev stack, 2026-10-03): after `docker pull` of a new image and a
+container start, the first one or two `/readyz` calls answer `blocked`;
+`usageSummaryRead` overruns the 2000 ms check deadline (2000-2133 ms), and
+the next call is `ready` (129 ms). Four times in about ten such starts; never
+on a restart of an already pulled image; never in production, where
+`deploy.sh` has read `ready` after every release.
+
+**Ruled out**: data volume - it recurs with the check reading one partition
+(the current month, PR #118), and dev holds about 2.5k reqlog rows; pool
+size - `DB_POOL_MAX` is 10; deploy risk - `deploy.sh` retries five times and a
+`blocked` verdict only warns.
+
+**Evidence source**: the v0.7.28 readiness log
+(`readiness start -> blocked: usageSummaryRead (2133ms: ...)`), so every
+recurrence is now recorded with its check and latency.
+
+**Recovery**: time the startup queries per connection (first raw query on a
+fresh pg connection, the parallel startup restores) to find where the two
+seconds go; then either remove the cause or give readiness a short warm-up
+grace. Close if production ever shows it - then it is not a dev artefact.

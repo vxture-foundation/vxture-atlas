@@ -138,6 +138,14 @@ describe("registry drift check", () => {
   });
 });
 
+describe("usage summary read check", () => {
+  it("reads the current month only - not the whole request log on every /readyz poll", async () => {
+    const list = vi.fn(async () => []);
+    await new AtlasHealthService(makeRepository({ listUsageSummaries: list }), makeVault()).ready();
+    expect(list).toHaveBeenCalledWith({ cycleMonth: new Date().toISOString().slice(0, 7) });
+  });
+});
+
 describe("route health check", () => {
   afterEach(() => vi.restoreAllMocks());
 
