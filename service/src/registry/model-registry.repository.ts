@@ -90,6 +90,23 @@ const ROLLUP_COLUMN: Record<Exclude<UsageRollupDimension, "tenant">, string> = {
   product: "product_code",
 };
 
+
+/**
+ * Every registry write stamps `updated_at` (TD-058). Nothing did before: no
+ * update path set it and no trigger does, so every row kept its creation time
+ * however often it was edited - thirteen production route edits on 2026-10-03
+ * left every route reading its creation date. The column is granted to
+ * `atlas_svc` on all seven registry tables (98_column_locks.sql).
+ */
+function touched<T extends object>(data: T): T & { updatedAt: Date } {
+  return { ...data, updatedAt: new Date() };
+}
+
+/** A soft delete is a change too: one instant for `deleted_at` and `updated_at`. */
+function softDeleted(at: Date = new Date()): { isActive: false; deletedAt: Date; updatedAt: Date } {
+  return { isActive: false, deletedAt: at, updatedAt: at };
+}
+
 @Injectable()
 export class ModelRegistryRepository {
   /**
@@ -217,7 +234,7 @@ export class ModelRegistryRepository {
   ): Promise<ModelProviderRecord> {
     return prisma.modelProvider.update({
       where: { id: providerId },
-      data: input,
+      data: touched(input),
     });
   }
 
@@ -239,7 +256,7 @@ export class ModelRegistryRepository {
   ): Promise<ModelProviderRecord> {
     return prisma.modelProvider.update({
       where: { id: providerId },
-      data: { ...input, deletedAt: null },
+      data: touched({ ...input, deletedAt: null }),
     });
   }
 
@@ -263,18 +280,18 @@ export class ModelRegistryRepository {
       if (modelIds.length > 0) {
         await tx.modelGrant.updateMany({
           where: { modelId: { in: modelIds }, deletedAt: null },
-          data: { isActive: false, deletedAt },
+          data: softDeleted(deletedAt),
         });
 
         await tx.modelDefinition.updateMany({
           where: { id: { in: modelIds } },
-          data: { isActive: false, deletedAt },
+          data: softDeleted(deletedAt),
         });
       }
 
       return tx.modelProvider.update({
         where: { id: providerId },
-        data: { isActive: false, deletedAt },
+        data: softDeleted(deletedAt),
       });
     });
   }
@@ -360,7 +377,7 @@ export class ModelRegistryRepository {
   ): Promise<ModelEndpointRecord> {
     return prisma.modelEndpoint.update({
       where: { id: endpointId },
-      data: input,
+      data: touched(input),
     });
   }
 
@@ -371,14 +388,14 @@ export class ModelRegistryRepository {
   ): Promise<ModelEndpointRecord> {
     return prisma.modelEndpoint.update({
       where: { id: endpointId },
-      data: { ...input, deletedAt: null },
+      data: touched({ ...input, deletedAt: null }),
     });
   }
 
   deleteEndpoint(endpointId: string): Promise<ModelEndpointRecord> {
     return prisma.modelEndpoint.update({
       where: { id: endpointId },
-      data: { isActive: false, deletedAt: new Date() },
+      data: softDeleted(),
     });
   }
 
@@ -522,7 +539,7 @@ export class ModelRegistryRepository {
       where: {
         id: modelId,
       },
-      data: stripRetiredProvider(input),
+      data: touched(stripRetiredProvider(input)),
       include: PROVIDER_INCLUDE,
     });
 
@@ -532,10 +549,7 @@ export class ModelRegistryRepository {
   deleteGrant(grantId: string): Promise<AiModelGrantRecord> {
     return prisma.modelGrant.update({
       where: { id: grantId },
-      data: {
-        isActive: false,
-        deletedAt: new Date(),
-      },
+      data: softDeleted(),
     });
   }
 
@@ -548,20 +562,14 @@ export class ModelRegistryRepository {
           modelId,
           deletedAt: null,
         },
-        data: {
-          isActive: false,
-          deletedAt,
-        },
+        data: softDeleted(deletedAt),
       });
 
       const row = await tx.modelDefinition.update({
         where: {
           id: modelId,
         },
-        data: {
-          isActive: false,
-          deletedAt,
-        },
+        data: softDeleted(deletedAt),
         include: PROVIDER_INCLUDE,
       });
 
@@ -625,13 +633,13 @@ export class ModelRegistryRepository {
       isActive?: boolean;
     },
   ): Promise<ProductEndpointGrantRecord> {
-    return prisma.productEndpointGrant.update({ where: { id }, data: input });
+    return prisma.productEndpointGrant.update({ where: { id }, data: touched(input) });
   }
 
   deleteProductGrant(id: string): Promise<ProductEndpointGrantRecord> {
     return prisma.productEndpointGrant.update({
       where: { id },
-      data: { isActive: false, deletedAt: new Date() },
+      data: softDeleted(),
     });
   }
 
@@ -924,7 +932,7 @@ export class ModelRegistryRepository {
       where: {
         id: grantId,
       },
-      data: input,
+      data: touched(input),
     });
   }
 
@@ -948,14 +956,14 @@ export class ModelRegistryRepository {
   deletePriceRule(id: string): Promise<ModelPriceRuleRecord> {
     return prisma.modelPriceRule.update({
       where: { id },
-      data: { isActive: false, deletedAt: new Date() },
+      data: softDeleted(),
     });
   }
 
   deletePolicy(id: string): Promise<ModelPolicyRecord> {
     return prisma.modelPolicy.update({
       where: { id },
-      data: { isActive: false, deletedAt: new Date() },
+      data: softDeleted(),
     });
   }
 
@@ -1002,7 +1010,7 @@ export class ModelRegistryRepository {
   ): Promise<ModelPriceRuleRecord> {
     return prisma.modelPriceRule.update({
       where: { id: priceRuleId },
-      data: input,
+      data: touched(input),
     });
   }
 
@@ -1042,7 +1050,7 @@ export class ModelRegistryRepository {
   ): Promise<ModelPolicyRecord> {
     return prisma.modelPolicy.update({
       where: { id: policyId },
-      data: input,
+      data: touched(input),
     });
   }
 
