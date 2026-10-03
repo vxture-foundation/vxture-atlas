@@ -29,7 +29,8 @@ type MetricName =
   | "upstream_http_errors_total"
   | "health_transitions_total"
   | "health_write_failures_total"
-  | "health_balance_reads_total";
+  | "health_balance_reads_total"
+  | "readiness_check_failures_total";
 
 type MetricDefinition = {
   type: "counter" | "gauge" | "histogram";
@@ -159,6 +160,12 @@ const METRIC_DEFINITIONS: Record<MetricName, MetricDefinition> = {
     labelNames: [],
   },
   /** ADR-013 P1: a vendor balance read (outcome=ok|failed). */
+  /** A readiness check answered fail (check = its name). Counted per evaluation. */
+  readiness_check_failures_total: {
+    type: "counter",
+    help: "readiness_check_failures_total 就绪检查失败次数（check 为检查名）",
+    labelNames: ["check"],
+  },
   health_balance_reads_total: {
     type: "counter",
     help: "health_balance_reads_total 厂商余额读取（provider；outcome=ok|failed）",

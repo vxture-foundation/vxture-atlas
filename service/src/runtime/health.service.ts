@@ -8,7 +8,7 @@
 import { evaluateRoute } from "../health/route-config";
 import { PrismaHealthStore } from "../health/health.store";
 import { upstreamHealth } from "../health/upstream-health";
-import { Inject, Injectable } from "@nestjs/common";
+import { Inject, Injectable, Logger } from "@nestjs/common";
 import {
   buildHealthIdentity,
   serviceIdentity,
@@ -17,6 +17,7 @@ import {
 } from "@vxture/shared";
 
 import { ProviderKeyRepository } from "../provider-keys/provider-key.repository";
+import { metricsRegistry } from "./metrics.registry";
 import { ModelRegistryRepository } from "../registry/model-registry.repository";
 import type { AiModelRecord, ModelConfig } from "../types/runtime.types";
 
@@ -46,6 +47,17 @@ export type ReadinessStatus = "ready" | "degraded" | "blocked";
  * gets strictly more than a probe timeout would have told it.
  */
 const CHECK_DEADLINE_MS = 2_000;
+
+/**
+ * Readiness leaves a trace in the server log. Before, a `blocked` existed only
+ * in the one HTTP response that reported it: twice on 2026-10-03 a freshly
+ * started dev container answered `blocked` on its first /readyz and nothing
+ * anywhere recorded which check failed or why.
+ */
+const readinessLogger = new Logger("Readiness");
+/** The full error behind an opaque /readyz message, at most once per message per window. */
+const DETAIL_LOG_WINDOW_MS = 5 * 60_000;
+const detailLoggedAt = new Map<string, number>();
 
 /**
  * Run a check under the deadline. Never rejects - a check that overruns becomes
@@ -123,6 +135,28 @@ export class AtlasHealthService {
     private readonly providerKeys: ProviderKeyRepository,
   ) {}
 
+  /** The last overall status, so a change is logged once rather than on every poll. */
+  private lastStatus: ReadinessStatus | undefined;
+
+  /**
+   * Counts every failing check, and logs the overall status when it CHANGES,
+   * naming each failing check with its latency and reason - so a `blocked`
+   * that lasted one poll can still be explained afterwards.
+   */
+  private recordReadiness(status: ReadinessStatus, checks: Record<string, HealthCheckResult>): void {
+    const failing = Object.entries(checks).filter(([, c]) => c.status === "fail");
+    for (const [name] of failing) metricsRegistry.incCounter("readiness_check_failures_total", { check: name });
+    const previous = this.lastStatus;
+    this.lastStatus = status;
+    if (previous === status) return;
+    const reasons = failing
+      .map(([name, c]) => `${name} (${c.latencyMs ?? "?"}ms: ${c.message ?? "no message"})`)
+      .join("; ");
+    const line = `readiness ${previous ?? "start"} -> ${status}${reasons ? `: ${reasons}` : ""}`;
+    if (status === "blocked") readinessLogger.warn(line);
+    else readinessLogger.log(line);
+  }
+
   live(): AtlasLiveResponse {
     return buildHealthIdentity({
       service: "atlas",
@@ -183,6 +217,16 @@ export class AtlasHealthService {
         : await withDeadline("providerKeys", () =>
             this.checkProviderKeys(modelRegistry.models as AiModelRecord[]),
           );
+
+    const checks = {
+      database,
+      modelRegistry,
+      providerKeys,
+      usageSummaryRead,
+      reqlogPartitions,
+    };
+    const status = resolveReadinessStatus(Object.values(checks));
+    this.recordReadiness(status, checks);
 
     return {
       ...serviceIdentity({ service: "atlas", product: "vxture" }),
@@ -523,7 +567,18 @@ function omitPrivateCheckData(check: HealthCheckResult): HealthCheckResult {
 const OPAQUE_FAILURE_MESSAGE = "dependency check failed";
 
 function failureMessage(error: unknown, includeDetail: boolean): string {
-  return includeDetail ? errorMessage(error) : OPAQUE_FAILURE_MESSAGE;
+  if (includeDetail) return errorMessage(error);
+  // The unguarded surface hides the text (it names hosts and users); the
+  // server log is internal and keeps it, rate-limited so an outage polled
+  // every few seconds is one line, not thousands.
+  const detail = errorMessage(error);
+  const now = Date.now();
+  const last = detailLoggedAt.get(detail);
+  if (last === undefined || now - last >= DETAIL_LOG_WINDOW_MS) {
+    detailLoggedAt.set(detail, now);
+    readinessLogger.warn(`readiness check failed: ${detail}`);
+  }
+  return OPAQUE_FAILURE_MESSAGE;
 }
 
 function errorMessage(error: unknown): string {
