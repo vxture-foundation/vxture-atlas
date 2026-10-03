@@ -1,7 +1,9 @@
 # 120 - Service health monitoring
 
-Status: design, accepted 2026-10-02 (ADR-013). Not yet implemented; the
-workplan's section F tracks it.
+Status: accepted 2026-10-02 (ADR-013; ADR-014 for route types). Atlas's side
+is implemented (v0.7.21-v0.7.30, workplan section F); the platform's watcher
+that turns the events into admin notices (F4) is not, so nobody is notified
+yet.
 
 ## 1. Why
 
@@ -44,12 +46,12 @@ outside has to watch it.
 | | no response | header / deadline timeout | `unavailable` |
 | | network (DNS / TLS / connect) | fetch failure | `unreachable` |
 | | throttling | plain `429` | `rate_limited` |
-| | degradation (slow, empty, truncated) | `200` | P2 (§7) |
+| | degradation (slow, empty) | `200` | `degraded` (§4.7); truncated answers and empty **streams** are not detected |
 | Route | primary and fallback both down | every candidate failing | route `down` |
-| | fallback cannot serve the capability | configuration | `misconfigured` |
+| | a named model cannot serve the route (wrong type, missing, inactive, no key) | configuration | `routes[].configIssues`, and the model counts as not serving the route (§4.4) |
 | Atlas itself | process / container down | `/healthz` unreachable | outside watcher only |
-| | database, vault, issuer | `/readyz` `blocked` | `atlas` component |
-| | reqlog writes failing, consume refused, partitions running out | counters / DDL state | `atlas` component |
+| | database, vault, issuer | `/readyz` `blocked` | not a health subject: `/readyz` only, its status changes logged |
+| | reqlog writes failing, consume refused, partitions running out | counters / DDL state | `atlas` component (§4.6) |
 | Idle | no traffic, no knowledge | absence | `unknown` until probed |
 
 The `account` / `rate_limited` split for a vendor `429` is ADR-011's rule
@@ -334,7 +336,7 @@ like every L0/L1 link (owner, 2026-09-30).
 
 | Endpoint | Returns |
 |---|---|
-| `GET /capability/health` | current state of every vendor model, vendor balance and route, with severity |
+| `GET /capability/health` | current state of every vendor model, route (with its `configIssues`), vendor balance and Atlas component, with severity |
 | `GET /capability/health/events?after=<cursor>` | transitions in order, cursor-paged; the platform keeps the cursor |
 | `/healthz`, `/readyz` | unchanged; `/readyz` gains a non-blocking `routeHealth` check (`warn`, with `routesDown`, when a route has no working candidate) - non-blocking for the same reason as `registryDrift`: a vendor refusing Atlas is not Atlas failing to serve |
 
@@ -346,6 +348,6 @@ scope may be needed).
 
 | Phase | Atlas | Platform | Closes |
 |---|---|---|---|
-| **P0** | durable state, route severity, transition events, `/capability/health[/events]`, `/readyz` attention; active probes with the settings and defaults of §4.5 | server-side watcher; events into admin notices; Atlas-unreachable notice; opera form for the probe settings | silent failures; the idle blind spot |
-| **P1** | balance polling + two thresholds (DeepSeek first); `model_missing` / `unreachable` split | admin view of current state and history; opera form for the balance settings; opera request log shows error code and message | warnings before a balance hits zero |
-| **P2** | configuration checks; degradation (latency, empty answers); Atlas's own items (partition runway, reqlog write failures, consume refusals) as `atlas` components | - | every failure source in one mechanism |
+| **P0** | **Done** (v0.7.21, v0.7.23): durable state, route severity, transition events, `/capability/health[/events]`, `/readyz` attention; active probes with the settings and defaults of §4.5 | server-side watcher; events into admin notices; Atlas-unreachable notice; opera form for the probe settings | silent failures; the idle blind spot |
+| **P1** | **Done** (v0.7.24): balance polling + two thresholds (DeepSeek first); `model_missing` / `unreachable` split | admin view of current state and history; opera form for the balance settings; opera request log shows error code and message | warnings before a balance hits zero |
+| **P2** | **Done** (v0.7.25-v0.7.30): configuration checks and the write-time refusal (ADR-014); routes re-judged every minute; degradation (slow, empty answers); Atlas's own items (partition runway, reqlog write failures, consume refusals) as `atlas` components | - | every failure source in one mechanism |
