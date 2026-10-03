@@ -372,12 +372,19 @@ F - service health monitoring (ADR-013, design 120; owner 2026-10-02):
       `/readyz` names six routes: `embedding/default` / `fast` / `quality`,
       `rerank/default` / `fast` (chat fallback) and `rerank/quality` (chat
       primary); no route down; keyless probes 0
-- [ ] F3a. Refuse a wrong-type route at write time (ADR-014, owner
-      2026-10-03; replaces the "any model" contract). Built; release pending
-- [ ] F3c (operator, opera). Fix the six routes (owner, 2026-10-03): clear
-      the fallback of `embedding/default` / `fast` / `quality`,
-      `rerank/default` / `fast`; point `rerank/quality` at `rerank` with no
-      fallback. Then confirm `/readyz` `routesMisconfigured` is empty
+- [x] F3a. Refuse a wrong-type route at write time (ADR-014, owner
+      2026-10-03; replaces the "any model" contract). Released as v0.7.26
+- [x] F3d. Re-judge every route once a minute, so a route edit is an event.
+      Found 2026-10-03 when clearing the chat fallbacks left `chat/fast` and
+      `chat/extract` down but stored as `degraded`. Released as v0.7.27;
+      production wrote both `degraded -> down` (critical) within a minute
+- [ ] F3c (operator, opera). Fix the six routes (owner, 2026-10-03). Done
+      for embedding / rerank - `routesMisconfigured` empty on v0.7.26. The
+      same edit also cleared all six CHAT fallbacks, leaving `chat/fast` and
+      `chat/extract` down; restore them (`chat/fast` -> `deepseek-v4-flash`,
+      `chat/extract` -> `glm-5.2`, `chat/default` -> `doubao-seed-2-1-turbo`,
+      `chat/deterministic` / `chat/reasoning` -> `doubao-seed-2-0-pro-260215`,
+      `chat/vision` -> `deepseek-v4-pro`)
 - [ ] F3b (P2). Degradation (latency, empty answers), Atlas's own items as
       components
 - [ ] F4 (platform). Server-side watcher, events into admin notices, admin
