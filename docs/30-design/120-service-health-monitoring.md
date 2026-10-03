@@ -46,7 +46,7 @@ outside has to watch it.
 | | no response | header / deadline timeout | `unavailable` |
 | | network (DNS / TLS / connect) | fetch failure | `unreachable` |
 | | throttling | plain `429` | `rate_limited` |
-| | degradation (slow, empty) | `200` | `degraded` (§4.7); truncated answers and empty **streams** are not detected |
+| | degradation (slow, empty) | `200` | `degraded` (§4.7); truncated answers and empty **streams** are not detected (vxture-atlas#123) |
 | Route | primary and fallback both down | every candidate failing | route `down` |
 | | a named model cannot serve the route (wrong type, missing, inactive, no key) | configuration | `routes[].configIssues`, and the model counts as not serving the route (§4.4) |
 | Atlas itself | process / container down | `/healthz` unreachable | outside watcher only |

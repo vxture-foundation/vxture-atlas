@@ -60,7 +60,7 @@ because those are the ones still needing a decision.
 | [TD-055](#td-055) | Context-overflow signatures live in code; adding a provider's needs a release | 2026-09-29 |
 | [TD-056](#td-056) | Inference usage never reaches the platform: every C3 consume is refused | 2026-09-30 |
 | [TD-057](#td-057) | Cache-write rates exist in the API but no operator page can set them | 2026-09-30 |
-| [TD-059](#td-059) | The first `/readyz` after a fresh image start can answer `blocked` on dev; cause unknown | 2026-10-03 |
+| [TD-059](#td-059) | The first `/readyz` after a fresh image start can answer `blocked` on dev; cause unknown (vxture-atlas#124) | 2026-10-03 |
 
 ## Closed
 
@@ -960,6 +960,8 @@ size - `DB_POOL_MAX` is 10; deploy risk - `deploy.sh` retries five times and a
 **Evidence source**: the v0.7.28 readiness log
 (`readiness start -> blocked: usageSummaryRead (2133ms: ...)`), so every
 recurrence is now recorded with its check and latency.
+
+**Tracked**: vxture-atlas#124.
 
 **Recovery**: time the startup queries per connection (first raw query on a
 fresh pg connection, the parallel startup restores) to find where the two
