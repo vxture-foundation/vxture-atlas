@@ -436,3 +436,127 @@ describe("splitUsage", () => {
     });
   });
 });
+
+describe("PlatformEntitlementClient bearer mode (delegated reporter)", () => {
+  const report = {
+    workspaceId: "ws-9",
+    callerProductCode: "tenderforge",
+    requestId: "req-9",
+    occurredAt: new Date("2026-10-05T00:00:00.000Z"),
+    tokens: { input: 10, output: 5, cacheWrite: 0, cacheRead: 0 },
+  };
+
+  beforeEach(() => {
+    vi.stubEnv("PLATFORM_API_URL", "http://platform.test");
+    vi.stubEnv("PLATFORM_S2S_AUTH_MODE", "bearer");
+    vi.stubEnv("OIDC_CLIENT_ID", "atlas");
+    vi.stubEnv("OIDC_CLIENT_SECRET", "s3cr3t");
+    vi.stubEnv("PLATFORM_OIDC_TOKEN_URL", "http://idp.test/oidc/token");
+    vi.stubEnv("OIDC_ISSUER", "");
+    vi.stubEnv("OIDC_BACKCHANNEL_ISSUER", "");
+    vi.spyOn(Logger.prototype, "warn").mockImplementation(() => undefined);
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  /** fetch that answers the token endpoint with a ticket and everything else with `rest`. */
+  function fetchWithToken(rest: Response, ticket = "tkt"): ReturnType<typeof vi.fn> {
+    return vi.fn((url: string) =>
+      Promise.resolve(
+        String(url).endsWith("/oidc/token")
+          ? (jsonResponse({ access_token: ticket, expires_in: 300 }) as Response)
+          : rest,
+      ),
+    );
+  }
+
+  it("resolve presents a Bearer ticket, not the shared header", async () => {
+    const fetchMock = fetchWithToken(jsonResponse({ entitled: true }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const outcome = await new PlatformEntitlementClient().resolve("ws-9", "tenderforge");
+
+    expect(outcome.kind).toBe("resolved");
+    const c2 = fetchMock.mock.calls.find(([u]) =>
+      String(u).includes("/platform/entitlements"),
+    );
+    const headers = (c2?.[1] as RequestInit).headers as Record<string, string>;
+    expect(headers.authorization).toBe("Bearer tkt");
+    expect(headers["x-vxture-internal-auth"]).toBeUndefined();
+  });
+
+  it("resolve degrades (unreachable) when the token exchange fails", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((url: string) =>
+        Promise.resolve(
+          String(url).endsWith("/oidc/token")
+            ? (jsonResponse({ message: "invalid_client" }, false, 401) as Response)
+            : (jsonResponse({ entitled: true }) as Response),
+        ),
+      ),
+    );
+
+    const outcome = await new PlatformEntitlementClient().resolve("ws-9", "tenderforge");
+
+    expect(outcome.kind).toBe("unreachable");
+  });
+
+  it("resolve is not-configured when bearer mode lacks a client secret", async () => {
+    vi.stubEnv("OIDC_CLIENT_SECRET", "");
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    const outcome = await new PlatformEntitlementClient().resolve("ws-9", "tenderforge");
+
+    expect(outcome).toEqual({ kind: "not-configured" });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("reportTokens presents a Bearer ticket and bills on 200", async () => {
+    const fetchMock = fetchWithToken(jsonResponse({ token_event_id: "ev-1" }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const outcome = await new PlatformEntitlementClient().reportTokens(report);
+
+    expect(outcome.billed).toBe(true);
+    const consume = fetchMock.mock.calls.find(([u]) =>
+      String(u).endsWith("/usage/consume"),
+    );
+    const headers = (consume?.[1] as RequestInit).headers as Record<string, string>;
+    expect(headers.authorization).toBe("Bearer tkt");
+    expect(headers["x-vxture-internal-auth"]).toBeUndefined();
+  });
+
+  it("reportTokens is not billed (failed) when the token exchange fails", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((url: string) =>
+        Promise.resolve(
+          String(url).endsWith("/oidc/token")
+            ? (jsonResponse({ message: "invalid_client" }, false, 401) as Response)
+            : (jsonResponse({}) as Response),
+        ),
+      ),
+    );
+
+    const outcome = await new PlatformEntitlementClient().reportTokens(report);
+
+    expect(outcome).toEqual({ billed: false, notBilledBecause: "failed" });
+  });
+
+  it("reportTokens is not_configured when bearer mode lacks a client secret", async () => {
+    vi.stubEnv("OIDC_CLIENT_SECRET", "");
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    const outcome = await new PlatformEntitlementClient().reportTokens(report);
+
+    expect(outcome).toEqual({ billed: false, notBilledBecause: "not_configured" });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
