@@ -3,6 +3,10 @@ import type { EntitlementResponseSingle } from "@vxture/shared";
 import { atlasHealth } from "../health/atlas-health";
 
 import { metricsRegistry } from "../runtime/metrics.registry";
+import {
+  PlatformS2sMintError,
+  PlatformS2sTokenProvider,
+} from "./platform-s2s-token";
 
 const DEFAULT_TIMEOUT_MS = 3_000;
 const DEFAULT_CACHE_TTL_MS = 30_000;
@@ -121,15 +125,22 @@ interface CacheEntry {
 }
 
 /**
- * The C2 entitlement client. Credential is the shared-secret header
- * (`x-vxture-internal-auth`), the same path arda uses in production. T1 is
- * rejected while atlas's plan catalog is an unpublished draft - it would fail
- * for every workspace.
+ * The C2 entitlement / C3 usage client. Two credential modes, chosen by
+ * `PLATFORM_S2S_AUTH_MODE` (default `header`):
+ *
+ *  - `header` (legacy, default): the shared-secret header `x-vxture-internal-auth`,
+ *    the same path arda uses in production.
+ *  - `bearer` (vxture-platform#591, 决策 3 PR C): a delegated-reporter Bearer
+ *    ticket minted by `PlatformS2sTokenProvider` (`aud=vxture`, `act.sub=atlas`,
+ *    `delegated=true`, no workspace). The request body is unchanged — `product`
+ *    is still the caller, `workspace_id` still the call's workspace; only the
+ *    credential moves off the shared header. See that module for the cutover.
  */
 @Injectable()
 export class PlatformEntitlementClient {
   private readonly logger = new Logger(PlatformEntitlementClient.name);
   private readonly cache = new Map<string, CacheEntry>();
+  private readonly s2s = new PlatformS2sTokenProvider();
 
   private get baseUrl(): string | undefined {
     return process.env["PLATFORM_API_URL"]?.trim() || undefined;
@@ -137,6 +148,24 @@ export class PlatformEntitlementClient {
 
   private get token(): string | undefined {
     return process.env["PLATFORM_INTERNAL_AUTH_TOKEN"]?.trim() || undefined;
+  }
+
+  /**
+   * The auth header for a platform call, by mode. Returns `null` when the
+   * caller is **not configured** (no shared token in header mode; no client
+   * credentials in bearer mode) — the caller maps that to `not-configured`.
+   * Throws {@link PlatformS2sMintError} when bearer mode is configured but the
+   * token exchange fails — a degradation, not a misconfiguration, so the caller
+   * maps it the same way it maps an unreachable platform.
+   */
+  private async authHeaders(): Promise<Record<string, string> | null> {
+    if (this.s2s.mode() === "bearer") {
+      if (!this.s2s.isConfigured()) return null;
+      return { authorization: `Bearer ${await this.s2s.bearerToken()}` };
+    }
+    const token = this.token;
+    if (!token) return null;
+    return { "x-vxture-internal-auth": token };
   }
 
   private get ttlMs(): number {
@@ -165,8 +194,7 @@ export class PlatformEntitlementClient {
     callerProductCode: string,
   ): Promise<EntitlementOutcome> {
     const base = this.baseUrl;
-    const token = this.token;
-    if (!base || !token) {
+    if (!base) {
       return { kind: "not-configured" };
     }
 
@@ -183,6 +211,23 @@ export class PlatformEntitlementClient {
       this.cache.delete(cacheKey);
     }
 
+    let authHeaders: Record<string, string>;
+    try {
+      const h = await this.authHeaders();
+      if (!h) return { kind: "not-configured" };
+      authHeaders = h;
+    } catch (error) {
+      // Bearer mode, configured, but the token exchange failed: a degradation
+      // (same bucket as an unreachable platform), not a missing config.
+      return this.degraded(
+        error instanceof PlatformS2sMintError
+          ? `token exchange failed: ${error.message}`
+          : error instanceof Error
+            ? error.message
+            : String(error),
+      );
+    }
+
     const url = `${base.replace(/\/+$/, "")}/platform/entitlements?workspace_id=${encodeURIComponent(workspaceId)}&product=${encodeURIComponent(callerProductCode)}`;
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), DEFAULT_TIMEOUT_MS);
@@ -192,7 +237,7 @@ export class PlatformEntitlementClient {
         method: "GET",
         headers: {
           accept: "application/json",
-          "x-vxture-internal-auth": token,
+          ...authHeaders,
         },
         signal: controller.signal,
       });
@@ -242,9 +287,8 @@ export class PlatformEntitlementClient {
    */
   async reportTokens(input: TokenReport): Promise<TokenReportOutcome> {
     const base = this.baseUrl;
-    const token = this.token;
     const metric = "ai.tokens";
-    if (!base || !token) {
+    if (!base) {
       recordConsume(metric, "skipped", "not_configured");
       return { ...NOT_BILLED, notBilledBecause: "not_configured" };
     }
@@ -265,6 +309,26 @@ export class PlatformEntitlementClient {
       return { ...NOT_BILLED, notBilledBecause: "no_amount" };
     }
 
+    let authHeaders: Record<string, string>;
+    try {
+      const h = await this.authHeaders();
+      if (!h) {
+        // Bearer mode without client credentials (or header mode without the
+        // shared token): nothing to present, same bucket as no platform link.
+        recordConsume(metric, "skipped", "not_configured");
+        return { ...NOT_BILLED, notBilledBecause: "not_configured" };
+      }
+      authHeaders = h;
+    } catch (error) {
+      // Bearer mode, configured, but the token exchange failed: the request was
+      // served, it just could not be billed — same posture as unreachable.
+      recordConsume(metric, "failed", "unreachable");
+      this.logger.warn(
+        `token report auth failed (${error instanceof Error ? error.message : String(error)}) - request served, not billed`,
+      );
+      return { ...NOT_BILLED, notBilledBecause: "failed" };
+    }
+
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), DEFAULT_TIMEOUT_MS);
     try {
@@ -274,7 +338,7 @@ export class PlatformEntitlementClient {
           method: "POST",
           headers: {
             "content-type": "application/json",
-            "x-vxture-internal-auth": token,
+            ...authHeaders,
           },
           body: JSON.stringify({
             workspace_id: input.workspaceId,
