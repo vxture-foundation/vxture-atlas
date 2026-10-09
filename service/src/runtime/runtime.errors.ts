@@ -126,6 +126,11 @@ export type ModelRuntimeErrorCode =
   | "S2S_TOKEN_MISSING_ACT"
   | "S2S_TOKEN_WRONG_SCOPE"
   | "S2S_TOKEN_INVALID_MODE"
+  | "HEALTH_TOKEN_MISSING"
+  | "HEALTH_TOKEN_INVALID"
+  | "HEALTH_TOKEN_MISSING_ACT"
+  | "HEALTH_TOKEN_WRONG_SCOPE"
+  | "HEALTH_TOKEN_INVALID_MODE"
   /** Server-side misconfiguration, not a caller error - no token can fix it. */
   | "AUTH_ISSUER_NOT_CONFIGURED"
   // --- caller identity and scope ---
@@ -223,6 +228,11 @@ const RETRYABLE: Record<ModelRuntimeErrorCode, boolean> = {
   S2S_TOKEN_MISSING_ACT: false,
   S2S_TOKEN_WRONG_SCOPE: false,
   S2S_TOKEN_INVALID_MODE: false,
+  HEALTH_TOKEN_MISSING: false,
+  HEALTH_TOKEN_INVALID: false,
+  HEALTH_TOKEN_MISSING_ACT: false,
+  HEALTH_TOKEN_WRONG_SCOPE: false,
+  HEALTH_TOKEN_INVALID_MODE: false,
   AUTH_ISSUER_NOT_CONFIGURED: false,
   INVALID_TENANT_ID: false,
   INVALID_APPLICATION_ID: false,
