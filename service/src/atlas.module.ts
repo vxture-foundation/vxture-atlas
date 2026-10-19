@@ -5,6 +5,7 @@ import { AtlasHealthMonitor } from "./health/atlas-health.monitor";
 import { ModelDegradationMonitor } from "./health/model-degradation";
 import { HealthStoreBootstrap } from "./health/health.store";
 import { ServiceHealthController } from "./health/service-health.controller";
+import { ServiceHealthS2sController } from "./health/service-health-s2s.controller";
 import { ServiceHealthService } from "./health/service-health.service";
 import { MiddlewareConsumer, Module, NestModule } from "@nestjs/common";
 import { APP_FILTER } from "@nestjs/core";
@@ -73,6 +74,7 @@ import { AuditMiddleware } from "./audit/audit.middleware";
     ObservabilityController,
     AuditController,
     ServiceHealthController,
+    ServiceHealthS2sController,
   ],
   providers: [
     // Adds the `Retry-After` header that 200-s2s-provider-surface.md has
