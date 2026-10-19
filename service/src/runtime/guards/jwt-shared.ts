@@ -4,16 +4,108 @@
  * `OperatorAuthGuard` (management plane, `mgmt:atlas`)
  * trust the same platform issuer/JWKS - factored out so there is one JWKS
  * cache, not two, and one place that reads `OIDC_ISSUER`.
+ * @package @atlas/service
+ * @layer Domain
+ * @category guard
+ * @author AI-Generated
+ * @date 2026-10-19
  */
 import { UnauthorizedException } from "@nestjs/common";
-import { createRemoteJWKSet, type JWTVerifyGetKey } from "jose";
+import {
+  createRemoteJWKSet,
+  jwtVerify,
+  type JWTPayload,
+  type JWTVerifyGetKey,
+} from "jose";
 
-import { errorBody } from "../runtime.errors";
+import { errorBody, type ModelRuntimeErrorCode } from "../runtime.errors";
 
 const JWKS_PATH = "/oidc/jwks";
+const CLOCK_TOLERANCE_SECONDS = 60;
 
 let cachedJwks: JWTVerifyGetKey | undefined;
 let cachedJwksUri: string | undefined;
+
+// ============================================================================
+// Shared product-token verification
+// ============================================================================
+
+interface ProductTokenErrors {
+  invalid: { code: ModelRuntimeErrorCode; message: string };
+  missingActor: { code: ModelRuntimeErrorCode; message: string };
+}
+
+interface ProductTokenOptions {
+  jwks: JWTVerifyGetKey;
+  issuer: string;
+  audience: string;
+}
+
+/**
+ * Verify the common product identity without granting access to any surface.
+ * @param token - Bearer credential supplied by the caller.
+ * @param options - Trusted issuer, audience and signing-key resolver.
+ * @param errors - Surface-specific errors retained by the calling guard.
+ * @returns Verified claims and the required caller product identity.
+ * @throws {UnauthorizedException} When verification or caller identity fails.
+ */
+export async function verifyProductToken(
+  token: string,
+  options: ProductTokenOptions,
+  errors: ProductTokenErrors,
+): Promise<{ payload: JWTPayload; callerProductCode: string }> {
+  let payload: JWTPayload;
+  try {
+    ({ payload } = await jwtVerify(token, options.jwks, {
+      algorithms: ["RS256"],
+      issuer: options.issuer,
+      audience: options.audience,
+      clockTolerance: CLOCK_TOLERANCE_SECONDS,
+    }));
+  } catch {
+    throw new UnauthorizedException(
+      errorBody(errors.invalid.code, errors.invalid.message),
+    );
+  }
+
+  const act = payload["act"] as { sub?: unknown } | undefined;
+  const callerProductCode = typeof act?.sub === "string" ? act.sub : undefined;
+  if (!callerProductCode) {
+    throw new UnauthorizedException(
+      errorBody(errors.missingActor.code, errors.missingActor.message),
+    );
+  }
+  return { payload, callerProductCode };
+}
+
+// ============================================================================
+// Issuer, JWKS cache and request headers
+// ============================================================================
+
+/**
+ * Authenticate a request using the common product issuer configuration.
+ * @param headers - Untrusted request headers, used only for the bearer token.
+ * @param missing - Surface-specific error for an absent bearer token.
+ * @param verify - Surface verifier that retains its own scope and mode checks.
+ * @returns The verified surface-specific identity.
+ * @throws {UnauthorizedException} When configuration or authentication fails.
+ */
+export async function verifyProductRequest<T>(
+  headers: Record<string, unknown>,
+  missing: { code: ModelRuntimeErrorCode; message: string },
+  verify: (token: string, options: ProductTokenOptions) => Promise<T>,
+): Promise<T> {
+  const token = extractBearerToken(headers);
+  if (!token) {
+    throw new UnauthorizedException(errorBody(missing.code, missing.message));
+  }
+  const issuer = requireIssuer();
+  return verify(token, {
+    jwks: resolveRemoteJwks(issuer),
+    issuer,
+    audience: process.env["S2S_AUDIENCE"] || "atlas",
+  });
+}
 
 /**
  * Network base for the JWKS fetch, separate from the issuer identity used

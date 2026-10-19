@@ -1,13 +1,15 @@
 /**
- * s2s-auth.guard.ts - product_210 S2S token exchange 被调方校验 (§3.3)
+ * s2s-auth.guard.ts - product_210 S2S token exchange callee verification (3.3).
  * @package @atlas/service
  * @layer Domain
  * @category guard
+ * @author AI-Generated
+ * @date 2026-10-19
  *
  * @description
  *   Verifies the RS256 S2S access token issued by the platform's token-exchange
- *   endpoint (`product_210` §3.2). Implements the eight callee obligations in
- *   §3.3: RS256-only (rule 1), kid-based JWKS lookup with cache (rule 2, via
+ *   endpoint (`product_210` section 3.2). Implements the eight callee obligations in
+ *   section 3.3: RS256-only (rule 1), kid-based JWKS lookup with cache (rule 2, via
  *   `jose`'s remote JWKS set), exact `iss` match (rule 3), single-value `aud`
  *   match (rule 4), `exp` with 60s skew (rule 5), required `act.sub` (rule 6).
  *   Rule 7 (never accept `AUTH_INTERNAL_TOKEN` as an inter-product credential)
@@ -32,17 +34,14 @@ import {
   Injectable,
   UnauthorizedException,
 } from "@nestjs/common";
-import { jwtVerify, type JWTPayload, type JWTVerifyGetKey } from "jose";
+import type { JWTVerifyGetKey } from "jose";
 
-import {
-  extractBearerToken,
-  requireIssuer,
-  resolveRemoteJwks,
-} from "./jwt-shared";
+import { verifyProductRequest, verifyProductToken } from "./jwt-shared";
 import { errorBody } from "../runtime.errors";
 
-const CLOCK_TOLERANCE_SECONDS = 60;
-const DEFAULT_AUDIENCE = "atlas";
+// ============================================================================
+// Supply identity and scope
+// ============================================================================
 
 /**
  * The scope a token for THIS audience must carry.
@@ -78,36 +77,31 @@ export interface S2sAuthenticatedRequest {
   s2sAuth?: S2sAuthContext;
 }
 
+/**
+ * Verify a supply token and derive context only from its authenticated claims.
+ * @param token - Bearer credential supplied by the caller.
+ * @param options - Trusted signing keys, issuer and expected audience.
+ * @returns The authenticated supply identity and available tenancy context.
+ * @throws {UnauthorizedException} When identity, scope or mode is invalid.
+ */
 export async function verifyS2sToken(
   token: string,
   options: { jwks: JWTVerifyGetKey; issuer: string; audience: string },
 ): Promise<S2sAuthContext> {
-  let payload: JWTPayload;
-  try {
-    const result = await jwtVerify(token, options.jwks, {
-      algorithms: ["RS256"],
-      issuer: options.issuer,
-      audience: options.audience,
-      clockTolerance: CLOCK_TOLERANCE_SECONDS,
-    });
-    payload = result.payload;
-  } catch {
-    throw new UnauthorizedException(
-      errorBody("S2S_TOKEN_INVALID", "S2S token failed verification"),
-    );
-  }
-
-  const act = payload["act"] as { sub?: unknown } | undefined;
-  const callerProductCode = typeof act?.sub === "string" ? act.sub : undefined;
-  if (!callerProductCode) {
-    // rule 6: act.sub 必须存在 - 无 act = 用户级 token 混用，拒
-    throw new UnauthorizedException(
-      errorBody(
-        "S2S_TOKEN_MISSING_ACT",
-        "S2S token is missing act.sub (caller product identity)",
-      ),
-    );
-  }
+  const { payload, callerProductCode } = await verifyProductToken(
+    token,
+    options,
+    {
+      invalid: {
+        code: "S2S_TOKEN_INVALID",
+        message: "S2S token failed verification",
+      },
+      missingActor: {
+        code: "S2S_TOKEN_MISSING_ACT",
+        message: "S2S token is missing act.sub (caller product identity)",
+      },
+    },
+  );
 
   // One of two independent judgements that do not restate each other: `mode`
   // says what KIND of exchange produced the token, `scope` says what SURFACE
@@ -125,7 +119,10 @@ export async function verifyS2sToken(
   const mode = payload["mode"];
   if (mode !== "obo" && mode !== "service") {
     throw new UnauthorizedException(
-      errorBody("S2S_TOKEN_INVALID_MODE", "S2S token has an unrecognized mode claim"),
+      errorBody(
+        "S2S_TOKEN_INVALID_MODE",
+        "S2S token has an unrecognized mode claim",
+      ),
     );
   }
 
@@ -145,7 +142,7 @@ export async function verifyS2sToken(
   return {
     callerProductCode,
     mode,
-    scope: typeof payload["scope"] === "string" ? payload["scope"] : "",
+    scope,
     ...(typeof tenantId === "string" ? { tenantId } : {}),
     ...(typeof workspaceId === "string" ? { workspaceId } : {}),
     ...(typeof payload.sub === "string" ? { userId: payload.sub } : {}),
@@ -156,24 +153,15 @@ export async function verifyS2sToken(
 @Injectable()
 export class S2sAuthGuard implements CanActivate {
   async canActivate(context: ExecutionContext): Promise<boolean> {
-    const req = context
-      .switchToHttp()
-      .getRequest<S2sAuthenticatedRequest>();
-    const token = extractBearerToken(req.headers);
-    if (!token) {
-      throw new UnauthorizedException(
-        errorBody("S2S_TOKEN_MISSING", "Missing S2S bearer token"),
-      );
-    }
-
-    const issuer = requireIssuer();
-    const audience = process.env["S2S_AUDIENCE"] || DEFAULT_AUDIENCE;
-
-    req.s2sAuth = await verifyS2sToken(token, {
-      jwks: resolveRemoteJwks(issuer),
-      issuer,
-      audience,
-    });
+    const req = context.switchToHttp().getRequest<S2sAuthenticatedRequest>();
+    req.s2sAuth = await verifyProductRequest(
+      req.headers,
+      {
+        code: "S2S_TOKEN_MISSING",
+        message: "Missing S2S bearer token",
+      },
+      verifyS2sToken,
+    );
     return true;
   }
 }
