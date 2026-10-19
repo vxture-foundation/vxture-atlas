@@ -39,3 +39,9 @@ overrides:
   # pair. One resolution already floated to 6.16.0; a second stayed at 6.15.1
   # under a different parent, and a half-fixed graph still reports the CVE.
   qs: '>=6.16.0'
+  # GHSA-jqcg-44mw-7w3h (critical): proxy-addr 2.0.7. Transitive via
+  # Express; retain the patched 2.x floor until the parent requires it.
+  proxy-addr: '>=2.0.8'
+  # GHSA-68fv-2mgg-jv7q (high): source-map-js 1.2.1. Transitive via
+  # tooling; retain the patched 1.x floor until the parent requires it.
+  source-map-js: '>=1.2.2'

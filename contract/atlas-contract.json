@@ -1,5 +1,5 @@
 {
-  "fingerprint": "c1-3d7157ece0a6",
+  "fingerprint": "c1-29d169143665",
   "errorCodes": [
     {
       "code": "APPLICATION_ID_REQUIRED",
@@ -59,6 +59,26 @@
     },
     {
       "code": "ENDPOINT_NOT_ROUTABLE",
+      "retryable": false
+    },
+    {
+      "code": "HEALTH_TOKEN_INVALID",
+      "retryable": false
+    },
+    {
+      "code": "HEALTH_TOKEN_INVALID_MODE",
+      "retryable": false
+    },
+    {
+      "code": "HEALTH_TOKEN_MISSING",
+      "retryable": false
+    },
+    {
+      "code": "HEALTH_TOKEN_MISSING_ACT",
+      "retryable": false
+    },
+    {
+      "code": "HEALTH_TOKEN_WRONG_SCOPE",
       "retryable": false
     },
     {
