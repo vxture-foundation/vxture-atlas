@@ -43,10 +43,11 @@ const snapshot: ServiceHealthView = {
   atlas: [],
 };
 const current = vi.fn(async () => snapshot);
+const events = vi.fn(async (_query: { after?: string; limit?: string }) => ({ items: [], nextCursor: "kept" }));
 
 @Module({
   controllers: [ServiceHealthS2sController],
-  providers: [{ provide: ServiceHealthService, useValue: { current } }],
+  providers: [{ provide: ServiceHealthService, useValue: { current, events } }],
 })
 class HealthHttpTestModule {}
 
@@ -127,6 +128,31 @@ describe("GET /s2s/health", () => {
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual(snapshot);
     expect(current).toHaveBeenCalledExactlyOnceWith();
+  });
+
+  it("reads the same durable event service with the health-only ticket", async () => {
+    const response = await fetch(`${base}/s2s/health/events?after=opaque&limit=200`, {
+      headers: { authorization: `Bearer ${await sign({ act: { sub: "platform-api" } })}` },
+    });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ items: [], nextCursor: "kept" });
+    expect(events).toHaveBeenCalledWith({ after: "opaque", limit: "200" });
+  });
+
+  it.each([undefined, "tool:atlas", "mgmt:atlas"])("rejects other credentials on events: %s", async (scope) => {
+    const response = await fetch(`${base}/s2s/health/events`, {
+      headers: scope ? { authorization: `Bearer ${await sign({ scope })}` } : {},
+    });
+    expect(response.status).toBe(401);
+    expect(events).not.toHaveBeenCalled();
+  });
+
+  it("rejects caller-controlled filters on the machine event feed", async () => {
+    const response = await fetch(`${base}/s2s/health/events?workspace_id=other`, {
+      headers: { authorization: `Bearer ${await sign()}` },
+    });
+    expect(response.status).toBe(400);
+    expect(events).not.toHaveBeenCalled();
   });
 
   it("requires bearer authentication before invoking the service", async () => {

@@ -60,9 +60,9 @@ export function encodeCursor(createdAt: Date, id: string): string {
 }
 
 export function decodeCursor(cursor: string): { createdAt: Date; id: string } {
-  const [iso, id] = Buffer.from(cursor, "base64url").toString("utf8").split("|");
+  const [iso, id, extra] = Buffer.from(cursor, "base64url").toString("utf8").split("|");
   const createdAt = new Date(iso ?? "");
-  if (!id || Number.isNaN(createdAt.getTime())) {
+  if (!id || !/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(id) || extra !== undefined || Number.isNaN(createdAt.getTime())) {
     throw refuse("HEALTH_INVALID_CURSOR", "cursor is not one this endpoint issued");
   }
   return { createdAt, id };
@@ -128,17 +128,18 @@ export class ServiceHealthService {
       throw refuse("HEALTH_INVALID_LIMIT", `limit must be an integer from 1 to ${MAX_EVENT_LIMIT}`);
     }
     const after = query.after !== undefined ? decodeCursor(query.after) : undefined;
-    const where = after
-      ? {
-          OR: [
-            { createdAt: { gt: after.createdAt } },
-            { createdAt: after.createdAt, id: { gt: after.id } },
-          ],
-        }
-      : undefined;
+    if (after) {
+      const anchor = await prisma.healthEvent.findFirst({ where: { id: after.id } });
+      if (!anchor || anchor.createdAt.getTime() !== after.createdAt.getTime()) {
+        throw refuse("HEALTH_INVALID_CURSOR", "cursor no longer identifies its event");
+      }
+    }
 
     const rows = await prisma.healthEvent.findMany({
-      ...(where ? { where } : {}),
+      // PostgreSQL keeps microseconds that a JS Date cannot represent. Let
+      // Prisma resolve the unique anchor inside the DB instead of comparing
+      // a rounded timestamp, preserving already-issued millisecond cursors.
+      ...(after ? { cursor: { id: after.id }, skip: 1 } : {}),
       orderBy: [{ createdAt: "asc" }, { id: "asc" }],
       take: limit,
     });

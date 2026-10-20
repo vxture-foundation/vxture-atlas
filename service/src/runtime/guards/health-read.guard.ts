@@ -8,7 +8,7 @@
  *
  * @description
  *   Verifies an RS256 S2S token minted by the platform's token-exchange for the
- *   **health read** plane only. It guards `GET /s2s/health` - a read-only view
+ *   **health read** plane only. It guards `GET /s2s/health[/events]` - read-only views
  *   of `ServiceHealthService.current()` - so the platform's unattended watchdog
  *   can poll model-service health without a human operator session.
  *

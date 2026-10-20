@@ -1027,11 +1027,14 @@ platform issuer with `realm = "workforce"`, `userType = "operator"`,
 `401` with one of `OPERATOR_TOKEN_MISSING` / `_INVALID` / `_WRONG_SCOPE` /
 `_WRONG_REALM` / `_WRONG_USER_TYPE` / `_MISSING_SUB` / `_MISSING_ACT`.
 
-**Open, and blocking for an unattended job:** these tokens are issued to
-people. Which credential a server-side job uses is the platform's to settle on
-#562 (a machine client with a read-only scope is the likely shape); Atlas will
-accept what is agreed there. Until then the endpoints are callable with an
-operator's own token, e.g. from opera.
+Unattended jobs use the separate `GET /s2s/health` and
+`GET /s2s/health/events` routes. `HealthReadGuard` accepts platform-issued
+service identities with `aud=atlas`, `scope=health:atlas`, `mode=service` and a
+verified `act.sub`; the platform watcher uses `platform-api`. Operator and tool-execution tickets cannot use these
+routes. No operator session or management scope is required. Snapshot shape,
+event ordering, cursor and limit rules are the same as the operator reads below.
+The event route is additive and pending release in this revision. Settings
+writes remain exclusively on the operator plane.
 
 ### `GET /capability/health` - current state
 
