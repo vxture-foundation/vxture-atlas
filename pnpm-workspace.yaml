@@ -11,6 +11,9 @@ allowBuilds:
   prisma: true
 # pnpm 11 no longer reads the package.json `pnpm` field - overrides live here.
 overrides:
+  # GHSA-587h-7wmj-h5pm / -698v-4r3x-3vcv / -r825-w8mm-5pxw:
+  # Windows editor command escaping fixes; keep the patched current minor.
+  vite: '~8.1.6'
   postcss: ^8.5.23
   # GHSA-2v37-7h3g-55p8 (high): nanoid 3.x < 3.3.17 predictable-ID fix.
   # Transitive via postcss; remove once postcss floats past it on its own.
