@@ -39,6 +39,7 @@ import { HttpStatus } from "@nestjs/common";
 import { json, urlencoded } from "express";
 import type { NextFunction, Request, RequestHandler, Response } from "express";
 import type { IncomingMessage } from "node:http";
+import { trimTrailingSlashes } from "../http-path";
 
 import { recordRejection } from "./pre-log-rejection";
 import { ModelRuntimeException } from "./runtime.errors";
@@ -97,7 +98,7 @@ export function resolveMaxRequestBodyBytes(
 /** Does this request's handler need the exact received bytes? */
 export function keepsRawBody(req: IncomingMessage): boolean {
   const url = (req as Partial<Request>).originalUrl ?? req.url ?? "";
-  const path = url.split("?")[0]?.toLowerCase().replace(/\/+$/u, "") ?? "";
+  const path = trimTrailingSlashes(url.split("?")[0]?.toLowerCase() ?? "");
   return RAW_BODY_PATHS.has(path);
 }
 

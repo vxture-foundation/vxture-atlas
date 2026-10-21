@@ -218,6 +218,7 @@ describe("keepsRawBody", () => {
   it("matches the webhook however Express would route it", () => {
     expect(at("/provisioning/webhook")).toBe(true);
     expect(at("/provisioning/webhook/")).toBe(true);
+    expect(at("/provisioning/webhook///?x=1")).toBe(true);
     expect(at("/Provisioning/Webhook?x=1")).toBe(true);
   });
 
@@ -225,6 +226,7 @@ describe("keepsRawBody", () => {
     expect(at("/v1/chat")).toBe(false);
     expect(at("/provisioning/webhook-other")).toBe(false);
     expect(at("/capability/models")).toBe(false);
+    expect(at(`/provisioning/webhook/${"/".repeat(100_000)}x`)).toBe(false);
   });
 });
 

@@ -225,7 +225,7 @@ export class UpstreamHealth {
     metricsRegistry.incCounter("health_transitions_total", { kind: "model", to: "unknown" });
     if (this.store) {
       const store = this.store;
-      this.enqueue(() =>
+      void this.enqueue(() =>
         store.save({
           subjectKind: "model",
           subjectKey: modelCode,
@@ -306,7 +306,7 @@ export class UpstreamHealth {
     });
     // `unknown -> ok` is the first sighting of a healthy model, not news.
     if (current.state === "unknown" && next.state === "ok") {
-      if (this.store) this.enqueue(() => this.persistQuietly(modelCode, provider, next));
+      if (this.store) void this.enqueue(() => this.persistQuietly(modelCode, provider, next));
       return;
     }
     this.refreshRouteDefsIfStale();
@@ -331,7 +331,7 @@ export class UpstreamHealth {
     };
     // Decided now, from the states as they are now; only the writes wait.
     const routeTransitions = this.reevaluateRoutes(at);
-    this.enqueue(async () => {
+    void this.enqueue(async () => {
       await this.store?.save(modelTransition);
       for (const t of routeTransitions) await this.store?.save(t);
     });
@@ -341,7 +341,7 @@ export class UpstreamHealth {
     if (!this.store || this.now() - this.routeDefsAt < 60_000) return;
     this.routeDefsAt = this.now();
     const store = this.store;
-    this.enqueue(async () => {
+    void this.enqueue(async () => {
       this.routeDefs = await store.listRoutes();
     });
   }
@@ -384,6 +384,7 @@ export class UpstreamHealth {
     return transitions;
   }
 
+  /** Every queued failure is handled here; synchronous callers deliberately use void. */
   private enqueue(work: () => Promise<void>): Promise<void> {
     this.queue = this.queue.then(work).catch((error: unknown) => {
       metricsRegistry.incCounter("health_write_failures_total", {});

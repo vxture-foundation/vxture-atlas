@@ -1,6 +1,7 @@
 import { Injectable, Logger } from "@nestjs/common";
 import type { EntitlementResponseSingle } from "@vxture/shared";
 import { atlasHealth } from "../health/atlas-health";
+import { trimTrailingSlashes } from "../http-path";
 
 import { metricsRegistry } from "../runtime/metrics.registry";
 import {
@@ -228,7 +229,7 @@ export class PlatformEntitlementClient {
       );
     }
 
-    const url = `${base.replace(/\/+$/, "")}/platform/entitlements?workspace_id=${encodeURIComponent(workspaceId)}&product=${encodeURIComponent(callerProductCode)}`;
+    const url = `${trimTrailingSlashes(base)}/platform/entitlements?workspace_id=${encodeURIComponent(workspaceId)}&product=${encodeURIComponent(callerProductCode)}`;
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), DEFAULT_TIMEOUT_MS);
 
@@ -333,7 +334,7 @@ export class PlatformEntitlementClient {
     const timer = setTimeout(() => controller.abort(), DEFAULT_TIMEOUT_MS);
     try {
       const response = await fetch(
-        `${base.replace(/\/+$/, "")}/usage/consume`,
+        `${trimTrailingSlashes(base)}/usage/consume`,
         {
           method: "POST",
           headers: {
