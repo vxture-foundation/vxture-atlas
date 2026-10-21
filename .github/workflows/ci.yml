@@ -113,6 +113,13 @@ jobs:
       - name: Data architecture guardrail (DDL <-> Prisma lockstep)
         run: node scripts/guardrails/check-data-architecture.mjs --strict
 
+      # PostgreSQL applies ordered DDL; negative tests prove drift rejection.
+      - name: Data architecture semantic regressions
+        run: node --test scripts/guardrails/data-architecture.test.mjs
+
+      - name: Data architecture PostgreSQL semantic check
+        run: node scripts/guardrails/check-data-architecture.mjs --strict --database
+
       - name: Workflow guardrail (workflows parse and keep their triggers)
         run: node scripts/guardrails/check-workflows.mjs --strict
 
