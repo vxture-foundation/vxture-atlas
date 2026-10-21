@@ -46,7 +46,10 @@ describe("LegacyCapabilityPathInterceptor", () => {
 
     interceptor.intercept(context as never, { handle } as never);
 
-    expect(headers["Deprecation"]).toBe("true");
+    expect(headers["Deprecation"]).toBe("@1787279434");
+    expect(Date.parse(headers["Sunset"] as string)).toBeGreaterThanOrEqual(
+      1787279434 * 1000,
+    );
     expect(headers["Link"]).toBe(
       '</capability/tenant-model-grants>; rel="successor-version"',
     );
