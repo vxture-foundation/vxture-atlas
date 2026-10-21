@@ -536,7 +536,7 @@ export function withDisposableCluster(work) {
     let ready = false;
     for (let i = 0; i < 60; i++) {
       try {
-        docker(["exec", id, "psql", "-U", "postgres", "-XAtc", "SELECT 1"]);
+        docker(["exec", id, "psql", "-h", "127.0.0.1", "-U", "postgres", "-XAtc", "SELECT 1"]);
         ready = true;
         break;
       } catch {
@@ -551,6 +551,8 @@ export function withDisposableCluster(work) {
           "-i",
           id,
           "psql",
+          "-h",
+          "127.0.0.1",
           "-U",
           "postgres",
           "-d",
