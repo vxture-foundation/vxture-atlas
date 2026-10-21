@@ -1,0 +1,70 @@
+{
+  "nullable": {
+    "audit.change_records.changed_fields": {
+      "orm": false,
+      "ddl": true,
+      "reason": "Prisma cannot express nullable scalar lists; DDL audit.changed_fields remains nullable and service writes field names only (schema comment)."
+    },
+    "health.events.affected_routes": {
+      "orm": false,
+      "ddl": true,
+      "reason": "Prisma cannot express nullable scalar lists; existing health.events permits NULL for transitions without affected routes (DDL and HealthEventView)."
+    }
+  },
+  "unmappedColumn": {
+    "model.model_providers.description_key": {
+      "orm": null,
+      "ddl": {
+        "default": null,
+        "type": "character varying(128)",
+        "nullable": true
+      },
+      "reason": "Baseline consolidation retains the display metadata column; retired incr/12 deliberately removed it from Prisma to narrow the service write surface (existing guard rationale)."
+    },
+    "model.models.description_key": {
+      "orm": null,
+      "ddl": {
+        "default": null,
+        "type": "character varying(128)",
+        "nullable": true
+      },
+      "reason": "Baseline consolidation retains the display metadata column; retired incr/12 deliberately removed it from Prisma to narrow the service write surface (existing guard rationale)."
+    },
+    "model.model_providers.is_customer_visible": {
+      "orm": null,
+      "ddl": {
+        "default": "true",
+        "type": "boolean",
+        "nullable": false
+      },
+      "reason": "Baseline consolidation retains visibility metadata; retired incr/12 deliberately removed it from Prisma to narrow the service write surface (existing guard rationale)."
+    },
+    "model.model_providers.is_workforce_visible": {
+      "orm": null,
+      "ddl": {
+        "default": "true",
+        "type": "boolean",
+        "nullable": false
+      },
+      "reason": "Baseline consolidation retains visibility metadata; retired incr/12 deliberately removed it from Prisma to narrow the service write surface (existing guard rationale)."
+    },
+    "model.models.is_workforce_visible": {
+      "orm": null,
+      "ddl": {
+        "default": "true",
+        "type": "boolean",
+        "nullable": false
+      },
+      "reason": "Baseline consolidation retains visibility metadata; retired incr/12 deliberately removed it from Prisma to narrow the service write surface (existing guard rationale)."
+    },
+    "model.models.is_customer_visible": {
+      "orm": null,
+      "ddl": {
+        "default": "true",
+        "type": "boolean",
+        "nullable": false
+      },
+      "reason": "Baseline consolidation retains visibility metadata; retired incr/12 deliberately removed it from Prisma to narrow the service write surface (existing guard rationale)."
+    }
+  }
+}

@@ -16,6 +16,7 @@
 
 import { readFileSync, readdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import { runDatabaseGuard } from "./data-architecture-semantics.mjs";
 
 const DDL = "deploy/database/ddl/00_baseline.sql";
 const INCR_DIR = "deploy/database/ddl/incr";
@@ -86,7 +87,8 @@ function splitTopLevel(body) {
 }
 
 // Table-level items that are not columns. A CREATE TABLE body mixes both.
-const NOT_A_COLUMN = /^(PRIMARY|CONSTRAINT|UNIQUE|FOREIGN|CHECK|EXCLUDE|LIKE)$/i;
+const NOT_A_COLUMN =
+  /^(PRIMARY|CONSTRAINT|UNIQUE|FOREIGN|CHECK|EXCLUDE|LIKE)$/i;
 
 /** Every (table, column) declared by a `CREATE TABLE` in the baseline. */
 export function baselineTableColumns(rawSql) {
@@ -108,7 +110,8 @@ export function baselineTableColumns(rawSql) {
     }
     for (const part of splitTopLevel(sql.slice(re.lastIndex, i - 1))) {
       const first = part.trim().split(/\s+/)[0];
-      if (first && !NOT_A_COLUMN.test(first)) out.add(`${table}.${first.toLowerCase()}`);
+      if (first && !NOT_A_COLUMN.test(first))
+        out.add(`${table}.${first.toLowerCase()}`);
     }
   }
   return out;
@@ -137,12 +140,15 @@ export function prismaColumns(text) {
     const table = `${schema[1]}.${map[1]}`.toLowerCase();
     for (const line of body.split("\n")) {
       const trimmed = line.trim();
-      if (!trimmed || trimmed.startsWith("@@") || trimmed.startsWith("//")) continue;
+      if (!trimmed || trimmed.startsWith("@@") || trimmed.startsWith("//"))
+        continue;
       const field = /^(\w+)\s+(\w+)(\[\])?(\?)?/.exec(trimmed);
       if (!field) continue;
       if (modelNames.has(field[2])) continue; // relation, not a column
       const columnMap = /@map\("([^"]+)"\)/.exec(trimmed);
-      out.add(`${table}.${(columnMap ? columnMap[1] : field[1]).toLowerCase()}`);
+      out.add(
+        `${table}.${(columnMap ? columnMap[1] : field[1]).toLowerCase()}`,
+      );
     }
   }
   return out;
@@ -175,12 +181,14 @@ export function incrementallyAddedColumns(sources) {
 /** Every (table, column) pair a baseline `CREATE INDEX` touches. */
 export function baselineIndexedColumns(sql) {
   const found = [];
-  const re = /CREATE INDEX\s+(?:IF NOT EXISTS\s+)?(\w+)[\s\S]*?ON\s+([\w.]+)\s*\(([^)]*)\)/gi;
+  const re =
+    /CREATE INDEX\s+(?:IF NOT EXISTS\s+)?(\w+)[\s\S]*?ON\s+([\w.]+)\s*\(([^)]*)\)/gi;
   let m;
   while ((m = re.exec(sql))) {
     for (const raw of m[3].split(",")) {
       const column = raw.trim().split(/\s+/)[0]?.toLowerCase();
-      if (column) found.push({ index: m[1], table: m[2].toLowerCase(), column });
+      if (column)
+        found.push({ index: m[1], table: m[2].toLowerCase(), column });
     }
   }
   return found;
@@ -240,50 +248,48 @@ export function prematureBaselineIndexes(baselineSql, incrSources) {
   const added = incrementallyAddedColumns(incrSources);
   return baselineIndexedColumns(baselineSql)
     .filter(({ table, column }) => added.has(`${table}.${column}`))
-    .map(({ index, table, column }) => `${index} (indexes ${table}."${column}")`);
+    .map(
+      ({ index, table, column }) => `${index} (indexes ${table}."${column}")`,
+    );
 }
 
 // Run only when invoked directly (not when imported by a test).
 if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
+  if (process.argv.includes("--database")) {
+    try {
+      runDatabaseGuard();
+    } catch (error) {
+      console.error(`[data-architecture] FAILED: ${error.message}`);
+      process.exit(1);
+    }
+    process.exit(0);
+  }
   let ddl, prisma, baselineSql, prismaText, incrSources;
   try {
     baselineSql = readFileSync(DDL, "utf8");
     prismaText = readFileSync(PRISMA, "utf8");
     ddl = ddlTables(baselineSql);
     prisma = prismaTables(prismaText);
-    try {
-      incrSources = readdirSync(INCR_DIR)
-        .filter((f) => f.endsWith(".sql"))
-        .map((f) => readFileSync(`${INCR_DIR}/${f}`, "utf8"));
-    } catch {
-      incrSources = [];
-    }
+    incrSources = readdirSync(INCR_DIR)
+      .filter((f) => f.endsWith(".sql"))
+      .sort()
+      .map((f) => readFileSync(`${INCR_DIR}/${f}`, "utf8"));
   } catch (e) {
-    console.log(`[data-architecture] skip: ${e.message}`);
-    process.exit(0);
+    console.error(`[data-architecture] input failure: ${e.message}`);
+    process.exit(1);
   }
 
-  let premature = [];
-  try {
-    const incr = readdirSync(INCR_DIR)
-      .filter((f) => f.endsWith(".sql"))
-      .map((f) => readFileSync(`${INCR_DIR}/${f}`, "utf8"));
-    premature = prematureBaselineIndexes(readFileSync(DDL, "utf8"), incr);
-  } catch {
-    // No incr/ directory yet - nothing to cross-check.
-  }
+  const premature = prematureBaselineIndexes(baselineSql, incrSources);
 
   let prematureGrants = [];
   try {
-    const incr = readdirSync(INCR_DIR)
-      .filter((f) => f.endsWith(".sql"))
-      .map((f) => readFileSync(`${INCR_DIR}/${f}`, "utf8"));
     prematureGrants = prematureColumnLockGrants(
       readFileSync(LOCKS, "utf8"),
-      incr,
+      incrSources,
     );
-  } catch {
-    // No column-lock file yet - nothing to cross-check.
+  } catch (error) {
+    console.error(`[data-architecture] input failure: ${error.message}`);
+    process.exit(1);
   }
 
   if (prematureGrants.length > 0) {
@@ -314,9 +320,7 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
     console.error(
       "  runs before incr/ - so this aborts db-init on every provisioned environment.",
     );
-    console.error(
-      "  Move the index into the incr/ file that adds the column.",
-    );
+    console.error("  Move the index into the incr/ file that adds the column.");
     process.exit(1);
   }
 
@@ -371,7 +375,8 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
 
   console.log("[data-architecture] DDL/prisma drift:");
   for (const t of onlyDdl) console.log(`  in DDL, missing from prisma: ${t}`);
-  for (const t of onlyPrisma) console.log(`  in prisma, missing from DDL: ${t}`);
+  for (const t of onlyPrisma)
+    console.log(`  in prisma, missing from DDL: ${t}`);
   for (const c of colOnlyPrisma) {
     console.log(
       `  column in prisma with no DDL column: ${c}\n` +
@@ -382,7 +387,9 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
     );
   }
   if (STRICT) {
-    console.error("[data-architecture] STRICT: DDL and prisma must be in lockstep.");
+    console.error(
+      "[data-architecture] STRICT: DDL and prisma must be in lockstep.",
+    );
     process.exit(1);
   }
   process.exit(0);
