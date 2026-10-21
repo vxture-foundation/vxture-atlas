@@ -38,6 +38,8 @@
  * in-flight mint (no stampede).
  */
 
+import { trimTrailingSlashes } from "../http-path";
+
 /** RFC 8693. The platform's `TOKEN_EXCHANGE_GRANT_TYPE`. */
 const TOKEN_EXCHANGE_GRANT_TYPE =
   "urn:ietf:params:oauth:grant-type:token-exchange";
@@ -93,12 +95,12 @@ export class PlatformS2sTokenProvider {
    */
   private get tokenUrl(): string | undefined {
     const explicit = process.env["PLATFORM_OIDC_TOKEN_URL"]?.trim();
-    if (explicit) return explicit.replace(/\/+$/, "");
-    const base = (
+    if (explicit) return trimTrailingSlashes(explicit);
+    const base = trimTrailingSlashes(
       process.env["OIDC_BACKCHANNEL_ISSUER"]?.trim() ||
       process.env["OIDC_ISSUER"]?.trim() ||
       ""
-    ).replace(/\/+$/, "");
+    );
     return base ? `${base}/oidc/token` : undefined;
   }
 

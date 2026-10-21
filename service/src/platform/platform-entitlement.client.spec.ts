@@ -53,6 +53,16 @@ describe("PlatformEntitlementClient.resolve", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
+  it("normalizes a trailing slash run before the entitlement route", async () => {
+    vi.stubEnv("PLATFORM_API_URL", "http://platform.test///");
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ entitled: true }));
+    vi.stubGlobal("fetch", fetchMock);
+    await new PlatformEntitlementClient().resolve("ws-1", "karda");
+    expect(fetchMock.mock.calls[0]?.[0]).toBe(
+      "http://platform.test/platform/entitlements?workspace_id=ws-1&product=karda",
+    );
+  });
+
   it("serves a live cache entry instead of asking the platform twice", async () => {
     const fetchMock = vi
       .fn()
@@ -214,6 +224,7 @@ describe("PlatformEntitlementClient.reportTokens", () => {
   });
 
   it("sends the raw fact under the caller's product in the platform's four dimensions, and reads back what it became", async () => {
+    vi.stubEnv("PLATFORM_API_URL", "http://platform.test///");
     const fetchMock = vi.fn().mockResolvedValue(
       jsonResponse({
         event_id: "ue-1",

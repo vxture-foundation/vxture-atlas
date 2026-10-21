@@ -52,7 +52,7 @@ describe("PlatformS2sTokenProvider", () => {
 
   it("derives the token url from the backchannel issuer when none is explicit", () => {
     vi.stubEnv("PLATFORM_OIDC_TOKEN_URL", "");
-    vi.stubEnv("OIDC_BACKCHANNEL_ISSUER", "http://100.100.0.1:8081/");
+    vi.stubEnv("OIDC_BACKCHANNEL_ISSUER", "http://100.100.0.1:8081///");
     vi.stubEnv("OIDC_ISSUER", "https://accounts.vxture.com");
     expect(new PlatformS2sTokenProvider().isConfigured()).toBe(true);
     const fetchMock = vi
@@ -65,6 +65,7 @@ describe("PlatformS2sTokenProvider", () => {
   });
 
   it("mints a delegated-reporter ticket: POST, Basic auth, audience=vxture, no workspace", async () => {
+    vi.stubEnv("PLATFORM_OIDC_TOKEN_URL", "http://idp.test/oidc/token///");
     const fetchMock = vi
       .fn()
       .mockResolvedValue(tokenResponse({ access_token: "tkt-1", expires_in: 300 }));
