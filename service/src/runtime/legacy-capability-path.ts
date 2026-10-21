@@ -24,6 +24,7 @@ import {
 } from "@nestjs/common";
 
 import {
+  CAPABILITY_PATH_DEPRECATED_AT,
   CAPABILITY_PATH_SUNSET,
   RENAMED_CAPABILITY_SEGMENTS,
   legacySegmentOf,
@@ -32,6 +33,8 @@ import { metricsRegistry } from "./metrics.registry";
 
 /** RFC 8594 wants an HTTP-date, not ISO 8601. */
 const SUNSET_HTTP_DATE = new Date(CAPABILITY_PATH_SUNSET).toUTCString();
+/** RFC 9745 uses a Structured Field Date, in epoch seconds. */
+const DEPRECATION_DATE = `@${Date.parse(CAPABILITY_PATH_DEPRECATED_AT) / 1000}`;
 
 @Injectable()
 export class LegacyCapabilityPathInterceptor implements NestInterceptor {
@@ -58,7 +61,7 @@ export class LegacyCapabilityPathInterceptor implements NestInterceptor {
       }>();
 
       // RFC 9745 (Deprecation) + RFC 8594 (Sunset, Link rel=successor-version).
-      res.setHeader?.("Deprecation", "true");
+      res.setHeader?.("Deprecation", DEPRECATION_DATE);
       res.setHeader?.("Sunset", SUNSET_HTTP_DATE);
       res.setHeader?.(
         "Link",

@@ -648,13 +648,15 @@ and the thing it proxies *if the change is a cutover*, and this one is not.
 A call on a retired path returns the resource unchanged plus:
 
 ```
-Deprecation: true
-Sunset: Tue, 16 Sep 2026 00:00:00 GMT
+Deprecation: @1787279434
+Sunset: Wed, 16 Sep 2026 00:00:00 GMT
 Link: </capability/model-routes>; rel="successor-version"
 ```
 
-RFC 9745 and RFC 8594. A client learns it is on a retired path from its own
-response, not from a message somebody has to remember to send.
+RFC 9745 uses a Structured Field Date (`@` followed by epoch seconds), not a
+boolean; RFC 8594 uses an HTTP-date. These auxiliary signals become visible
+only when the consumer records or alerts on them. They do not replace liaison
+planning or the shared General X-4/D-1 migration gate (platform #295).
 
 **The audit trail stays single-valued.** `audit.change_records.resource_type` is
 derived from the resource path segment, so serving two spellings would file one
@@ -668,10 +670,11 @@ recorded at the time.
 
 **Removal is gated on evidence, not the date.** Every retired-path call
 increments `capability_legacy_path_requests_total{path,operator}`. The old names
-are deleted once that reads zero - the sunset date is a floor, not a trigger, so
-an operator still on an old path in October gets a conversation rather than an
-outage. Same discipline as `model_grant_authorizations_total`. Nothing reads the
-counter on a schedule yet, which is TD-041.
+can be removed only with consumer release and live verification evidence,
+traffic observations over the agreed migration window, and a rollback plan.
+A zero counter by itself does not prove that a consumer migrated. The sunset
+date does not remove a route automatically. Nothing reads the counter on a
+schedule yet, which remains TD-041.
 
 ### The same rename on the data plane (TD-042)
 
@@ -692,33 +695,33 @@ operator console and the agent-facing list used two words for one thing.
 
 Same additive shape, for the same reason - both spellings are served by one
 handler, so neither Atlas nor a product has to move on the other's deploy. A
-retired path answers with `Deprecation: true`, its own `Sunset`, and a `Link`
+retired path answers with `Deprecation: @1787985435`, its own `Sunset`, and a `Link`
 naming its own successor.
 
 Two deliberate differences from the operator plane:
 
-- **A later sunset** (`2026-12-16`, versus `2026-09-16`). That window moves one
-  console on this repo's release train; this one moves karda and vxtpl, who
-  schedule independently and were not part of the #206 conversation. Equal dates
-  would give the wider blast radius the shorter notice.
+- **A later sunset** (`2026-12-16`, versus `2026-09-16`). The data plane moves
+  a wider set of products. Opera/Console and product consumers all deploy
+  independently of Atlas; neither group is a zero-consumer exemption.
 - **No audit fold.** The data plane is not written into `audit.change_records`,
   so the single-valued-resource problem above has no counterpart here. Said out
   loud because the alternative is the next reader diffing the two modules to
   work out whether the omission was an oversight.
 
-Removal is gated the same way: `data_plane_legacy_path_requests_total{path,product}`
-must read zero. It is labelled by calling **product** (`act.sub`, the one
+Removal follows the same General X-4/D-1 evidence gate; observations of
+`data_plane_legacy_path_requests_total{path,product}` support that decision.
+It is labelled by calling **product** (`act.sub`, the one
 identity a caller cannot forge) rather than only by path, because the question
 removal has to answer is *whom to talk to*, and "some traffic" does not answer
 it. Nothing reads this counter on a schedule either - the same gap TD-041 names
 for the operator plane, now covering two counters.
 
-**Why this did not wait on karda and vxtpl to agree the names**: the shape is
-additive, so nothing breaks on anyone's deploy, and the interface rules say a
-rename does not need three parties to agree - a name that states its object
-cannot collide with someone else's, and waiting costs a day of silent misreading
-per day spent. What the consumers do have to agree on is **removal**, and that
-is exactly what the counter gates.
+Receiver compatibility is deployed before callers switch. Liaison planning
+must precede release; a response-shape change follows the General's separate
+consumer-first sequence. Caller search results or unauthenticated 401 probes
+do not establish migration completion. The existing authenticated HTTP and
+route-registration tests protect these compatibility entries; they do not
+prove that all external consumers have migrated.
 
 | GET | `/capability/quotas` | **501** - the platform exposes only a single-workspace C2 read, no bulk endpoint, so this cannot be answered honestly. Use `/tenancy/quotas` per workspace |
 | GET | `/capability/usage-summaries` | Read-only reqlog rollup. `groupBy` selects the axis: `tenant` (default) / `provider` / `model` / `endpoint` / `product` - see below. Filters: `tenantId`/`applicationId`/`applicationType`/`cycleMonth`/`providerCode`/`modelCode`/`productCode` |

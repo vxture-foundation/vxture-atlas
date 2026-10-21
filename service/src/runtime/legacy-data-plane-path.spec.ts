@@ -49,7 +49,10 @@ describe("LegacyDataPlanePathInterceptor", () => {
 
     interceptor.intercept(context as never, { handle } as never);
 
-    expect(headers["Deprecation"]).toBe("true");
+    expect(headers["Deprecation"]).toBe("@1787985435");
+    expect(Date.parse(headers["Sunset"] as string)).toBeGreaterThanOrEqual(
+      1787985435 * 1000,
+    );
     expect(headers["Link"]).toBe('</v1/model-routes>; rel="successor-version"');
     // RFC 8594 wants an HTTP-date, not ISO 8601.
     expect(headers["Sunset"]).toMatch(/GMT$/u);
@@ -131,6 +134,6 @@ describe("LegacyDataPlanePathInterceptor", () => {
 
     interceptor.intercept(context as never, { handle } as never);
 
-    expect(headers["Deprecation"]).toBe("true");
+    expect(headers["Deprecation"]).toBe("@1787985435");
   });
 });

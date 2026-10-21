@@ -41,12 +41,16 @@ export const RENAMED_CAPABILITY_SEGMENTS: Readonly<Record<string, string>> = {
   endpoints: "model-routes",
 };
 
+/** Stable deprecation instant recorded by the compatibility baseline. */
+export const CAPABILITY_PATH_DEPRECATED_AT = "2026-08-21T02:30:34.000Z";
+
 /**
- * When the retired spellings stop being served.
+ * Earliest advertised retirement date; serving does not stop automatically.
  *
  * A date rather than a release number, because the client team schedules
  * against a calendar. It is a FLOOR, not a trigger: removal also requires
- * `capability_legacy_path_requests_total` to read zero, so an operator still on
+ * consumer deployment/verification and rollback evidence under General X-4/D-1,
+ * plus an observation window for `capability_legacy_path_requests_total`, so an operator still on
  * an old path in October gets a conversation instead of an outage. Same
  * discipline as `model_grant_authorizations_total`, which exists so the legacy
  * tenant authorization axis is removed once it is shown unused rather than

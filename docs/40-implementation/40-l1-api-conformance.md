@@ -48,7 +48,7 @@ change").
 | **M-B4** `DELETE` means removal | **met** | `DELETE` is a soft delete throughout; state transitions use named routes. |
 | **G-1** request metadata | **met** | Identity chain is enforced from the token; `task_id` required as per X-2. |
 | **G-2** error carriage follows the transport | **met** | HTTP body for HTTP; the SSE error frame carries the identical envelope. |
-| **D-1** breaking changes and deprecation | **process** | Applied to this round: the `QUOTA_EXHAUSTED` correction went to karda as a letter rather than a silent edit. |
+| **D-1** breaking changes and deprecation | **process** | Shared General X-4/D-1 (platform #295) governs deployment order and evidence before compatibility removal; no zero-consumer exemption. Existing operator/data-plane aliases, attributed legacy counters and route-registration tests are retained. RFC 9745 date headers and authenticated HTTP compatibility tests cover these aliases; headers alone do not prove consumer migration or alerting. TD-041/042 remain tracked; no automatic removal on the Sunset date. |
 | **D-2** new products comply on day one | **process** | Applied to `GET /v1/endpoints`, which took `state` rather than copying the surrounding `isActive`. |
 | **D-3** keep the matrix current | **met** | This document, plus `scripts/guardrails/check-error-codes.mjs` in CI for the machine-checkable half of X-1. |
 

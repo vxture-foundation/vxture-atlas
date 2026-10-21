@@ -16,15 +16,11 @@
  * list use two words for one thing, and anybody reading both has to hold a
  * translation in their head.
  *
- * Why this can land without waiting on karda / vxtpl to agree the names:
- * the shape is ADDITIVE. One handler registers both spellings, so nothing
- * breaks on anyone's deploy, and the retired spelling reports its own
- * retirement in the response instead of in a message somebody has to remember
- * to send. Removal is a separate decision, gated on the counter below reading
- * zero - and THAT is the point the consumers have to agree on. The interface
- * clause says it directly: a rename does not need three parties to agree,
- * because a name that says what it points at cannot collide with someone
- * else's; waiting costs a day of silent misreading for every day spent.
+ * One handler registers both spellings, so the receiver can deploy before
+ * consumers switch. General X-4/D-1 requires liaison planning before release
+ * and verified consumer migration before removing the retired spelling.
+ * Response headers and attributed traffic support that evidence; neither
+ * replaces it or authorizes automatic removal.
  *
  * ── Two differences from the `/capability/*` module, both deliberate ────────
  *
@@ -56,16 +52,18 @@ export const RENAMED_DATA_PLANE_ROUTES: Readonly<Record<string, string>> = {
   "tenancy/grants": "tenant-model-grants",
 };
 
+/** Stable deprecation instant recorded when the compatibility routes landed. */
+export const DATA_PLANE_PATH_DEPRECATED_AT = "2026-08-29T06:37:15.000Z";
+
 /**
- * When the retired data-plane spellings stop being served.
+ * Earliest advertised retirement date; serving does not stop automatically.
  *
- * Later than `CAPABILITY_PATH_SUNSET` on purpose: that one moves one console
- * that ships with this repo's own release train, this one moves karda and
- * vxtpl, who schedule independently and were not part of the #206
- * conversation.
+ * The data plane has a wider consumer set than the operator plane. Both
+ * groups deploy independently of Atlas; neither is a zero-consumer exemption.
  *
  * It is a FLOOR, not a trigger. Removal also requires
- * `data_plane_legacy_path_requests_total` to read zero, so a product still on
+ * verified consumer migration and traffic observations for
+ * `data_plane_legacy_path_requests_total`, so a product still on
  * an old path past the date gets a conversation instead of an outage.
  *
  * **Nothing reads that counter on a schedule** - the same gap TD-041 records
