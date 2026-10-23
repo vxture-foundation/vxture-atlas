@@ -46,7 +46,7 @@ outside has to watch it.
 | | no response | header / deadline timeout | `unavailable` |
 | | network (DNS / TLS / connect) | fetch failure | `unreachable` |
 | | throttling | plain `429` | `rate_limited` |
-| | degradation (slow, empty) | `200` | `degraded` (§4.7); truncated answers and empty **streams** are not detected (vxture-atlas#123) |
+| | degradation (slow, empty) | `200` | `degraded` (§4.7); truncated answers are not detected |
 | Route | primary and fallback both down | every candidate failing | route `down` |
 | | a named model cannot serve the route (wrong type, missing, inactive, no key) | configuration | `routes[].configIssues`, and the model counts as not serving the route (§4.4) |
 | Atlas itself | process / container down | `/healthz` unreachable | outside watcher only |
@@ -57,6 +57,21 @@ outside has to watch it.
 The `account` / `rate_limited` split for a vendor `429` is ADR-011's rule
 applied to status: decided from the vendor's own error code, from a list of
 codes actually observed (`ACCOUNT_LIMIT_SIGNATURES`), never guessed.
+
+### Readiness startup budget
+
+Dependency checks normally have a 2000 ms deadline. Only `usageSummaryRead`
+may use 3000 ms during the first ten seconds after the health service is
+constructed, and only until its first successful read. A timeout or query
+error still fails the check; database connectivity keeps its 2000 ms deadline
+throughout startup. The public and diagnostic surfaces share this policy.
+The service does not wait for database warm-up before listening.
+
+`PROBE_DATABASE_URL=... node scripts/dev/readiness-startup.mjs` measures each
+connection's establishment and first query, plus actual parallel health-store
+restores and readiness reads. It accepts only a local throwaway database and
+does not load `.env` or provider keys. Timings do not establish the cause of
+the historical dev-only cold-start delay (TD-059).
 
 ## 3. Responsibilities
 
@@ -194,11 +209,14 @@ it as serving - callers get answers - so a degraded model never turns a route
 `degraded` or `down`; the model's own event is the notice. No setting: both
 rules are relative to the model itself.
 
-- **Empty answers**: a non-streaming chat call that returns 200 with no content
+- **Empty answers**: a chat call, including a completed stream, with no content
   and no tool call, when the cause is not the caller's spent budget
   (`OUTPUT_BUDGET_EXHAUSTED` stays outside health). Three in a row make the
-  model degraded; one answer with content clears it. Until F3b-B these were
-  classified as "not a health signal" and seen by nothing.
+  model degraded; one answer with content or a tool call clears it. Empty
+  streams include whitespace-only and reasoning-only completions. Reasoning
+  that ends with `length` is a spent caller budget and neither degrades nor
+  clears model health. The streaming signal preserves SSE completion and
+  usage accounting; it does not replay a fallback into a completed stream.
 - **Slower than usual**: every ten minutes (first pass a minute after start),
   each active model's last 10 successful calls of the past 24 hours against
   the 7 days before them (at least 30 calls); probes excluded. Chat models are

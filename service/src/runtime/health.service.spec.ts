@@ -146,6 +146,79 @@ describe("usage summary read check", () => {
   });
 });
 
+describe("usage summary startup deadline", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.spyOn(prisma.modelEndpoint, "findMany").mockResolvedValue([]);
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  function delayedSummary(ms: number) {
+    return vi.fn(() => new Promise<TenantUsageSummaryRecord[]>((resolve) => {
+      setTimeout(() => resolve([]), ms);
+    }));
+  }
+
+  it("allows a 2100ms first read, then immediately returns to the 2000ms deadline", async () => {
+    const service = new AtlasHealthService(makeRepository({ listUsageSummaries: delayedSummary(2100) }), makeVault());
+    const first = service.ready();
+    await vi.advanceTimersByTimeAsync(2100);
+    expect((await first).checks.usageSummaryRead.status).toBe("pass");
+    const second = service.ready();
+    await vi.advanceTimersByTimeAsync(2000);
+    expect((await second).checks.usageSummaryRead).toMatchObject({ status: "fail", message: "check did not answer within 2000ms" });
+  });
+
+  it("expires warm-up after ten seconds even when no read ever passed", async () => {
+    const service = new AtlasHealthService(makeRepository({ listUsageSummaries: delayedSummary(2100) }), makeVault());
+    await vi.advanceTimersByTimeAsync(10000);
+    const pending = service.ready();
+    await vi.advanceTimersByTimeAsync(2000);
+    expect((await pending).checks.usageSummaryRead.status).toBe("fail");
+  });
+
+  it("still fails a hung first read at 3000ms", async () => {
+    const service = new AtlasHealthService(makeRepository({ listUsageSummaries: delayedSummary(3100) }), makeVault());
+    const pending = service.ready();
+    await vi.advanceTimersByTimeAsync(3000);
+    expect((await pending).checks.usageSummaryRead).toMatchObject({ status: "fail", message: "check did not answer within 3000ms" });
+  });
+
+  it("keeps public and diagnostic warm-up verdicts aligned", async () => {
+    const service = new AtlasHealthService(makeRepository({ listUsageSummaries: delayedSummary(2100) }), makeVault());
+    const pending = Promise.all([service.ready(), service.diagnostics()]);
+    await vi.advanceTimersByTimeAsync(2100);
+    const views = await pending;
+    expect(views.map((v) => v.checks.usageSummaryRead.status)).toEqual(["pass", "pass"]);
+    expect(views[0].status).toBe(views[1].status);
+  });
+
+  it("keeps database failures blocking during usage warm-up", async () => {
+    const service = new AtlasHealthService(makeRepository({
+      listUsageSummaries: delayedSummary(2100),
+      checkDatabaseConnectivity: vi.fn(() => new Promise<void>(() => {})),
+    }), makeVault());
+    const pending = service.ready();
+    await vi.advanceTimersByTimeAsync(2100);
+    const result = await pending;
+    expect(result.status).toBe("blocked");
+    expect(result.checks.database).toMatchObject({ status: "fail", latencyMs: 2000 });
+    expect(result.checks.usageSummaryRead.status).toBe("pass");
+  });
+
+  it("reports a real usage query error immediately and keeps its details private", async () => {
+    const service = new AtlasHealthService(makeRepository({
+      listUsageSummaries: vi.fn().mockRejectedValue(new Error("private database host")),
+    }), makeVault());
+    const result = await service.ready();
+    expect(result.status).toBe("blocked");
+    expect(result.checks.usageSummaryRead.message).toBe("dependency check failed");
+  });
+});
+
 describe("route health check", () => {
   afterEach(() => vi.restoreAllMocks());
 

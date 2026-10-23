@@ -603,6 +603,65 @@ describe("ModelRuntimeService runtime flow", () => {
     };
   }
 
+  describe("completed stream health", () => {
+    beforeEach(() => upstreamHealth.resetForTests());
+    afterEach(() => upstreamHealth.resetForTests());
+
+    async function drain(events: StreamEvent[]) {
+      const h = makeRuntime();
+      h.provider.chatStream.mockImplementation(async function* () {
+        yield* events;
+      });
+      for await (const _event of h.service.chatStream(makeRequest({ modelCode: "primary-model" }))) {
+        // Consume completion so health and usage bookkeeping run.
+      }
+      return h;
+    }
+
+    it("degrades after three empty streams and recovers on real text", async () => {
+      for (let i = 0; i < 3; i++) await drain([{ type: "done", finishReason: "stop" }]);
+      expect(upstreamHealth.modelState("primary-model")).toBe("degraded");
+      await drain([{ type: "text", delta: "answer" }, { type: "done" }]);
+      expect(upstreamHealth.modelState("primary-model")).toBe("ok");
+    });
+
+    it("counts an iterator with no frames and whitespace-only answers as empty", async () => {
+      await drain([]);
+      await drain([{ type: "text", delta: " \n" }, { type: "done" }]);
+      await drain([{ type: "reasoning", delta: "thinking" }, { type: "done", finishReason: "stop" }]);
+      expect(upstreamHealth.modelState("primary-model")).toBe("degraded");
+    });
+
+    it("does not blame or clear health for a reasoning-only exhausted output budget", async () => {
+      for (let i = 0; i < 3; i++) await drain([{ type: "done" }]);
+      await drain([{ type: "reasoning", delta: "thinking" }, { type: "done", finishReason: "length" }]);
+      expect(upstreamHealth.modelState("primary-model")).toBe("degraded");
+    });
+
+    it("counts a tool call as a usable answer and preserves usage accounting", async () => {
+      for (let i = 0; i < 3; i++) await drain([{ type: "done" }]);
+      const h = await drain([
+        { type: "tool_call", toolCall: { id: "call-1", name: "lookup", arguments: {} } },
+        { type: "done", usage: { promptTokens: 2, completionTokens: 3, totalTokens: 5 } },
+      ]);
+      expect(upstreamHealth.modelState("primary-model")).toBe("ok");
+      expect(h.requestLog.record).toHaveBeenCalledWith(expect.objectContaining({ totalTokens: 5, toolCallsMade: 1 }));
+    });
+
+    it("still counts an exhausted stream without reasoning as empty", async () => {
+      for (let i = 0; i < 3; i++) await drain([{ type: "done", finishReason: "length" }]);
+      expect(upstreamHealth.modelState("primary-model")).toBe("degraded");
+    });
+
+    it("recognizes reasoning usage when the provider sends no reasoning delta", async () => {
+      for (let i = 0; i < 3; i++) await drain([{
+        type: "done", finishReason: "length",
+        usage: { promptTokens: 2, completionTokens: 3, totalTokens: 5, reasoningTokens: 3 },
+      }]);
+      expect(upstreamHealth.modelState("primary-model")).toBeUndefined();
+    });
+  });
+
   // The gap this validation could have created, closed in the same change.
   //
   // validateChatRequest runs before the in-flight gauge and before the first
