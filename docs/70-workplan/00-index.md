@@ -411,8 +411,10 @@ F - service health monitoring (ADR-013, design 120; owner 2026-10-02):
       No configuration, no DDL. Released as v0.7.30 (2026-10-03); the
       first production pass ran clean, no model with enough calls for a
       verdict yet. Completed empty streams now feed the same signal, with
-      reasoning-only length exhaustion excluded; regression verified locally,
-      release and production acceptance pending (vxture-atlas#123).
+      reasoning-only length exhaustion excluded. Released as v0.9.2
+      (2026-10-23); exact-image Docker/HTTP regression and production version,
+      health and readiness verified without production fault injection
+      (vxture-atlas#123).
 - [ ] F4 (platform). Server-side watcher, events into admin notices, admin
       state view, opera request log showing error code and message - raised
       on the platform repo

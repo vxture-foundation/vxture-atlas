@@ -60,12 +60,12 @@ because those are the ones still needing a decision.
 | [TD-055](#td-055) | Context-overflow signatures live in code; adding a provider's needs a release | 2026-09-29 |
 | [TD-056](#td-056) | Inference usage never reaches the platform: every C3 consume is refused | 2026-09-30 |
 | [TD-057](#td-057) | Cache-write rates exist in the API but no operator page can set them | 2026-09-30 |
-| [TD-059](#td-059) | Dev cold-start usage read deadline: bounded warm-up and timing probe implemented; release acceptance pending (vxture-atlas#124) | 2026-10-03 |
 
 ## Closed
 
 | ID | Title | Closed |
 |----|-------|--------|
+| TD-059 | Dev cold-start usage read deadline | 2026-10-23, v0.9.2: per-connection timing probe and bounded first-read warm-up; production readiness verified; historical cause remains unproven (vxture-atlas#124) |
 | TD-058 | `updated_at` was never maintained on any registry table | 2026-10-03, all 19 registry write paths stamp it (`touched` / `softDeleted`), one test per path |
 | TD-046 | Both protocol adapters drop reasoning output, which makes multi-round tool calling structurally impossible on either | 2026-09-12, `ChatMessage.reasoning` as an opaque envelope carried through both adapters plus a `reasoning` stream event; `done` carries the whole envelope so a caller never has to rebuild one (platform#50) |
 | TD-049 | `chat()` and `chatStream()` are parallel implementations of one routing loop | 2026-08-26, the shared steps extracted; duplication on new code 16.1% -> 0.0% |
@@ -952,41 +952,3 @@ real the day a Claude route is live.
 no production row is priced at all - every one reads `not_configured`. That is
 an operations gap, not this entry's, but it is why none of the above has met
 real data yet.
-
-## TD-059
-
-**Observed** (dev stack, 2026-10-03): after `docker pull` of a new image and a
-container start, the first one or two `/readyz` calls answer `blocked`;
-`usageSummaryRead` overruns the 2000 ms check deadline (2000-2133 ms), and
-the next call is `ready` (129 ms). Four times in about ten such starts; never
-on a restart of an already pulled image; never in production, where
-`deploy.sh` has read `ready` after every release.
-
-**Ruled out**: data volume - it recurs with the check reading one partition
-(the current month, PR #118), and dev holds about 2.5k reqlog rows; pool
-size - `DB_POOL_MAX` is 10; deploy risk - `deploy.sh` retries five times and a
-`blocked` verdict only warns.
-
-**Evidence source**: the v0.7.28 readiness log
-(`readiness start -> blocked: usageSummaryRead (2133ms: ...)`), so every
-recurrence is now recorded with its check and latency.
-
-**Tracked**: vxture-atlas#124.
-
-**Implementation** (2026-10-23, release acceptance pending):
-`scripts/dev/readiness-startup.mjs` measures connection establishment and
-first queries alongside the real parallel health-store restores and readiness
-reads, using only an explicitly selected local throwaway database. Initial
-local measurement did not reproduce the historical two-second delay; its
-cause remains unproven. Readiness allows only the first usage-summary read a
-3000 ms deadline during the first ten seconds of the health service's life.
-One successful read or expiration of that window restores 2000 ms. Database
-failures still block, and the process can still listen without a database.
-Tests verify the warm-up bound, immediate return to the normal deadline,
-public/diagnostic consistency and error handling; removing the grace makes
-four regression tests fail.
-
-**Recovery**: time the startup queries per connection (first raw query on a
-fresh pg connection, the parallel startup restores) to find where the two
-seconds go; then either remove the cause or give readiness a short warm-up
-grace. Close if production ever shows it - then it is not a dev artefact.
