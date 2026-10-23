@@ -427,6 +427,8 @@ export class ModelRuntimeService {
         lastFinishReason = undefined;
         let firstTokenAt: number | undefined;
         let toolCallsMade = 0;
+        let hasAnswerText = false;
+        let hasReasoning = false;
         // Once any event reached the client, failing over would concatenate a
         // second answer into the same SSE stream - after first yield, the only
         // honest outcomes are completion or an explicit error frame.
@@ -482,6 +484,11 @@ export class ModelRuntimeService {
               lastFinishReason = event.finishReason;
             }
             if (event.type === "tool_call") toolCallsMade += 1;
+            if (event.type === "text" && event.delta.trim() !== "") hasAnswerText = true;
+            if (event.type === "reasoning" && event.delta.trim() !== "") hasReasoning = true;
+            if (event.type === "done" && (event.reasoning?.text?.trim() || (event.usage?.reasoningTokens ?? 0) > 0)) {
+              hasReasoning = true;
+            }
             // Usage-record batch 2 (A5): the first event this attempt hands
             // the caller. TTFT = first_token_at - started_at.
             if (!yieldedThisAttempt) firstTokenAt = Date.now();
@@ -553,7 +560,17 @@ export class ModelRuntimeService {
           }
 
           this.circuitBreaker.recordSuccess(model.modelCode);
-          upstreamHealth.recordSuccess(model.modelCode, model.provider);
+          // Completion and metering remain unchanged; an empty answer is a
+          // degradation signal, not grounds to append another SSE answer.
+          if (hasAnswerText || toolCallsMade > 0) {
+            upstreamHealth.recordSuccess(model.modelCode, model.provider);
+          } else if (!(lastFinishReason === "length" && hasReasoning)) {
+            upstreamHealth.recordFailure(
+              model.modelCode,
+              model.provider,
+              new UpstreamCallFailure("completed stream contained no answer or tool call", {}),
+            );
+          }
 
           // Recorded even when the done frame carried no usage: a served
           // stream with NULL token columns is still a served request, and a

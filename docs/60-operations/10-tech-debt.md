@@ -60,7 +60,7 @@ because those are the ones still needing a decision.
 | [TD-055](#td-055) | Context-overflow signatures live in code; adding a provider's needs a release | 2026-09-29 |
 | [TD-056](#td-056) | Inference usage never reaches the platform: every C3 consume is refused | 2026-09-30 |
 | [TD-057](#td-057) | Cache-write rates exist in the API but no operator page can set them | 2026-09-30 |
-| [TD-059](#td-059) | The first `/readyz` after a fresh image start can answer `blocked` on dev; cause unknown (vxture-atlas#124) | 2026-10-03 |
+| [TD-059](#td-059) | Dev cold-start usage read deadline: bounded warm-up and timing probe implemented; release acceptance pending (vxture-atlas#124) | 2026-10-03 |
 
 ## Closed
 
@@ -972,6 +972,19 @@ size - `DB_POOL_MAX` is 10; deploy risk - `deploy.sh` retries five times and a
 recurrence is now recorded with its check and latency.
 
 **Tracked**: vxture-atlas#124.
+
+**Implementation** (2026-10-23, release acceptance pending):
+`scripts/dev/readiness-startup.mjs` measures connection establishment and
+first queries alongside the real parallel health-store restores and readiness
+reads, using only an explicitly selected local throwaway database. Initial
+local measurement did not reproduce the historical two-second delay; its
+cause remains unproven. Readiness allows only the first usage-summary read a
+3000 ms deadline during the first ten seconds of the health service's life.
+One successful read or expiration of that window restores 2000 ms. Database
+failures still block, and the process can still listen without a database.
+Tests verify the warm-up bound, immediate return to the normal deadline,
+public/diagnostic consistency and error handling; removing the grace makes
+four regression tests fail.
 
 **Recovery**: time the startup queries per connection (first raw query on a
 fresh pg connection, the parallel startup restores) to find where the two

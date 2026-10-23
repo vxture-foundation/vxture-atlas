@@ -47,6 +47,10 @@ export type ReadinessStatus = "ready" | "degraded" | "blocked";
  * gets strictly more than a probe timeout would have told it.
  */
 const CHECK_DEADLINE_MS = 2_000;
+// Only the first usage rollup may use a longer cold-start budget. Database
+// connectivity still fails under its normal deadline, even during startup.
+const USAGE_STARTUP_WINDOW_MS = 10_000;
+const USAGE_STARTUP_DEADLINE_MS = 3_000;
 
 /**
  * Readiness leaves a trace in the server log. Before, a `blocked` existed only
@@ -68,6 +72,7 @@ const detailLoggedAt = new Map<string, number>();
 async function withDeadline(
   name: string,
   run: () => Promise<HealthCheckResult>,
+  timeoutMs = CHECK_DEADLINE_MS,
 ): Promise<HealthCheckResult> {
   const startedAt = Date.now();
   let timer: NodeJS.Timeout | undefined;
@@ -77,9 +82,9 @@ async function withDeadline(
         resolve({
           status: "fail",
           latencyMs: Date.now() - startedAt,
-          message: `check did not answer within ${CHECK_DEADLINE_MS}ms`,
+          message: `check did not answer within ${timeoutMs}ms`,
         }),
-      CHECK_DEADLINE_MS,
+      timeoutMs,
     );
   });
 
@@ -125,6 +130,9 @@ export interface AtlasReadyResponse extends ServiceIdentity {
 
 @Injectable()
 export class AtlasHealthService {
+  private readonly createdAt = Date.now();
+  private usageSummaryReadSucceeded = false;
+
   constructor(
     @Inject(ModelRegistryRepository)
     private readonly repository: ModelRegistryRepository,
@@ -198,9 +206,7 @@ export class AtlasHealthService {
         withDeadline("modelRegistry", () =>
           this.checkModelRegistry(includeDetail),
         ),
-        withDeadline("usageSummaryRead", () =>
-          this.checkUsageSummaryRead(includeDetail),
-        ),
+        this.checkUsageSummaryWithDeadline(includeDetail),
         withDeadline("reqlogPartitions", () =>
           this.checkReqlogPartitions(includeDetail),
         ),
@@ -253,6 +259,19 @@ export class AtlasHealthService {
         routeHealth,
       },
     };
+  }
+
+  /** A successful rollup ends warm-up immediately, including concurrent probes. */
+  private async checkUsageSummaryWithDeadline(includeDetail: boolean): Promise<HealthCheckResult> {
+    const warmup = !this.usageSummaryReadSucceeded
+      && Date.now() - this.createdAt < USAGE_STARTUP_WINDOW_MS;
+    const result = await withDeadline(
+      "usageSummaryRead",
+      () => this.checkUsageSummaryRead(includeDetail),
+      warmup ? USAGE_STARTUP_DEADLINE_MS : CHECK_DEADLINE_MS,
+    );
+    if (result.status === "pass") this.usageSummaryReadSucceeded = true;
+    return result;
   }
 
   /**

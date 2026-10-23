@@ -410,8 +410,9 @@ F - service health monitoring (ADR-013, design 120; owner 2026-10-02):
       before, per output token for chat, 3x to enter and under 2x to leave.
       No configuration, no DDL. Released as v0.7.30 (2026-10-03); the
       first production pass ran clean, no model with enough calls for a
-      verdict yet. Not covered: empty streams (the streaming path raises no
-      empty-answer error) - vxture-atlas#123
+      verdict yet. Completed empty streams now feed the same signal, with
+      reasoning-only length exhaustion excluded; regression verified locally,
+      release and production acceptance pending (vxture-atlas#123).
 - [ ] F4 (platform). Server-side watcher, events into admin notices, admin
       state view, opera request log showing error code and message - raised
       on the platform repo
