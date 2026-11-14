@@ -39,6 +39,7 @@
 
 import { execFileSync } from "node:child_process";
 import { join } from "node:path";
+import { readFileSync } from "node:fs";
 import { applyEdit } from "../lib/edit.mjs";
 
 export const meta = {
@@ -324,7 +325,14 @@ export async function run({ repoRoot, log }) {
 
     let landed;
     try {
-      landed = applyEdit(repoRoot, m.edit);
+      // Match the checkout's line endings without weakening the unique-hit check.
+      const source = readFileSync(join(repoRoot, m.edit.file), "utf8");
+      const newline = source.includes("\r\n") ? "\r\n" : "\n";
+      landed = applyEdit(repoRoot, {
+        ...m.edit,
+        find: m.edit.find.replace(/\r?\n/g, newline),
+        replace: m.edit.replace.replace(/\r?\n/g, newline),
+      });
     } catch (err) {
       findings.push({
         severity: "unreadable",
