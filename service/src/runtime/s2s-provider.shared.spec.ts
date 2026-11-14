@@ -3,6 +3,7 @@ import { describe, it, expect, vi } from "vitest";
 
 import {
   runWithS2sFailover,
+  withRequestLog,
   toGateRequest,
   toS2sProviderError,
   withWorkspaceFallback,
@@ -477,4 +478,16 @@ describe("runWithS2sFailover - health", () => {
     expect(upstreamHealth.modelState("m2")).toBe("ok");
     upstreamHealth.resetForTests();
   });
+});
+
+
+it.each(["atlas.embed", "atlas.parse", "atlas.rerank"])("attributes %s through shared metering", async (metric) => {
+  const reportTokens = vi.fn().mockResolvedValue({ billed: true });
+  await withRequestLog({ record: vi.fn(), recordError: vi.fn() } as never, {
+    gated: { model: makeModel(), requestId: "attr-1" } as GatedModel,
+    request: { modelCode: "m", tenantId: "tenant-1" },
+    auth: { mode: "obo", scope: "tool:atlas", callerProductCode: "runos", workspaceId: "ws-1", userId: "usr_11111111-1111-4111-8111-111111111111" },
+    metering: { entitlements: { reportTokens } as never, metric },
+  }, async meter => { meter({ amount: 2, usage: { promptTokens: 2, totalTokens: 2 } }); return "ok"; });
+  expect(reportTokens).toHaveBeenCalledWith(expect.objectContaining({ endUserId: "11111111-1111-4111-8111-111111111111" }));
 });

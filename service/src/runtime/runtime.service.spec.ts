@@ -1484,7 +1484,7 @@ describe("ModelRuntimeService runtime flow", () => {
     await h.service.chat(
       {
         taskId: "task-fixture", modelCode: "primary-model", messages: [{ role: "user", content: "hi" }], tenantId: "2a4271d4-ac9a-4fa6-b479-4f71d8e996e8" } as never,
-      { workspaceId: "ws-1" } as never,
+      { workspaceId: "ws-1", mode: "obo", userId: "usr_11111111-1111-4111-8111-111111111111" } as never,
     );
 
     // ADR-013: realized tokens in the platform's four dimensions, with the
@@ -1493,6 +1493,7 @@ describe("ModelRuntimeService runtime flow", () => {
     expect(h.entitlements.reportTokens).toHaveBeenCalledWith(
       expect.objectContaining({
         workspaceId: "ws-1",
+        endUserId: "11111111-1111-4111-8111-111111111111",
         requestId: expect.any(String),
         occurredAt: expect.any(Date),
         modelCode: "primary-model",

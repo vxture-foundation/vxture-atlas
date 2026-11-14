@@ -170,6 +170,17 @@ describe("PlatformEntitlementClient.reportTokens", () => {
     vi.restoreAllMocks();
   });
 
+  it("serializes optional end-user attribution and omits absent users", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({}));
+    vi.stubGlobal("fetch", fetchMock);
+    const endUserId = "11111111-1111-4111-8111-111111111111";
+    await new PlatformEntitlementClient().reportTokens({ ...input, endUserId });
+    expect(sentBody(fetchMock).end_user_id).toBe(endUserId);
+    fetchMock.mockClear();
+    await new PlatformEntitlementClient().reportTokens(input);
+    expect(sentBody(fetchMock)).not.toHaveProperty("end_user_id");
+  });
+
   it("names the platform's refusal in the log line and counts it by that word", async () => {
     const warn = vi
       .spyOn(Logger.prototype, "warn")

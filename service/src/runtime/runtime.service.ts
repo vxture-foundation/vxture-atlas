@@ -1,3 +1,4 @@
+import { endUserAttribution } from "./end-user-attribution";
 import { HttpStatus, Inject, Injectable, Logger } from "@nestjs/common";
 
 import { costUnitForMetric } from "../reqlog/cost-unit";
@@ -1681,6 +1682,7 @@ export class ModelRuntimeService {
         ? await this.entitlements.reportTokens({
             workspaceId: auth.workspaceId,
             callerProductCode: auth.callerProductCode,
+            ...endUserAttribution(auth),
             requestId,
             ...(attemptIndex !== undefined ? { attemptIndex } : {}),
             occurredAt: outcome.facts?.startedAt ?? new Date(),

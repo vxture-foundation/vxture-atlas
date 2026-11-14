@@ -14,6 +14,7 @@
  *   501 MODEL_NOT_IMPLEMENTED response rather than a fabricated integration.
  *   Which provider/model backs each capability is a product/cost decision.
  */
+import { endUserAttribution } from "./end-user-attribution";
 import { HttpStatus } from "@nestjs/common";
 import { randomUUID } from "node:crypto";
 
@@ -220,6 +221,7 @@ export async function withRequestLog<T>(
         ? await metering.entitlements.reportTokens({
             workspaceId: auth.workspaceId,
             callerProductCode: auth.callerProductCode,
+            ...endUserAttribution(auth),
             requestId: gated.requestId,
             occurredAt: new Date(startedAt),
             modelCode: gated.model.modelCode,
