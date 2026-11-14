@@ -59,6 +59,8 @@ export interface ConsumeOutcome {
  * neither converts nor pre-deducts.
  */
 export interface TokenReport {
+  /** Verified OBO customer identity; omitted for service calls. */
+  endUserId?: string;
   workspaceId: string;
   /** `act.sub` on the verified S2S token - the product the usage counts against. Never "atlas". */
   callerProductCode: string;
@@ -343,6 +345,7 @@ export class PlatformEntitlementClient {
           },
           body: JSON.stringify({
             workspace_id: input.workspaceId,
+            ...(input.endUserId ? { end_user_id: input.endUserId } : {}),
             product: input.callerProductCode,
             request_id: input.requestId,
             ...(input.attemptIndex !== undefined
