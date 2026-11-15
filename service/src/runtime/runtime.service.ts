@@ -29,6 +29,7 @@ import {
   signaturesFromConfig,
 } from "../providers/context-overflow";
 import { resolveWireFor, supportedThinkingModes } from "../providers/wire";
+import { supportsToolRequest } from "../providers/tool-support";
 import {
   UpstreamCallFailure,
   usageColumns,
@@ -185,6 +186,11 @@ interface ChatAttemptContext {
   deadline?: AbortSignal | undefined;
 }
 
+interface ChatCandidate {
+  model: AiModelRecord;
+  fallbackAttempt: number;
+}
+
 @Injectable()
 export class ModelRuntimeService {
   private readonly logger = new Logger(ModelRuntimeService.name);
@@ -227,11 +233,11 @@ export class ModelRuntimeService {
       );
       let lastProviderError: ModelRuntimeException | undefined;
 
-      for (const [fallbackAttempt, model] of models.entries()) {
+      for (const [candidateIndex, { model, fallbackAttempt }] of models.entries()) {
         // B6: a spent budget ends the chain - trying a fallback would spend
         // time the caller no longer has.
         if (ctx.deadline?.aborted && lastProviderError !== undefined) break;
-        if (this.skipTripped(ctx, model, fallbackAttempt, models.length)) continue;
+        if (this.skipTripped(ctx, model, fallbackAttempt, models.length, candidateIndex)) continue;
 
         await this.assertQuotaOrRecordRefusal(
           ctx,
@@ -335,8 +341,8 @@ export class ModelRuntimeService {
       // TD-037. No terminal row here, and that is the change rather than an
       // omission. Every exit from the loop above records its own attempt: a
       // candidate either succeeds, is refused by the gate, or fails and is
-      // caught - and `resolveCandidateModels` always returns at least the
-      // primary, so the loop always runs at least once. A row written here
+      // caught - and `resolveCandidateModels` returns at least one compatible
+      // candidate or throws, so the loop always runs at least once. A row written here
       // would therefore be an N+1th record of a failure already counted N
       // times, landing in exactly the rollups this change exists to make
       // comparable.
@@ -381,7 +387,7 @@ export class ModelRuntimeService {
         "model_runtime_stream_failed",
       );
 
-      const models = candidateModels.filter((model) => model.supportsStreaming);
+      const models = candidateModels.filter(({ model }) => model.supportsStreaming);
 
       if (models.length === 0) {
         this.logRuntimeEvent("model_runtime_stream_failed", {
@@ -407,13 +413,13 @@ export class ModelRuntimeService {
       let lastFinishReason: FinishReason | undefined;
       let lastProviderError: ModelRuntimeException | undefined;
 
-      for (const [fallbackAttempt, model] of models.entries()) {
+      for (const [candidateIndex, { model, fallbackAttempt }] of models.entries()) {
         // The caller is gone - no candidate may be attempted on its behalf.
         // The abort-during-attempt case below records the in-flight row; here
         // nothing was in flight, so there is nothing to record.
         if (signal?.aborted) return;
 
-        if (this.skipTripped(ctx, model, fallbackAttempt, models.length)) continue;
+        if (this.skipTripped(ctx, model, fallbackAttempt, models.length, candidateIndex)) continue;
 
         await this.assertQuotaOrRecordRefusal(
           ctx,
@@ -1014,7 +1020,8 @@ export class ModelRuntimeService {
     modelCode: string,
     routeFallbacks: string[] | null = null,
     thinking?: ThinkingMode,
-  ): Promise<AiModelRecord[]> {
+    toolRequest?: ChatRequest,
+  ): Promise<ChatCandidate[]> {
     const primary = await this.registry.getActiveModel(modelCode);
     // ADR-009 decision 3: the primary must honour the requested mode or the
     // request is refused - serving it anyway would bill the caller for the
@@ -1045,7 +1052,19 @@ export class ModelRuntimeService {
       }
     }
 
-    return [primary, ...fallbacks];
+    const candidates = [primary, ...fallbacks].map((model, fallbackAttempt) => ({ model, fallbackAttempt }));
+    const compatible = toolRequest === undefined ? candidates : candidates.filter(
+      ({ model }) => supportsToolRequest(resolveWireFor(model), toolRequest),
+    );
+    if (compatible.length === 0) {
+      throw new ModelRuntimeException(
+        HttpStatus.UNPROCESSABLE_ENTITY,
+        "TOOL_CALLING_UNSUPPORTED",
+        "No configured candidate supports the requested tools, tool history and toolChoice",
+        { modelCode: primary.modelCode, provider: primary.provider },
+      );
+    }
+    return compatible;
   }
 
   private toProviderUnavailableError(
@@ -1287,14 +1306,23 @@ export class ModelRuntimeService {
   private async resolveCandidatesOrFail(
     ctx: ChatAttemptContext,
     failedEvent: string,
-  ): Promise<AiModelRecord[]> {
+  ): Promise<ChatCandidate[]> {
     try {
       return await this.resolveCandidateModels(
         ctx.modelCode,
         ctx.routed.fallbackModelCodes,
         ctx.request.thinking,
+        ctx.request,
       );
     } catch (error) {
+      if (readRuntimeErrorCode(error) === "TOOL_CALLING_UNSUPPORTED") {
+        // This refusal happens before any provider attempt. Keep one durable
+        // request/error pair, without attributing spend or a breaker failure.
+        await this.recordFailure(
+          ctx.request, ctx.requestId, ctx.modelCode, undefined, error,
+          undefined, ctx.auth, ctx.routed.endpointCode,
+        );
+      }
       this.logRuntimeEvent(failedEvent, {
         request: ctx.request,
         requestId: ctx.requestId,
@@ -1324,9 +1352,10 @@ export class ModelRuntimeService {
     model: AiModelRecord,
     fallbackAttempt: number,
     candidateCount: number,
+    candidateIndex = fallbackAttempt,
   ): boolean {
     if (
-      fallbackAttempt >= candidateCount - 1 ||
+      candidateIndex >= candidateCount - 1 ||
       !this.circuitBreaker.isTripped(model.modelCode)
     ) {
       return false;

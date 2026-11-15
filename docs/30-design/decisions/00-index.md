@@ -23,3 +23,4 @@ restating its reasoning.
 | ADR-012 | [A price rule is the vendor's price, set in the admin console](ADR-012-price-rules-are-vendor-prices.md) | Accepted | 2026-10-01 |
 | ADR-013 | [Service health is durable Atlas state, pulled by the platform](ADR-013-service-health-is-atlas-state-pulled-by-the-platform.md) | Accepted | 2026-10-02 |
 | ADR-014 | [A route names models of its own type](ADR-014-a-route-names-models-of-its-own-type.md) | Accepted | 2026-10-03 |
+| ADR-015 | [Tool requests require compatible candidates](ADR-015-tool-requests-require-compatible-candidates.md) | Accepted | 2026-11-15 |

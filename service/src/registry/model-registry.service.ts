@@ -203,6 +203,7 @@ export class ModelRegistryService {
             contextWindow: null,
             maxOutputTokens: null,
             thinkingModes: [],
+            toolSupport: { tools: false, toolChoice: false },
           };
         }
         return {
@@ -216,6 +217,8 @@ export class ModelRegistryService {
               : usable.get(row.fallbackModelCode),
           ),
           thinkingModes: routeThinkingModes(usable.get(row.primaryModelCode)),
+          toolSupport: routeToolSupport(usable.get(row.primaryModelCode),
+            row.fallbackModelCode === null ? undefined : usable.get(row.fallbackModelCode)),
         };
       });
   }
@@ -256,6 +259,19 @@ export interface GrantedEndpoint {
    * `config.wire.thinking` yet: asking then is `THINKING_MODE_UNSUPPORTED`.
    */
   thinkingModes: ThinkingMode[];
+  /** At least one usable candidate supports tools / tools with toolChoice. */
+  toolSupport: { tools: boolean; toolChoice: boolean };
+}
+
+/** Tool routing skips incompatible candidates; a missing primary is still fatal. */
+export function routeToolSupport(primary: AiModelRecord | undefined, fallback?: AiModelRecord): GrantedEndpoint["toolSupport"] {
+  if (primary === undefined || primary.modelType !== "chat") return { tools: false, toolChoice: false };
+  const wires = [primary, ...(fallback ? [fallback] : [])]
+    .filter((model) => model.modelType === "chat").map(resolveWireFor);
+  return {
+    tools: wires.some((wire) => wire.supports.tools),
+    toolChoice: wires.some((wire) => wire.supports.tools && wire.supports.toolChoice),
+  };
 }
 
 /** See `GrantedEndpoint.thinkingModes`. */

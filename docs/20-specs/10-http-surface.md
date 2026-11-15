@@ -111,6 +111,21 @@ body, and the stream's `done` frame - carries `thinking`: the mode applied, or
   call; a fallback that cannot run it is skipped for that call. Check
   `thinkingModes` on `/v1/model-routes` first.
 
+### Tool-compatible chat routes (ADR-015)
+
+Requests containing `tools`, tool-call/result history, or explicit `toolChoice`
+only use compatible candidates in the configured route. The same behavior
+applies to JSON and SSE. Incompatible candidates are skipped before upstream
+spend; original attempt ordinals remain available in request records.
+If none can honor the request, Atlas returns `422 TOOL_CALLING_UNSUPPORTED`
+(`retryable: false`) instead of silently dropping tool parameters.
+
+`GET /v1/model-routes` adds `toolSupport: {tools, toolChoice}`. Each flag
+requires an active compatible candidate (`toolChoice` requires tools on that
+same candidate); a missing primary gives false. These reflect registered wire
+configuration, not a live probe. Thinking and streaming restrictions still
+apply. See [ADR-015](../30-design/decisions/ADR-015-tool-requests-require-compatible-candidates.md).
+
 ### A total deadline per call (B6)
 
 `POST /v1/chat` accepts `timeoutMs` (whole milliseconds, 1000-600000): the

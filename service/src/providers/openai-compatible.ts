@@ -9,6 +9,7 @@ import type {
 } from "./openai-compatible.types";
 import { openSseRequest, readSseMessages } from "./sse";
 import { OPENAI_WIRE_DEFAULTS, thinkingFragment } from "./wire";
+import { assertToolSupport } from "./tool-support";
 import type { ResolvedWire } from "./wire";
 import { errorFrame } from "../types/runtime.types";
 import type {
@@ -39,6 +40,7 @@ export function buildOpenAiCompatibleBody(
   stream: boolean,
   wire: ResolvedWire = OPENAI_WIRE_DEFAULTS,
 ): Record<string, unknown> {
+  assertToolSupport(wire, request);
   const maxTokensParam = wire.paramMap["maxTokens"] ?? "max_tokens";
 
   // `wire.extraBody` 先铺底，适配器管理的键随后覆盖。保留键在写入侧就被拒

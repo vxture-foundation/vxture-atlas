@@ -53,18 +53,12 @@ describe("buildOpenAiCompatibleBody - stream usage opt-in", () => {
 });
 
 describe("buildOpenAiCompatibleBody - capability gating", () => {
-  it("drops tools when the provider declares no tool support", () => {
-    const body = buildOpenAiCompatibleBody(
-      request({
-        tools: [{ name: "t", description: "d", parameters: {} }],
-        toolChoice: "auto",
-      }),
+  it("refuses unsupported tools instead of silently dropping them", () => {
+    expect(() => buildOpenAiCompatibleBody(
+      request({ tools: [{ name: "t", description: "d", parameters: {} }], toolChoice: "auto" }),
       false,
       wireFrom({ wire: { supports: { tools: false, toolChoice: false } } }),
-    );
-
-    expect(body.tools).toBeUndefined();
-    expect(body.tool_choice).toBeUndefined();
+    )).toThrow(expect.objectContaining({ code: "TOOL_CALLING_UNSUPPORTED" }));
   });
 
   it("sends tools by default", () => {

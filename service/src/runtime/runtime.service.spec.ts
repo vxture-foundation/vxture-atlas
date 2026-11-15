@@ -1,3 +1,6 @@
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
+import { OpenAiCompatibleProvider } from "../providers/openai-compatible.provider";
 import { upstreamHealth } from "../health/upstream-health";
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { HttpStatus, Logger } from "@nestjs/common";
@@ -1016,6 +1019,114 @@ describe("ModelRuntimeService runtime flow", () => {
         await service.chat(makeRequest({ modelCode: "primary-model", requestId: "d4" }));
 
         expect(provider.chat.mock.calls[0]?.[0]).not.toHaveProperty("signal");
+      });
+    });
+
+    describe("tool-compatible routing (#141)", () => {
+      const tools = [{ name: "lookup", description: "Lookup a company", parameters: { type: "object" } }];
+      function withTools(primarySupports: boolean, fallbackSupports: boolean) {
+        return makeRuntime({ registry: {
+          getActiveModel: vi.fn(async (code: string) => makeModel({
+            modelCode: code,
+            provider: code === "primary-model" ? "primary" : "fallback",
+            config: {
+              managedKeyAlias: "test-key",
+              fallbackModelCodes: code === "primary-model" ? ["fallback-model"] : [],
+              wire: { supports: { tools: code === "primary-model" ? primarySupports : fallbackSupports } },
+            },
+          })),
+        } });
+      }
+
+      it.each([false, true])("uses a compatible fallback without calling an incompatible primary (stream=%s)", async (stream) => {
+        const { service, provider, fallbackProvider, requestLog } = withTools(false, true);
+        const req = makeRequest({ modelCode: "primary-model", tools, toolChoice: "auto" });
+        if (stream) {
+          const events = [];
+          for await (const event of service.chatStream(req)) events.push(event);
+          expect(events.some((event) => event.type === "done")).toBe(true);
+          expect(fallbackProvider.chatStream).toHaveBeenCalledTimes(1);
+        } else {
+          expect((await service.chat(req)).modelCode).toBe("fallback-model");
+          expect(fallbackProvider.chat).toHaveBeenCalledWith(expect.objectContaining({ tools, toolChoice: "auto" }));
+        }
+        expect(provider.chat).not.toHaveBeenCalled();
+        expect(provider.chatStream).not.toHaveBeenCalled();
+        expect(requestLog.record).toHaveBeenCalledWith(expect.objectContaining({ attemptIndex: 1 }));
+      });
+
+      it("sends tool definitions to a real HTTP upstream after skipping the incompatible primary", async () => {
+        const bodies: Record<string, unknown>[] = [];
+        const upstream = createServer(async (req, res) => {
+          let raw = "";
+          for await (const chunk of req) raw += String(chunk);
+          bodies.push(JSON.parse(raw) as Record<string, unknown>);
+          res.setHeader("Content-Type", "application/json");
+          res.end(JSON.stringify({ choices: [{ message: { role: "assistant", content: null,
+            tool_calls: [{ id: "lookup-1", type: "function", function: { name: "lookup", arguments: "{}" } }],
+          }, finish_reason: "tool_calls" }], usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 } }));
+        });
+        await new Promise<void>((resolve) => upstream.listen(0, "127.0.0.1", resolve));
+        const endpointUrl = `http://127.0.0.1:${(upstream.address() as AddressInfo).port}/v1`;
+        try {
+          const adapter = new OpenAiCompatibleProvider();
+          const { service, requestLog } = makeRuntime({ registry: {
+            getActiveModel: vi.fn(async (code: string) => makeModel({
+              modelCode: code, endpointUrl,
+              config: { managedKeyAlias: "test-key", fallbackModelCodes: code === "primary-model" ? ["fallback-model"] : [],
+                wire: { supports: { tools: code !== "primary-model" } } },
+            })),
+          }, router: { resolve: () => adapter } });
+          const response = await service.chat(makeRequest({ modelCode: "primary-model", tools, toolChoice: "required" }));
+          expect(response.modelCode).toBe("fallback-model");
+          expect(response.message.toolCalls).toEqual([{ id: "lookup-1", name: "lookup", arguments: {} }]);
+          expect(bodies).toHaveLength(1);
+          expect(bodies[0]).toMatchObject({ model: "fallback-model", tool_choice: "required", tools: [{ type: "function", function: { name: "lookup" } }] });
+          expect(requestLog.record).toHaveBeenCalledWith(expect.objectContaining({ modelCode: "fallback-model", attemptIndex: 1 }));
+        } finally {
+          upstream.closeAllConnections();
+          await new Promise<void>((resolve, reject) => upstream.close((err) => err ? reject(err) : resolve()));
+        }
+      });
+
+      it("refuses an entirely incompatible chain before spend and records the refusal", async () => {
+        const { service, provider, fallbackProvider, quota, requestLog } = withTools(false, false);
+        await expect(service.chat(makeRequest({ modelCode: "primary-model", tools })))
+          .rejects.toMatchObject({ code: "TOOL_CALLING_UNSUPPORTED" });
+        expect(provider.chat).not.toHaveBeenCalled();
+        expect(fallbackProvider.chat).not.toHaveBeenCalled();
+        expect(quota.assertAllowed).not.toHaveBeenCalled();
+        expect(requestLog.recordError).toHaveBeenCalled();
+      });
+
+      it("never downgrades to a text-only fallback after a compatible primary fails", async () => {
+        const { service, provider, fallbackProvider } = withTools(true, false);
+        provider.chat.mockRejectedValue(new Error("primary down"));
+        await expect(service.chat(makeRequest({ modelCode: "primary-model", tools }))).rejects.toBeDefined();
+        expect(fallbackProvider.chat).not.toHaveBeenCalled();
+      });
+
+      it("leaves ordinary chat available on a text-only model", async () => {
+        const { service, provider } = withTools(false, false);
+        await service.chat(makeRequest({ modelCode: "primary-model" }));
+        expect(provider.chat).toHaveBeenCalledTimes(1);
+      });
+
+      it("checks toolChoice support separately from tool definitions", async () => {
+        const model = makeModel({ config: { managedKeyAlias: "test-key", wire: { supports: { tools: true, toolChoice: false } } } });
+        const { service, provider } = makeRuntime({ registry: { getActiveModel: vi.fn(async () => model) } });
+        await expect(service.chat(makeRequest({ modelCode: "primary-model", tools, toolChoice: "required" })))
+          .rejects.toMatchObject({ code: "TOOL_CALLING_UNSUPPORTED" });
+        expect(provider.chat).not.toHaveBeenCalled();
+      });
+
+      it("recognizes tool-result continuation even when definitions are omitted", async () => {
+        const { service, provider } = withTools(false, true);
+        await service.chat(makeRequest({ modelCode: "primary-model", messages: [
+          { role: "assistant", content: "", toolCalls: [{ id: "call-1", name: "lookup", arguments: {} }] },
+          { role: "tool", content: "Company report", toolCallId: "call-1" },
+        ] }));
+        expect(provider.chat).not.toHaveBeenCalled();
       });
     });
 

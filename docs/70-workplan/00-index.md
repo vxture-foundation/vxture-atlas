@@ -448,3 +448,14 @@ Housekeeping:
       works and is alarmed, so this is convenience, not a blocker
 - [ ] Own admin/console regression against the network path - karda has proven
       the S2S chain, the BFF/console side has not been re-run
+
+## Cross-product research recovery
+
+- [ ] [#141](https://github.com/vxture-foundation/vxture-atlas/issues/141):
+  compatible tool routing, explicit unsupported error, route support diagnostics
+  ([ADR-015](../30-design/decisions/ADR-015-tool-requests-require-compatible-candidates.md));
+  local tests (1698 pass, 2 existing skips), types, lint, build and all ten
+  guardrails pass; mutation audit and production rollout pending.
+- Related: Runos [#130](https://github.com/vxture-foundation/vxture-runos/issues/130),
+  [#131](https://github.com/vxture-foundation/vxture-runos/issues/131),
+  yucer [PR #643](https://github.com/vxture/vx-agent-yucer/pull/643).
