@@ -1,5 +1,5 @@
 {
-  "fingerprint": "c1-29d169143665",
+  "fingerprint": "c1-ccd1b2cb48f8",
   "errorCodes": [
     {
       "code": "APPLICATION_ID_REQUIRED",
@@ -207,6 +207,10 @@
     },
     {
       "code": "THINKING_MODE_UNSUPPORTED",
+      "retryable": false
+    },
+    {
+      "code": "TOOL_CALLING_UNSUPPORTED",
       "retryable": false
     },
     {

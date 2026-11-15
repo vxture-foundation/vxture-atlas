@@ -290,6 +290,12 @@ describe("buildClaudeBody - wire.extraBody", () => {
     messages: [{ role: "user" as const, content: "hi" }],
   };
 
+  it("refuses tools when the effective Anthropic wire disables them", () => {
+    const wire = resolveWire(ANTHROPIC_WIRE_DEFAULTS, { wire: { supports: { tools: false } } });
+    expect(() => buildClaudeBody({ ...request, tools: [{ name: "lookup", description: "Lookup", parameters: {} }] }, false, wire))
+      .toThrow(expect.objectContaining({ code: "TOOL_CALLING_UNSUPPORTED" }));
+  });
+
   it("merges vendor switches into the Anthropic body as well", () => {
     // 一个描述符,两个适配器。只在 openai 一侧实现,等于让运营在 anthropic 行上
     // 配一个静默失效的开关。
@@ -642,7 +648,7 @@ describe("推理载荷 · Anthropic（TD-046）", () => {
         ],
       } as never,
       false,
-      resolveWire({ wire: ANTHROPIC_WIRE_DEFAULTS } as never),
+      resolveWire(ANTHROPIC_WIRE_DEFAULTS),
     );
     const messages = body["messages"] as Array<{
       content: Array<Record<string, unknown>>;

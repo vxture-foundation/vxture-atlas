@@ -85,6 +85,8 @@ export type ModelRuntimeErrorCode =
    * caller for the behaviour it asked to avoid.
    */
   | "THINKING_MODE_UNSUPPORTED"
+  /** No configured candidate can honor the requested tool semantics. */
+  | "TOOL_CALLING_UNSUPPORTED"
   /**
    * The caller's own `timeoutMs` ran out; the upstream call was cancelled.
    * Not a provider failure - the budget was the caller's - so it does not
@@ -214,6 +216,7 @@ const RETRYABLE: Record<ModelRuntimeErrorCode, boolean> = {
   // Waiting does not change what the routed model can do; an operator or a
   // different route does.
   THINKING_MODE_UNSUPPORTED: false,
+  TOOL_CALLING_UNSUPPORTED: false,
   // The budget is the caller's. The identical request gets the identical
   // budget; what changes the outcome is a larger timeoutMs or a smaller input.
   DEADLINE_EXCEEDED: false,

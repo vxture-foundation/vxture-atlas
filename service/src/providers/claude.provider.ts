@@ -1,3 +1,4 @@
+import { assertToolSupport } from "./tool-support";
 import { Injectable } from "@nestjs/common";
 import { UpstreamCallFailure } from "./upstream-failure";
 import { statedNumber, upstreamField } from "./upstream-record";
@@ -277,6 +278,7 @@ export function buildClaudeBody(
   stream: boolean,
   wire: ResolvedWire,
 ): Record<string, unknown> {
+  assertToolSupport(wire, request);
   const body: Record<string, unknown> = {
     // extraBody 先铺底，适配器管理的键随后覆盖 —— 与 openai-compatible 同规则。
     // 这里必须一起支持，否则 `config.wire.extraBody` 就成了"在一半适配器上配了

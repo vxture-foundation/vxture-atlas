@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
 
-import { ModelRegistryService, routeThinkingModes } from "./model-registry.service";
+import { ModelRegistryService, routeThinkingModes, routeToolSupport } from "./model-registry.service";
 import { ModelRuntimeException } from "../runtime/runtime.errors";
 import type { AiModelRecord } from "../types/runtime.types";
 
@@ -238,7 +238,7 @@ describe("ModelRegistryService.listGrantedEndpoints", () => {
     );
 
     expect(await service.listGrantedEndpoints(SCOPE)).toEqual([
-      { endpointCode: "chat/default", category: "chat", state: "active", contextWindow: null, maxOutputTokens: null, thinkingModes: [] },
+      { endpointCode: "chat/default", category: "chat", state: "active", contextWindow: null, maxOutputTokens: null, thinkingModes: [], toolSupport: { tools: false, toolChoice: false } },
     ]);
   });
 
@@ -257,7 +257,7 @@ describe("ModelRegistryService.listGrantedEndpoints", () => {
       );
 
       expect(await service.listGrantedEndpoints(SCOPE)).toEqual([
-        { endpointCode: "chat/default", category: "chat", state: "inactive", contextWindow: null, maxOutputTokens: null, thinkingModes: [] },
+        { endpointCode: "chat/default", category: "chat", state: "inactive", contextWindow: null, maxOutputTokens: null, thinkingModes: [], toolSupport: { tools: false, toolChoice: false } },
       ]);
     },
   );
@@ -268,7 +268,7 @@ describe("ModelRegistryService.listGrantedEndpoints", () => {
     const { service } = makeService([{ endpointCode: "chat/typoo" }], []);
 
     expect(await service.listGrantedEndpoints(SCOPE)).toEqual([
-      { endpointCode: "chat/typoo", category: null, state: "missing", contextWindow: null, maxOutputTokens: null, thinkingModes: [] },
+      { endpointCode: "chat/typoo", category: null, state: "missing", contextWindow: null, maxOutputTokens: null, thinkingModes: [], toolSupport: { tools: false, toolChoice: false } },
     ]);
   });
 
@@ -387,5 +387,16 @@ describe("routeThinkingModes (ADR-009)", () => {
 
   it("is empty when there is no usable primary", () => {
     expect(routeThinkingModes(undefined)).toEqual([]);
+  });
+});
+
+describe("route tool support", () => {
+  it("advertises only support actually offered by a usable candidate", () => {
+    const text = makeModel({ config: { wire: { supports: { tools: false, toolChoice: false } } } });
+    const tools = makeModel({ config: { wire: { supports: { tools: true, toolChoice: false } } } });
+    expect(routeToolSupport(undefined, makeModel())).toEqual({ tools: false, toolChoice: false });
+    expect(routeToolSupport(text, tools)).toEqual({ tools: true, toolChoice: false });
+    expect(routeToolSupport(text, makeModel())).toEqual({ tools: true, toolChoice: true });
+    expect(routeToolSupport(text)).toEqual({ tools: false, toolChoice: false });
   });
 });
