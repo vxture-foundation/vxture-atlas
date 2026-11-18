@@ -203,6 +203,7 @@ model ModelPolicy {
 model ModelEndpoint {
   id                 String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   code               String    @unique(map: "uq_model_endpoints_code") @db.VarChar(128)
+  tags               String[]  @default([])
   category           String    @default("chat") @db.VarChar(32)
   primaryModelCode   String    @map("primary_model_code") @db.VarChar(128)
   fallbackModelCode  String?   @map("fallback_model_code") @db.VarChar(128)
@@ -610,4 +611,28 @@ model HealthBalanceSample {
   @@index([providerCode, sampledAt], map: "idx_health_balance_samples_provider")
   @@map("balance_samples")
   @@schema("health")
+}
+
+// Versioned product policies. Runtime history is append-only.
+model ProductGrantPolicy {
+  productCode String @id @map("product_code") @db.VarChar(64)
+  revision Int
+  rules Json @db.JsonB
+  updatedBy String @map("updated_by") @db.VarChar(128)
+  updatedAt DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  @@map("product_grant_policy")
+  @@schema("model")
+}
+
+model ProductGrantPolicyRevision {
+  productCode String @map("product_code") @db.VarChar(64)
+  revision Int
+  rules Json @db.JsonB
+  updatedBy String @map("updated_by") @db.VarChar(128)
+  updatedAt DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  @@id([productCode, revision])
+  @@map("product_grant_policy_revision")
+  @@schema("model")
 }

@@ -71,3 +71,11 @@ pnpm type-check:all
   vocabulary is the one actually thrown (product_251 X-1). Both halves are
   enforced by `scripts/guardrails/check-error-codes.mjs` in CI rather than by
   review - neither fails loudly on its own.
+
+## Continuous product grant policies
+
+`service/src/governance/product-grant-policy*` implements ADR-016: strict
+validation, dependency-aware effective grants, atomic optimistic writes and
+append-only revision history. Schema increment `12_product_grant_policy.sql`
+must precede service rollout. PostgreSQL checks require the explicit local
+`atlas_policy_qa` database via `ATLAS_POLICY_TEST_DATABASE_URL`.

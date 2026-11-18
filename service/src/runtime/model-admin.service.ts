@@ -1,3 +1,4 @@
+import { BadRequestException } from "@nestjs/common";
 import { HttpStatus, Inject, Injectable } from "@nestjs/common";
 
 import { ModelRegistryRepository } from "../registry/model-registry.repository";
@@ -183,6 +184,7 @@ export type UpdateProductGrantBody = Omit<
 >;
 
 export interface ModelEndpointAdminRecord {
+  tags: string[];
   id: string;
   code: string;
   category: string;
@@ -203,6 +205,7 @@ export interface ModelEndpointAdminRecord {
 }
 
 export type CreateModelEndpointBody = {
+  tags?: string[];
   code?: string;
   category?: string;
   primaryModelCode?: string;
@@ -1375,6 +1378,7 @@ export class ModelAdminService {
 
     return {
       code: requiredString(body.code, "code"),
+      ...(body.tags !== undefined ? { tags: normalizeEndpointTags(body.tags) } : {}),
       category,
       primaryModelCode,
       fallbackModelCode,
@@ -1393,6 +1397,7 @@ export class ModelAdminService {
     existing: ModelEndpointRecord,
   ): Promise<UpdateModelEndpointInput> {
     const input: UpdateModelEndpointInput = {};
+    if (body.tags !== undefined) input.tags = normalizeEndpointTags(body.tags);
 
     if (body.category !== undefined)
       input.category = requiredString(body.category, "category");
@@ -2137,6 +2142,7 @@ function mapEndpoint(
     id: endpoint.id,
     code: endpoint.code,
     category: endpoint.category,
+    tags: endpoint.tags ?? [],
     primaryModelCode: endpoint.primaryModelCode,
     fallbackModelCode: endpoint.fallbackModelCode,
     state: toObjectState(endpoint.isActive),
@@ -2836,4 +2842,12 @@ function optionalRate(
   if (value === undefined) return {};
   if (value === null || value === "") return { [field]: null };
   return { [field]: parseDecimalText(value, field) };
+}
+
+/** Validate endpoint labels before they can affect continuous grants. */
+function normalizeEndpointTags(value: unknown): string[] {
+  if (!Array.isArray(value) || value.length > 8 || value.some((tag: unknown) => typeof tag !== "string" || !/^[a-z0-9][a-z0-9-]{1,31}$/.test(tag)) || new Set(value).size !== value.length) {
+    throw new BadRequestException({ code: "ENDPOINT_INVALID_TAGS", message: "tags must be unique lowercase labels, 2-32 characters, at most 8", retryable: false });
+  }
+  return value as string[];
 }

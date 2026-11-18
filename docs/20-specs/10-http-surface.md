@@ -1366,3 +1366,27 @@ billing sums the platform's `usage_events` over the subscription period. See
 OIDC RP (five endpoints) - an inherited services-profile obligation with no
 controller in code. Atlas has no browser surface; the operator UI lives in
 `vxture-platform`. Do not treat it as a live integration point.
+
+## Continuous product grant policies (ADR-016)
+
+Operator-OBO only. The verified token identifies the actor; request-supplied
+actors and unknown policy fields are rejected. Manual grants remain separate.
+
+| Method | Path | Notes |
+|---|---|---|
+| GET | `/capability/product-grant-policies/:productCode` | Current document; revision 0 and no rules before first save |
+| POST | `/capability/product-grant-policies/:productCode` | Replace document with `expectedRevision` and `rules`; stale revision 409 |
+| POST | `/capability/product-grant-policies/:productCode/preview` | Evaluate draft rules plus product-wide manual grants; no write |
+| GET | `/capability/product-grant-policies/:productCode/effective` | Current product-wide effective resources and provenance |
+| GET | `/capability/product-grant-policies/:productCode/history` | Last 50 immutable revisions, newest first |
+
+A rule contains `id`, `name`, `enabled`, `effect` (`allow`/`deny`), `selector`,
+`riskScope` (`read`/`write`/`critical`) and `criticalRequiresApproval`.
+`selector` contains `mode` (`all`/`categories`/`tags`/`resources`), `values`,
+`tagMatch` (`any`/`all`) and `excludedIds`. All fields are explicit. An `all`
+selector has no values; other modes require at least one. Exclusions remove
+only that rule's contribution. Explicit deny overrides manual and rule allows.
+Updates accept at most 100 unique rule IDs and 1000 values per selector.
+Replies preserve `matched`, `denied`, resource IDs and source/deny rule IDs.
+Policy validation errors use `GRANT_POLICY_INVALID`; stale writes use
+`GRANT_POLICY_REVISION_CONFLICT`, both non-retryable without a changed request.

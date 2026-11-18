@@ -858,6 +858,7 @@ export type UpdateModelProviderInput = Partial<CreateModelProviderInput>;
 
 /** model.model_endpoints row. */
 export interface ModelEndpointRecord {
+  tags?: string[];
   id: string;
   code: string;
   category: string;
@@ -872,6 +873,7 @@ export interface ModelEndpointRecord {
 }
 
 export interface CreateModelEndpointInput {
+  tags?: string[];
   code: string;
   category?: string;
   primaryModelCode: string;

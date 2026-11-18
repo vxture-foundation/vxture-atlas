@@ -24,3 +24,5 @@ restating its reasoning.
 | ADR-013 | [Service health is durable Atlas state, pulled by the platform](ADR-013-service-health-is-atlas-state-pulled-by-the-platform.md) | Accepted | 2026-10-02 |
 | ADR-014 | [A route names models of its own type](ADR-014-a-route-names-models-of-its-own-type.md) | Accepted | 2026-10-03 |
 | ADR-015 | [Tool requests require compatible candidates](ADR-015-tool-requests-require-compatible-candidates.md) | Accepted | 2026-11-15 |
+
+| ADR-016 | [Product route grants have continuous policies](ADR-016-product-route-grants-have-continuous-policies.md) | Accepted | 2026-11-18 |

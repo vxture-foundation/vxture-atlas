@@ -493,7 +493,8 @@ CREATE INDEX IF NOT EXISTS idx_model_policies_deleted_at ON model.model_policies
 CREATE TABLE IF NOT EXISTS model.model_endpoints (
     id                  uuid          PRIMARY KEY DEFAULT gen_random_uuid(),
     code                varchar(128)  NOT NULL,
-    category            varchar(32)   NOT NULL DEFAULT 'chat',
+    tags text[] NOT NULL DEFAULT '{}',
+  category            varchar(32)   NOT NULL DEFAULT 'chat',
     primary_model_code  varchar(128)  NOT NULL,
     fallback_model_code varchar(128),
     is_active           boolean       NOT NULL DEFAULT true,
@@ -793,3 +794,20 @@ END $$;
 -- the database (SELECT * FROM reqlog.drop_expired_partitions(6, false)):
 -- expired months stay on disk until someone runs it, and the /readyz runway
 -- alarm does not report over-retention.
+
+-- Continuous product grants: current policy and append-only revision history.
+CREATE TABLE IF NOT EXISTS model.product_grant_policy (
+  product_code varchar(64) PRIMARY KEY CHECK (product_code ~ '^[a-z][a-z0-9_-]{1,63}$'),
+  revision integer NOT NULL CHECK (revision > 0),
+  rules jsonb NOT NULL CHECK (jsonb_typeof(rules) = 'array'),
+  updated_by varchar(128) NOT NULL,
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS model.product_grant_policy_revision (
+  product_code varchar(64) NOT NULL,
+  revision integer NOT NULL CHECK (revision > 0),
+  rules jsonb NOT NULL CHECK (jsonb_typeof(rules) = 'array'),
+  updated_by varchar(128) NOT NULL,
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (product_code, revision)
+);
