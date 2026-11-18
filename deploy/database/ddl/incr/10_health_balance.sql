@@ -19,17 +19,20 @@
 -- supersets, so existing rows pass), columns are ADD ... IF NOT EXISTS.
 -- Mirrored into 00_baseline.sql, 97 and 98 in the same PR.
 
+-- Preserve the kinds and states introduced by increment 11 when db-init replays all increments.
+BEGIN;
+
 ALTER TABLE health.subject_states DROP CONSTRAINT IF EXISTS chk_health_subject_states_kind;
 ALTER TABLE health.subject_states ADD CONSTRAINT chk_health_subject_states_kind
-  CHECK (subject_kind IN ('model','route','vendor'));
+  CHECK (subject_kind IN ('model','route','vendor','atlas'));
 ALTER TABLE health.subject_states DROP CONSTRAINT IF EXISTS chk_health_subject_states_state;
 ALTER TABLE health.subject_states ADD CONSTRAINT chk_health_subject_states_state CHECK (state IN
   ('ok','rate_limited','account_refused','unavailable','unreachable','model_missing','unknown',
-   'degraded','down','balance_low','not_supported'));
+   'degraded','down','balance_low','not_supported','failing','at_risk'));
 
 ALTER TABLE health.events DROP CONSTRAINT IF EXISTS chk_health_events_kind;
 ALTER TABLE health.events ADD CONSTRAINT chk_health_events_kind
-  CHECK (subject_kind IN ('model','route','vendor'));
+  CHECK (subject_kind IN ('model','route','vendor','atlas'));
 
 ALTER TABLE health.probe_settings ADD COLUMN IF NOT EXISTS balance_min_amount   numeric(14,2);
 ALTER TABLE health.probe_settings ADD COLUMN IF NOT EXISTS balance_min_days     smallint;
@@ -60,3 +63,5 @@ REVOKE UPDATE ON health.balance_samples FROM atlas_svc;
 GRANT UPDATE (probe_interval_minutes, probe_enabled, balance_min_amount, balance_min_days,
               balance_poll_minutes, updated_by, updated_at)
   ON health.probe_settings TO atlas_svc;
+
+COMMIT;
