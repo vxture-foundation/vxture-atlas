@@ -1,4 +1,3 @@
-import { BadRequestException } from "@nestjs/common";
 import { HttpStatus, Inject, Injectable } from "@nestjs/common";
 
 import { ModelRegistryRepository } from "../registry/model-registry.repository";
