@@ -6,6 +6,7 @@
  * @author AI-Generated
  * @date 2026-11-18
  */
+import { readFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { afterAll, describe, expect, it } from "vitest";
@@ -41,6 +42,20 @@ afterAll(async () => {
 
 // Transactions and runtime privileges --------------------------------------
 describe.skipIf(!url)("real policy persistence", () => {
+  it("replays historical health DDL without rejecting later production states", async () => {
+    await admin.$executeRawUnsafe("INSERT INTO health.subject_states (subject_kind,subject_key,state,since) VALUES ('atlas','qa-replay','failing',now()) ON CONFLICT (subject_kind,subject_key) DO UPDATE SET state='failing'");
+    await admin.$executeRawUnsafe("INSERT INTO health.events (subject_kind,subject_key,from_state,to_state,severity) VALUES ('atlas','qa-replay','ok','at_risk','warning')");
+    const sql = readFileSync(new URL("../../../deploy/database/ddl/incr/10_health_balance.sql", import.meta.url), "utf8");
+    const statements = sql.replace(/--[^\n]*/g, "").split(";").map((part) => part.trim()).filter((part) => part && part !== "BEGIN" && part !== "COMMIT");
+    for (let pass = 0; pass < 2; pass += 1) {
+      await admin.$transaction(async (tx) => {
+        for (const statement of statements) await tx.$executeRawUnsafe(statement);
+      });
+    }
+    expect(await admin.$queryRawUnsafe("SELECT subject_kind,state FROM health.subject_states WHERE subject_key='qa-replay'")).toEqual([{ subject_kind: "atlas", state: "failing" }]);
+    await expect(admin.$executeRawUnsafe("INSERT INTO health.subject_states (subject_kind,subject_key,state,since) VALUES ('invalid','qa-reject','ok',now())")).rejects.toThrow();
+  });
+
   it("allows exactly one concurrent creation and keeps one audit revision", async () => {
     const results = await Promise.allSettled([
       repo.save(code, 0, [], "opr_a"),
