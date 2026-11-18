@@ -2847,7 +2847,7 @@ function optionalRate(
 /** Validate endpoint labels before they can affect continuous grants. */
 function normalizeEndpointTags(value: unknown): string[] {
   if (!Array.isArray(value) || value.length > 8 || value.some((tag: unknown) => typeof tag !== "string" || !/^[a-z0-9][a-z0-9-]{1,31}$/.test(tag)) || new Set(value).size !== value.length) {
-    throw new BadRequestException({ code: "MODEL_ADMIN_ENDPOINT_INVALID_TAGS", message: "tags must be unique lowercase labels, 2-32 characters, at most 8", retryable: false });
+    throw new ModelAdminException(HttpStatus.BAD_REQUEST, "MODEL_ADMIN_VALIDATION_FAILED", "tags must be unique lowercase labels, 2-32 characters, at most 8", { field: "tags" });
   }
   return value as string[];
 }
