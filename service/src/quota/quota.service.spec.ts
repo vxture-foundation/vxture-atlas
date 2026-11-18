@@ -21,6 +21,7 @@ describe("authorization axis: product endpoints first, tenant as legacy fallback
     tenant?: AiModelGrantRecord | null;
   }) {
     const repository = {
+      isModelDeniedByProductPolicy: vi.fn(async () => false),
       listProductEndpointGrants: vi
         .fn()
         .mockResolvedValue(over.endpointGrants ?? []),
@@ -40,6 +41,21 @@ describe("authorization axis: product endpoints first, tenant as legacy fallback
 
   const AUTH = { callerProductCode: "karda" };
 
+  it("cannot use an ungranted endpoint through another route to the same model", async () => {
+    const { svc, repository } = build({ endpointGrants: [{ endpointCode: "allowed" }], reachable: ["test-model"] });
+    const request = makeRequest();
+    delete request.modelCode;
+    request.endpointCode = "denied";
+    await expect(svc.assertAllowed(makeModel(), request, AUTH)).rejects.toMatchObject({ response: { code: "NOT_ENTITLED" } });
+    expect(repository.reachableModelCodes).not.toHaveBeenCalled();
+    expect(repository.findBestGrant).not.toHaveBeenCalled();
+  });
+  it("cannot bypass an explicit product deny with a legacy tenant grant", async () => {
+    const { svc, repository } = build({ tenant: { id: "legacy" } as AiModelGrantRecord });
+    repository.isModelDeniedByProductPolicy.mockResolvedValue(true);
+    await expect(svc.assertAllowed(makeModel(), makeRequest(), AUTH)).rejects.toMatchObject({ response: { code: "NOT_ENTITLED" } });
+    expect(repository.findBestGrant).not.toHaveBeenCalled();
+  });
   it("authorizes a model the product's endpoints can reach", async () => {
     // The grant names chat/default; the model is reachable through it. No
     // model-level grant exists and none is needed.
@@ -368,7 +384,8 @@ describe("QuotaService C2 entitlement gate (TD-016)", () => {
     findBestGrant: vi.fn(async () => ({ id: "g1" })),
     findApplicablePolicy: vi.fn().mockResolvedValue(null),
     // The product axis holds nothing here; the tenant grant above authorizes.
-    listProductEndpointGrants: vi.fn(async () => []),
+    isModelDeniedByProductPolicy: vi.fn(async () => false),
+      listProductEndpointGrants: vi.fn(async () => []),
     reachableModelCodes: vi.fn(async () => new Set<string>()),
   };
 

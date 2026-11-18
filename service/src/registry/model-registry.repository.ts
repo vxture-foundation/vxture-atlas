@@ -1,3 +1,5 @@
+import { ProductGrantPolicyRepository } from "../governance/product-grant-policy.repository";
+import { evaluatePolicy } from "../governance/product-grant-policy";
 import { HttpStatus, Injectable } from "@nestjs/common";
 
 import {
@@ -668,7 +670,7 @@ export class ModelRegistryRepository {
     // codeless 500, three times in production on 2026-09-28, found by the
     // 2026-09-30 walkthrough.
     assertUuid(applicationId, "INVALID_APPLICATION_ID", "applicationId");
-    return prisma.productEndpointGrant.findMany({
+    const manual = await prisma.productEndpointGrant.findMany({
       where: {
         productCode,
         deletedAt: null,
@@ -680,6 +682,18 @@ export class ModelRegistryRepository {
         AND: [{ OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }] }],
       },
     });
+    const policy = await new ProductGrantPolicyRepository().get(productCode);
+    if (policy.rules.length === 0) return manual;
+    const resources = await new ProductGrantPolicyRepository().loadResources();
+    const effective = evaluatePolicy(policy.rules, resources);
+    const result = manual.filter((grant) => (effective.get(grant.endpointCode)?.deniedBy.length ?? 0) === 0);
+    for (const permission of effective.values()) {
+      if (permission.contributions.length === 0 || result.some((grant) => grant.endpointCode === permission.resourceId)) continue;
+      result.push({ id: `policy:${productCode}:${permission.resourceId}`, productCode, endpointCode: permission.resourceId,
+        applicationId: null, applicationType: null, isActive: true, reason: permission.contributions.map((grant) => grant.source).join(","),
+        expiresAt: null, createdBy: null, updatedBy: null, createdAt: policy.updatedAt!, updatedAt: policy.updatedAt!, deletedAt: null });
+    }
+    return result;
   }
 
   /**
@@ -690,6 +704,14 @@ export class ModelRegistryRepository {
    * is "the caller may pick a cheaper model, within what the product is
    * authorized for" expressed without a second grant table.
    */
+  async isModelDeniedByProductPolicy(productCode: string, modelCode: string): Promise<boolean> {
+    const policy = await new ProductGrantPolicyRepository().get(productCode);
+    if (!policy.rules.some((rule) => rule.enabled && rule.effect === "deny")) return false;
+    const resources = await new ProductGrantPolicyRepository().loadResources();
+    const denied = [...evaluatePolicy(policy.rules, resources).values()].filter((entry) => entry.deniedBy.length > 0).map((entry) => entry.resourceId);
+    return (await this.reachableModelCodes(denied)).has(modelCode);
+  }
+
   async reachableModelCodes(endpointCodes: string[]): Promise<Set<string>> {
     if (endpointCodes.length === 0) return new Set();
     const rows = await prisma.modelEndpoint.findMany({

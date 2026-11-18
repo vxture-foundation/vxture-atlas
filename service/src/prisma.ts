@@ -254,7 +254,17 @@ interface PrismaDelegate<TRecord> {
   upsert(args: PrismaArgs): Promise<TRecord>;
 }
 
+export interface ProductGrantPolicyRow {
+  productCode: string;
+  revision: number;
+  rules: unknown;
+  updatedBy: string;
+  updatedAt: Date;
+}
+
 export interface AtlasPrismaClient {
+  productGrantPolicy: PrismaDelegate<ProductGrantPolicyRow>;
+  productGrantPolicyRevision: Pick<PrismaDelegate<ProductGrantPolicyRow>, "create" | "findMany">;
   modelProvider: PrismaDelegate<ModelProviderRecord>;
   modelDefinition: PrismaDelegate<AiModelRow>;
   modelGrant: PrismaDelegate<AiModelGrantRecord>;

@@ -197,3 +197,7 @@ REVOKE UPDATE ON provisioning.webhook_deliveries FROM atlas_svc;
 -- Idempotent: months that already exist are skipped, so every db-init apply
 -- rolls the runway forward another 12 months.
 SELECT * FROM reqlog.ensure_partitions(12);
+
+GRANT SELECT, INSERT ON model.product_grant_policy, model.product_grant_policy_revision TO atlas_svc;
+REVOKE UPDATE, DELETE ON model.product_grant_policy, model.product_grant_policy_revision FROM atlas_svc;
+GRANT UPDATE (revision, rules, updated_by, updated_at) ON model.product_grant_policy TO atlas_svc;

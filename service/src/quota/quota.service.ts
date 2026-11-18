@@ -22,6 +22,8 @@ export const COMMERCE_SENTINEL_UUID = "00000000-0000-0000-0000-000000000000";
  * call sites (runtime.service.ts) are unaffected.
  */
 export interface QuotaCheckRequest {
+  modelCode?: string;
+  endpointCode?: string;
   tenantId: string;
   applicationId?: string;
   applicationType?: ApplicationType;
@@ -166,6 +168,11 @@ export class QuotaService {
         applicationScope.applicationId,
         applicationScope.applicationType,
       );
+      const selectedEndpoint = !request.modelCode?.trim() ? request.endpointCode?.trim() : undefined;
+      if (selectedEndpoint && !grants.some((grant) => grant.endpointCode === selectedEndpoint)) {
+        metricsRegistry.recordGrantAuthorization("denied");
+        throw new ModelRuntimeException(HttpStatus.FORBIDDEN, "NOT_ENTITLED", `Product "${auth.callerProductCode}" holds no grant for endpoint "${selectedEndpoint}"`, { modelCode: model.modelCode });
+      }
       // The product holds ENDPOINTS; the models it may name are whatever those
       // endpoints reach. Checking the derived set rather than a second grant
       // table is what keeps a repoint invisible: change what `chat/default`
@@ -202,6 +209,11 @@ export class QuotaService {
           `so it cannot match a tenant grant either way.`,
         { modelCode: model.modelCode },
       );
+    }
+
+    if (auth?.callerProductCode && await this.repository.isModelDeniedByProductPolicy(auth.callerProductCode, model.modelCode)) {
+      metricsRegistry.recordGrantAuthorization("denied");
+      throw new ModelRuntimeException(HttpStatus.FORBIDDEN, "NOT_ENTITLED", "An explicit product policy denies this model route", { modelCode: model.modelCode });
     }
 
     const tenantGrant = await this.repository.findBestGrant(

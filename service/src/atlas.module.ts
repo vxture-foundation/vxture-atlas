@@ -1,3 +1,6 @@
+import { prisma } from "./prisma";
+import { ProductGrantPolicyController } from "./governance/product-grant-policy.controller";
+import { ProductGrantPolicyRepository, PRODUCT_GRANT_POLICY_PRISMA } from "./governance/product-grant-policy.repository";
 import { HealthProbeScheduler } from "./health/health-probe.scheduler";
 import { HealthSettingsService } from "./health/health-settings.service";
 import { VendorBalanceMonitor } from "./health/vendor-balance.monitor";
@@ -58,6 +61,7 @@ import { AuditMiddleware } from "./audit/audit.middleware";
 
 @Module({
   controllers: [
+    ProductGrantPolicyController,
     ModelRuntimeController,
     ModelAdminController,
     HealthController,
@@ -77,6 +81,8 @@ import { AuditMiddleware } from "./audit/audit.middleware";
     ServiceHealthS2sController,
   ],
   providers: [
+    { provide: PRODUCT_GRANT_POLICY_PRISMA, useValue: prisma },
+    ProductGrantPolicyRepository,
     // Adds the `Retry-After` header that 200-s2s-provider-surface.md has
     // promised on 429 since it was written, and rebuilds the identical body -
     // see the filter for why the header matters when the ms are already in it.
