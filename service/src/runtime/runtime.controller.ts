@@ -41,6 +41,7 @@ import { modelBehaviorVersion } from "../model-behavior-version";
 interface ModelSummary {
   modelCode: string;
   modelName: string;
+  modelType: AiModelRecord["modelType"];
   provider: string;
   protocol: string;
   capabilities: string[];
@@ -293,6 +294,7 @@ function toModelSummary(model: AiModelRecord): ModelSummary {
   return {
     modelCode: model.modelCode,
     modelName: model.modelName,
+    modelType: model.modelType,
     provider: model.provider,
     protocol: model.protocol,
     capabilities: model.capabilities,

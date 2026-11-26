@@ -16,7 +16,7 @@ issuer/JWKS).
 | Method | Path | Notes |
 |---|---|---|
 | POST | `/v1/chat` | Generation; `stream:true` for SSE |
-| GET | `/v1/models` | `?tenantId=` filters to that tenant's granted models. Rows carry `behaviorVersion` (see below), `state` (`active`/`deprecated`/`inactive`) and `deprecatedAt` |
+| GET | `/v1/models` | `?tenantId=` filters to that tenant's granted models. Rows carry `modelType`, `behaviorVersion` (see below), `state` (`active`/`deprecated`/`inactive`) and `deprecatedAt` |
 | GET | `/v1/endpoints` | The entry points THIS CALLER holds. Product comes from `act.sub` on the verified token, never a query parameter. `?applicationId=`/`?applicationType=` narrow to the same scope a call would use |
 | POST | `/v1/embed` | A1 embedding - Zhipu only, other providers 501 |
 | POST | `/v1/rerank` | A3 rerank - Zhipu only, other providers 501 |
@@ -479,6 +479,12 @@ path and still treats `PUT` as mutating - which makes "has the console
 finished migrating" a query rather than a guess.
 
 ### Naming the model: three inputs, one precedence
+
+The runtime catalog includes the registry's `modelType` for global and
+tenant-filtered lists. A chat picker uses active entries with
+`modelType: "chat"`. Example types include `embedding` and `rerank`.
+Consumers tolerate future model types and use the types their operation
+supports. The catalog response is discovery. Inference checks grants.
 
 `modelCode` > `endpointCode` > `taskProfile`. At least one required; passing
 more than one is not an error, the narrower wins.

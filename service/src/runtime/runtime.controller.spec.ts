@@ -3,6 +3,50 @@ import { describe, expect, it, vi } from "vitest";
 import { DEFAULT_MAX_REQUEST_BODY_BYTES } from "./request-body";
 import { ModelRuntimeController } from "./runtime.controller";
 import { ModelRuntimeException } from "./runtime.errors";
+import type { AiModelRecord } from "../types/runtime.types";
+
+describe("ModelRuntimeController.listModels", () => {
+  it("publishes the registered model type independently of capability labels", async () => {
+    const model: AiModelRecord = {
+      id: "model-1",
+      providerId: null,
+      modelCode: "catalog-entry",
+      modelName: "Catalog entry",
+      modelType: "embedding",
+      provider: "test",
+      endpointUrl: "https://provider.test",
+      protocol: "openai",
+      description: null,
+      contextWindow: null,
+      maxOutputTokens: null,
+      capabilities: ["custom-label"],
+      supportsStreaming: false,
+      isActive: true,
+      sort: 1,
+      config: null,
+      providerConfig: null,
+      providerActive: true,
+      deprecatedAt: null,
+      createdBy: null,
+      updatedBy: null,
+      createdAt: new Date(0),
+      updatedAt: new Date(0),
+      deletedAt: null,
+    };
+    const registry = {
+      listActiveModels: vi.fn().mockResolvedValue([model]),
+      listModelsForTenant: vi.fn().mockResolvedValue([{ ...model, modelType: "chat" }]),
+    };
+    const controller = new ModelRuntimeController({} as never, registry as never);
+    expect(await controller.listModels({})).toMatchObject([
+      { modelCode: model.modelCode, modelType: "embedding", capabilities: ["custom-label"] },
+    ]);
+    const tenantId = "550e8400-e29b-41d4-a716-446655440000";
+    expect(await controller.listModels({ tenantId }, tenantId)).toMatchObject([
+      { modelCode: model.modelCode, modelType: "chat" },
+    ]);
+  });
+});
 
 /**
  * `GET /v1/endpoints` - the consumer catalog (vxture-atlas#198 §3).
