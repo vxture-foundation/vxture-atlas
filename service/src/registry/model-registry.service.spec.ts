@@ -87,6 +87,54 @@ describe("ModelRegistryService.resolveModelCodeForTaskProfile", () => {
   });
 });
 
+describe("ModelRegistryService.listModelsForCaller", () => {
+  it("combines product reach and legacy grants, excluding unrelated or denied models", async () => {
+    const models = ["primary", "fallback", "legacy", "denied", "unrelated"].map((modelCode) => makeModel({ modelCode }));
+    const repository = {
+      listActiveModels: vi.fn().mockResolvedValue(models),
+      listProductEndpointGrants: vi.fn().mockResolvedValue([{ endpointCode: "chat/default" }]),
+      reachableModelCodes: vi.fn().mockResolvedValue(new Set(["primary", "fallback", "retired"])),
+      listGrantedModels: vi.fn().mockResolvedValue([models[2], models[3]]),
+      modelCodesDeniedByProductPolicy: vi.fn().mockResolvedValue(new Set(["denied", "primary"])),
+    };
+    const scope = {
+      tenantId: "550e8400-e29b-41d4-a716-446655440000",
+      productCode: "vxtpl",
+      applicationId: "550e8400-e29b-41d4-a716-446655440001",
+      applicationType: "agent" as const,
+    };
+    const service = new ModelRegistryService(repository as never);
+    expect((await service.listModelsForCaller(scope)).map(({ modelCode }) => modelCode))
+      .toEqual(["primary", "fallback", "legacy"]);
+    expect(repository.reachableModelCodes).toHaveBeenCalledWith(["chat/default"]);
+    expect(repository.listGrantedModels).toHaveBeenCalledWith({
+      tenantId: scope.tenantId, applicationId: scope.applicationId, applicationType: scope.applicationType,
+    });
+  });
+});
+
+describe("ModelRegistryService caller catalog without tenant-only grants", () => {
+  it("keeps product-reachable models and skips the tenant fallback policy lookup", async () => {
+    const primary = makeModel({ modelCode: "primary" });
+    const repository = {
+      listActiveModels: vi.fn().mockResolvedValue([primary, makeModel({ modelCode: "unrelated" })]),
+      listProductEndpointGrants: vi.fn().mockResolvedValue([{ endpointCode: "chat/default" }]),
+      reachableModelCodes: vi.fn().mockResolvedValue(new Set(["primary"])),
+      listGrantedModels: vi.fn().mockResolvedValue([primary]),
+      modelCodesDeniedByProductPolicy: vi.fn(),
+    };
+    const service = new ModelRegistryService(repository as never);
+
+    expect(await service.listModelsForCaller({
+      productCode: "vxtpl",
+      tenantId: "550e8400-e29b-41d4-a716-446655440000",
+      applicationId: "550e8400-e29b-41d4-a716-446655440001",
+      applicationType: "agent",
+    })).toEqual([primary]);
+    expect(repository.modelCodesDeniedByProductPolicy).not.toHaveBeenCalled();
+  });
+});
+
 describe("ModelRegistryService.listModelsForTenant", () => {
   it("delegates to the repository's grant-filtered listing", async () => {
     const model = makeModel();

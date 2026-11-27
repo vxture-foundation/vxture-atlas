@@ -2,6 +2,7 @@ import {
   Body,
   Controller,
   Get,
+  Header,
   HttpException,
   HttpStatus,
   Inject,
@@ -37,6 +38,7 @@ import { ModelRuntimeException, isModelRuntimeErrorCode } from "./runtime.errors
 import type { ModelRuntimeErrorCode } from "./runtime.errors";
 import { resolveMaxRequestBodyBytes } from "./request-body";
 import { modelBehaviorVersion } from "../model-behavior-version";
+import { isUuid } from "../uuid";
 
 interface ModelSummary {
   modelCode: string;
@@ -82,7 +84,7 @@ interface ModelRuntimeResponse {
   on?(event: "close", listener: () => void): void;
 }
 
-const V1_MODEL_FILTERS = ["tenantId", "applicationId", "applicationType"];
+const V1_MODEL_FILTERS = ["scope", "tenantId", "applicationId", "applicationType"];
 const V1_ENDPOINT_FILTERS = ["applicationId", "applicationType"];
 
 /**
@@ -138,17 +140,43 @@ export class ModelRuntimeController {
   /**
    * Unfiltered when called without `tenantId` (existing behavior, unchanged -
    * ops/admin tooling). With `tenantId`, returns only the models that tenant/
-   * application actually has an active grant for (docs/70-workplan tenant-
-   * filtered "available models" list) instead of the full global catalog.
+   * application actually has an active grant for. `scope=caller` uses the
+   * verified product and tenant claims to discover effective direct-call grants.
    */
   @Get("models")
+  @Header("Cache-Control", "no-store")
   async listModels(
     @Query() all: Record<string, string>,
     @Query("tenantId") tenantId?: string,
     @Query("applicationId") applicationId?: string,
     @Query("applicationType") applicationType?: ApplicationType,
+    @Query("scope") scope?: string,
+    @Req() req?: S2sAuthenticatedRequest,
   ): Promise<ModelSummary[]> {
     rejectUnknownV1Filters(all, V1_MODEL_FILTERS);
+    if (scope !== undefined) {
+      if (scope !== "caller" || tenantId !== undefined) {
+        throw new ModelRuntimeException(HttpStatus.BAD_REQUEST, "UNKNOWN_FILTER", "Use scope=caller without a tenantId override");
+      }
+      const auth = req?.s2sAuth;
+      if (!auth?.callerProductCode) {
+        throw new ModelRuntimeException(HttpStatus.UNAUTHORIZED, "S2S_TOKEN_MISSING_ACT", "S2S token is missing act.sub");
+      }
+      const scopedTenantId = auth.tenantId?.trim();
+      if (!scopedTenantId || !isUuid(scopedTenantId)) {
+        throw new ModelRuntimeException(HttpStatus.FORBIDDEN, "TENANCY_SCOPE_INVALID", "Direct-call discovery requires a tenant UUID in the S2S token");
+      }
+      const applicationScope = resolveApplicationScope({
+        ...(applicationId !== undefined ? { applicationId } : {}),
+        ...(applicationType !== undefined ? { applicationType } : {}),
+      });
+      return (await this.registry.listModelsForCaller({
+        ...applicationScope,
+        productCode: auth.callerProductCode,
+        tenantId: scopedTenantId,
+      })).map(toModelSummary);
+    }
+
     const models = tenantId?.trim()
       ? await this.registry.listModelsForTenant({
           tenantId: tenantId.trim(),

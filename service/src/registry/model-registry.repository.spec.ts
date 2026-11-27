@@ -9,12 +9,16 @@ const grantFindMany = vi.fn();
 const policyFindMany = vi.fn();
 const modelFindMany = vi.fn();
 const modelFindFirst = vi.fn();
+const productPolicyFindFirst = vi.fn();
+const endpointFindMany = vi.fn();
 const queryRawUnsafe = vi.fn();
 
 vi.mock("../prisma", () => ({
   prisma: {
     modelGrant: { findMany: (...args: unknown[]) => grantFindMany(...args) },
     modelPolicy: { findMany: (...args: unknown[]) => policyFindMany(...args) },
+    productGrantPolicy: { findFirst: (...args: unknown[]) => productPolicyFindFirst(...args) },
+    modelEndpoint: { findMany: (...args: unknown[]) => endpointFindMany(...args) },
     modelDefinition: {
       findMany: (...args: unknown[]) => modelFindMany(...args),
       findFirst: (...args: unknown[]) => modelFindFirst(...args),
@@ -40,6 +44,8 @@ beforeEach(() => {
   modelFindMany.mockReset().mockResolvedValue([]);
   modelFindFirst.mockReset().mockResolvedValue(null);
   queryRawUnsafe.mockReset().mockResolvedValue([]);
+  productPolicyFindFirst.mockReset().mockResolvedValue(null);
+  endpointFindMany.mockReset().mockResolvedValue([]);
 });
 
 // Bulk tenant quotas have no possible local backing (platform C2 exposes only
@@ -292,5 +298,44 @@ describe("findApplicablePolicy tenant scoping", () => {
     await expect(
       repo.findApplicablePolicy(MODEL_ID, "org-acme/ws-main"),
     ).resolves.toBe(wildcard);
+  });
+});
+
+describe("model reach denied by product policy", () => {
+  const rule = {
+    id: "deny-route",
+    name: "Deny one route",
+    enabled: true,
+    effect: "deny",
+    selector: { mode: "resources", values: ["chat/blocked"], tagMatch: "any", excludedIds: [] },
+    riskScope: "read",
+    criticalRequiresApproval: true,
+  };
+
+  it("skips resource discovery for absent, disabled, or allow-only rules", async () => {
+    productPolicyFindFirst
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce({ rules: [{ ...rule, enabled: false }, { ...rule, id: "allow", effect: "allow" }] });
+
+    expect(await repo.modelCodesDeniedByProductPolicy("vxtpl")).toEqual(new Set());
+    expect(await repo.isModelDeniedByProductPolicy("vxtpl", "primary")).toBe(false);
+    expect(endpointFindMany).not.toHaveBeenCalled();
+  });
+
+  it("returns the primary and fallback model for each matching denied endpoint", async () => {
+    productPolicyFindFirst.mockResolvedValue({ rules: [rule] });
+    endpointFindMany
+      .mockResolvedValueOnce([
+        { code: "chat/allowed", category: "chat", isActive: true },
+        { code: "chat/blocked", category: "chat", isActive: true },
+      ])
+      .mockResolvedValueOnce([{ primaryModelCode: "primary", fallbackModelCode: "fallback" }]);
+
+    expect(await repo.modelCodesDeniedByProductPolicy("vxtpl")).toEqual(new Set(["primary", "fallback"]));
+    expect(productPolicyFindFirst).toHaveBeenCalledWith({ where: { productCode: "vxtpl" } });
+    expect(endpointFindMany).toHaveBeenLastCalledWith({
+      where: { code: { in: ["chat/blocked"] }, deletedAt: null, isActive: true },
+      select: { primaryModelCode: true, fallbackModelCode: true },
+    });
   });
 });

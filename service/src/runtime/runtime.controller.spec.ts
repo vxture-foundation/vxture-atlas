@@ -6,6 +6,60 @@ import { ModelRuntimeException } from "./runtime.errors";
 import type { AiModelRecord } from "../types/runtime.types";
 
 describe("ModelRuntimeController.listModels", () => {
+  it("uses verified claims for caller-scoped discovery and rejects tenant overrides", async () => {
+    const registry = { listModelsForCaller: vi.fn().mockResolvedValue([]) };
+    const controller = new ModelRuntimeController({} as never, registry as never);
+    const tenantId = "550e8400-e29b-41d4-a716-446655440000";
+    const req = {
+      headers: {},
+      s2sAuth: { tenantId, callerProductCode: "vxtpl", mode: "obo", scope: "tool:atlas" },
+    } as const;
+    expect(await controller.listModels({ scope: "caller" }, undefined, undefined, undefined, "caller", req)).toEqual([]);
+    expect(registry.listModelsForCaller).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ tenantId, productCode: "vxtpl" }),
+    );
+    await expect(controller.listModels({ scope: "caller", tenantId }, tenantId, undefined, undefined, "caller", req))
+      .rejects.toMatchObject({ code: "UNKNOWN_FILTER" });
+    await expect(controller.listModels({ scope: "caller" }, undefined, undefined, undefined, "caller"))
+      .rejects.toMatchObject({ code: "S2S_TOKEN_MISSING_ACT" });
+  });
+
+  it("rejects an invalid scope and an absent or malformed verified tenant", async () => {
+    const registry = { listModelsForCaller: vi.fn() };
+    const controller = new ModelRuntimeController({} as never, registry as never);
+
+    await expect(controller.listModels({ scope: "other" }, undefined, undefined, undefined, "other"))
+      .rejects.toMatchObject({ code: "UNKNOWN_FILTER" });
+
+    for (const tenantId of ["", "not-a-tenant-uuid"]) {
+      const req = {
+        headers: {},
+        s2sAuth: { tenantId, callerProductCode: "vxtpl", mode: "obo", scope: "tool:atlas" },
+      } as const;
+      await expect(controller.listModels({ scope: "caller" }, undefined, undefined, undefined, "caller", req))
+        .rejects.toMatchObject({ code: "TENANCY_SCOPE_INVALID" });
+    }
+    expect(registry.listModelsForCaller).not.toHaveBeenCalled();
+  });
+
+  it("passes the selected application scope and normalizes the verified tenant", async () => {
+    const registry = { listModelsForCaller: vi.fn().mockResolvedValue([]) };
+    const controller = new ModelRuntimeController({} as never, registry as never);
+    const tenantId = "550e8400-e29b-41d4-a716-446655440000";
+    const applicationId = "550e8400-e29b-41d4-a716-446655440001";
+    const req = {
+      headers: {},
+      s2sAuth: { tenantId: " " + tenantId + " ", callerProductCode: "vxtpl", mode: "obo", scope: "tool:atlas" },
+    } as const;
+    const query = { scope: "caller", applicationId, applicationType: "workflow" } as const;
+
+    await controller.listModels(query, undefined, applicationId, query.applicationType, "caller", req);
+
+    expect(registry.listModelsForCaller).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+      productCode: "vxtpl", tenantId, applicationId, applicationType: "workflow",
+    }));
+  });
+
   it("publishes the registered model type independently of capability labels", async () => {
     const model: AiModelRecord = {
       id: "model-1",

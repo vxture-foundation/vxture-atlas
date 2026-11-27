@@ -142,6 +142,28 @@ export class ModelRegistryService {
   }
 
   /**
+   * Direct-call choices in the same product and tenant grant scope as inference.
+   * Listing does not reserve capacity or consume tokens.
+   */
+  async listModelsForCaller(scope: {
+    productCode: string;
+    tenantId: string;
+    applicationId: string;
+    applicationType: ApplicationType;
+  }): Promise<AiModelRecord[]> {
+    const { productCode, tenantId, applicationId, applicationType } = scope;
+    const [models, productGrants, tenantModels] = await Promise.all([
+      this.listActiveModels(),
+      this.repository.listProductEndpointGrants(productCode, applicationId, applicationType),
+      this.listModelsForTenant({ tenantId, applicationId, applicationType }),
+    ]);
+    const reachable = await this.repository.reachableModelCodes(productGrants.map(({ endpointCode }) => endpointCode));
+    const tenantOnly = new Set(tenantModels.map(({ modelCode }) => modelCode).filter((code) => !reachable.has(code)));
+    const denied = tenantOnly.size ? await this.repository.modelCodesDeniedByProductPolicy(productCode) : new Set<string>();
+    return models.filter(({ modelCode }) => reachable.has(modelCode) || (tenantOnly.has(modelCode) && !denied.has(modelCode)));
+  }
+
+  /**
    * The entry points the CALLING PRODUCT holds, for the consumer catalog
    * behind `GET /v1/endpoints`.
    *
