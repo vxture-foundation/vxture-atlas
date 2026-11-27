@@ -16,7 +16,7 @@ issuer/JWKS).
 | Method | Path | Notes |
 |---|---|---|
 | POST | `/v1/chat` | Generation; `stream:true` for SSE |
-| GET | `/v1/models` | `?tenantId=` filters to that tenant's granted models. Rows carry `modelType`, `behaviorVersion` (see below), `state` (`active`/`deprecated`/`inactive`) and `deprecatedAt` |
+| GET | `/v1/models` | `?scope=caller` lists the caller's authorized direct-call models. `?tenantId=` filters to that tenant's granted models. Rows carry `modelType`, `behaviorVersion` (see below), `state` (`active`/`deprecated`/`inactive`) and `deprecatedAt` |
 | GET | `/v1/endpoints` | The entry points THIS CALLER holds. Product comes from `act.sub` on the verified token, never a query parameter. `?applicationId=`/`?applicationType=` narrow to the same scope a call would use |
 | POST | `/v1/embed` | A1 embedding - Zhipu only, other providers 501 |
 | POST | `/v1/rerank` | A3 rerank - Zhipu only, other providers 501 |
@@ -152,6 +152,20 @@ candidate in the chain.
     so a caller's deadline always comes first). Until v0.7.18 this used the
     30 s window too, and every non-streaming answer longer than 30 s failed
     as `PROVIDER_UNAVAILABLE` (tenderforge#69).
+
+### Caller-scoped direct model discovery
+
+`GET /v1/models?scope=caller` lists active models available for a direct
+`modelCode` call. Atlas takes the product from `act.sub` and the tenant UUID
+from the verified S2S token. The optional `applicationId` and
+`applicationType` filters use the same defaults as inference. Combining
+`scope=caller` with a `tenantId` override returns `400 UNKNOWN_FILTER`.
+
+Atlas lists models reachable through the product's effective endpoint
+grants, including fallback targets. It also lists tenant-granted models
+allowed by product policy. For a chat picker, use rows whose `modelType` is
+`chat`. The response uses `Cache-Control: no-store`. Discovery records no
+model usage. Atlas checks the current grants again when processing inference.
 
 `GET /v1/models?tenantId=` accepts the tenant id as a caller-supplied filter by
 design: `/v1` is a first-party product plane, and tenant privacy is not a

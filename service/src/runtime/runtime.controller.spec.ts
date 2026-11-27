@@ -6,6 +6,24 @@ import { ModelRuntimeException } from "./runtime.errors";
 import type { AiModelRecord } from "../types/runtime.types";
 
 describe("ModelRuntimeController.listModels", () => {
+  it("uses verified claims for caller-scoped discovery and rejects tenant overrides", async () => {
+    const registry = { listModelsForCaller: vi.fn().mockResolvedValue([]) };
+    const controller = new ModelRuntimeController({} as never, registry as never);
+    const tenantId = "550e8400-e29b-41d4-a716-446655440000";
+    const req = {
+      headers: {},
+      s2sAuth: { tenantId, callerProductCode: "vxtpl", mode: "obo", scope: "tool:atlas" },
+    } as const;
+    expect(await controller.listModels({ scope: "caller" }, undefined, undefined, undefined, "caller", req)).toEqual([]);
+    expect(registry.listModelsForCaller).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ tenantId, productCode: "vxtpl" }),
+    );
+    await expect(controller.listModels({ scope: "caller", tenantId }, tenantId, undefined, undefined, "caller", req))
+      .rejects.toMatchObject({ code: "UNKNOWN_FILTER" });
+    await expect(controller.listModels({ scope: "caller" }, undefined, undefined, undefined, "caller"))
+      .rejects.toMatchObject({ code: "S2S_TOKEN_MISSING_ACT" });
+  });
+
   it("publishes the registered model type independently of capability labels", async () => {
     const model: AiModelRecord = {
       id: "model-1",

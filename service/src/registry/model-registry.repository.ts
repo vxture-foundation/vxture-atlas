@@ -705,11 +705,18 @@ export class ModelRegistryRepository {
    * authorized for" expressed without a second grant table.
    */
   async isModelDeniedByProductPolicy(productCode: string, modelCode: string): Promise<boolean> {
-    const policy = await new ProductGrantPolicyRepository().get(productCode);
-    if (!policy.rules.some((rule) => rule.enabled && rule.effect === "deny")) return false;
-    const resources = await new ProductGrantPolicyRepository().loadResources();
-    const denied = [...evaluatePolicy(policy.rules, resources).values()].filter((entry) => entry.deniedBy.length > 0).map((entry) => entry.resourceId);
-    return (await this.reachableModelCodes(denied)).has(modelCode);
+    return (await this.modelCodesDeniedByProductPolicy(productCode)).has(modelCode);
+  }
+
+  async modelCodesDeniedByProductPolicy(productCode: string): Promise<Set<string>> {
+    const policyRepository = new ProductGrantPolicyRepository();
+    const policy = await policyRepository.get(productCode);
+    if (!policy.rules.some((rule) => rule.enabled && rule.effect === "deny")) return new Set();
+    const resources = await policyRepository.loadResources();
+    const denied = [...evaluatePolicy(policy.rules, resources).values()]
+      .filter((entry) => entry.deniedBy.length > 0)
+      .map((entry) => entry.resourceId);
+    return this.reachableModelCodes(denied);
   }
 
   async reachableModelCodes(endpointCodes: string[]): Promise<Set<string>> {
