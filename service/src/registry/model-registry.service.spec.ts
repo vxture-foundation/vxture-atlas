@@ -113,6 +113,28 @@ describe("ModelRegistryService.listModelsForCaller", () => {
   });
 });
 
+describe("ModelRegistryService caller catalog without tenant-only grants", () => {
+  it("keeps product-reachable models and skips the tenant fallback policy lookup", async () => {
+    const primary = makeModel({ modelCode: "primary" });
+    const repository = {
+      listActiveModels: vi.fn().mockResolvedValue([primary, makeModel({ modelCode: "unrelated" })]),
+      listProductEndpointGrants: vi.fn().mockResolvedValue([{ endpointCode: "chat/default" }]),
+      reachableModelCodes: vi.fn().mockResolvedValue(new Set(["primary"])),
+      listGrantedModels: vi.fn().mockResolvedValue([primary]),
+      modelCodesDeniedByProductPolicy: vi.fn(),
+    };
+    const service = new ModelRegistryService(repository as never);
+
+    expect(await service.listModelsForCaller({
+      productCode: "vxtpl",
+      tenantId: "550e8400-e29b-41d4-a716-446655440000",
+      applicationId: "550e8400-e29b-41d4-a716-446655440001",
+      applicationType: "agent",
+    })).toEqual([primary]);
+    expect(repository.modelCodesDeniedByProductPolicy).not.toHaveBeenCalled();
+  });
+});
+
 describe("ModelRegistryService.listModelsForTenant", () => {
   it("delegates to the repository's grant-filtered listing", async () => {
     const model = makeModel();
